@@ -26,6 +26,7 @@ If you are new here, start with [Installation](./installation.md), then walk thr
 | Topic | What you will learn |
 |---|---|
 | [Query Builder](./query-builder.md) | Chainable `where` / `join` / `with` / aggregates / pagination, the `DB` facade, raw queries. |
+| [Cache](./cache.md) | Explicit Redis-backed caching, query `remember()`, exact tag invalidation. |
 | [Collections](./collections.md) | `map`, `filter`, `groupBy`, `keyBy`, and other helpers returned by `get()`. |
 | [Models](./models.md) | Defining models, casts, accessors / mutators, soft deletes, persistence, JSON serialization. |
 | [Relationships](./relationships.md) | `hasMany`, `belongsTo`, `belongsToMany`, polymorphic relations, eager loading, pivot helpers. |

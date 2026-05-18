@@ -22,6 +22,7 @@ An **Eloquent-inspired ORM** built specifically for [Bun](https://bun.sh)'s nati
 - 🔷 **Fully Typed** — `Model.define<T>()` gives attribute access, typed `with()` autocomplete, and typed eager-load results with zero codegen
 - 🏗️ **Schema Builder** — Programmatic table creation, indexes, foreign keys
 - 🔍 **Query Builder** — Chainable `where`, `join`, `orderBy`, `groupBy`, date filters, conditional building, etc.
+- 🧠 **Tagged Cache** — Redis-backed cache facade, query `remember()`, and exact tag invalidation
 - 🧬 **Eloquent-style Models** — Property attributes, defaults, casts, dirty tracking, soft deletes, scopes, find-or-fail, first-or-create
 - 🧺 **Collections** — Laravel-style helpers for multi-record query results
 - 🔗 **Relations** — Standard, many-to-many, polymorphic, through, one-of-many, and relation queries
@@ -128,6 +129,7 @@ See the [Quickstart guide](./docs/quickstart.md) for the full walkthrough.
 | Topic | Summary |
 |---|---|
 | [Query Builder](./docs/query-builder.md) | Chainable `where` / `join` / `with` / aggregates, `DB` facade, raw queries. |
+| [Cache](./docs/cache.md) | Redis-backed cache API, query `remember()`, exact tag invalidation. |
 | [Collections](./docs/collections.md) | `map`, `filter`, `groupBy`, and other helpers returned by `get()`. |
 | [Models](./docs/models.md) | Defining models, casts, accessors, soft deletes, persistence. |
 | [Relationships](./docs/relationships.md) | `hasMany`, `belongsTo`, `belongsToMany`, polymorphic, eager loading. |
