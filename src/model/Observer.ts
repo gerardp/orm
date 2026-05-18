@@ -1,6 +1,6 @@
-import type { Model, ModelConstructor } from "./Model.js";
+import type { ModelConstructor } from "./Model.js";
 
-export interface ObserverContract<T extends Model<any> = Model<any>> {
+export interface ObserverContract<T = any> {
   creating?(model: T): Promise<void> | void;
   created?(model: T): Promise<void> | void;
   updating?(model: T): Promise<void> | void;
@@ -19,7 +19,7 @@ const OBSERVER_EVENTS: (keyof ObserverContract)[] = [
   "restoring", "restored",
 ];
 
-export class Observer<T extends Model<any> = Model<any>> implements ObserverContract<T> {
+export class Observer<T = any> implements ObserverContract<T> {
   creating(model: T) {}
   created(model: T) {}
   updating(model: T) {}
@@ -31,7 +31,7 @@ export class Observer<T extends Model<any> = Model<any>> implements ObserverCont
   restoring(model: T) {}
   restored(model: T) {}
 
-  static observe<TModel extends Model<any>, TObserver extends ObserverContract<TModel>>(
+  static observe<TModel, TObserver extends ObserverContract<TModel>>(
     this: new () => TObserver,
     modelClass: ModelConstructor<TModel>,
   ): void {
@@ -43,7 +43,7 @@ export class ObserverRegistry {
   private static observers = new Map<ModelConstructor<any>, ObserverContract[]>();
   private static byEvent = new Map<string, Map<ModelConstructor<any>, ObserverContract<any>[]>>();
 
-  static register<T extends Model<any>>(modelClass: ModelConstructor<T>, observer: ObserverContract<T>): void {
+  static register<T>(modelClass: ModelConstructor<T>, observer: ObserverContract<T>): void {
     if (!this.observers.has(modelClass)) {
       this.observers.set(modelClass, []);
     }
@@ -60,18 +60,18 @@ export class ObserverRegistry {
     }
   }
 
-  static get<T extends Model<any>>(modelClass: ModelConstructor<T>): ObserverContract<T>[] {
+  static get<T>(modelClass: ModelConstructor<T>): ObserverContract<T>[] {
     return this.observers.get(modelClass) || [];
   }
 
-  static unregister<T extends Model<any>>(modelClass: ModelConstructor<T>): void {
+  static unregister<T>(modelClass: ModelConstructor<T>): void {
     this.observers.delete(modelClass);
     for (const map of this.byEvent.values()) {
       map.delete(modelClass);
     }
   }
 
-  static async dispatch<T extends Model<any>>(event: keyof ObserverContract, model: T): Promise<void> {
+  static async dispatch<T>(event: keyof ObserverContract, model: T): Promise<void> {
     const eventMap = this.byEvent.get(event);
     if (!eventMap) return;
     const observers = eventMap.get(Object.getPrototypeOf(model).constructor as ModelConstructor<T>);
