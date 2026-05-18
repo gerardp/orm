@@ -235,6 +235,23 @@ CurriculumObserver.observe(Curriculum);
 
 Query caching is always explicit. Bunny only caches a query when you call `remember()`.
 
+For reusable read paths, a static helper on the model is the cleanest pattern:
+
+```ts
+class Admission extends Model {
+  static cacheAdmissions() {
+    return this.query()
+      .with(["student", "program"])
+      .remember("admissions_with_student_and_program")
+      .cacheTags("admissions_with_student_and_program", "admissions");
+  }
+}
+
+const admissions = await Admission.cacheAdmissions().get();
+```
+
+This keeps the cache key, eager loads, and invalidation tags in one place without inventing a separate caching abstraction.
+
 ```ts
 const curricula = await Curriculum
   .where("active", true)
