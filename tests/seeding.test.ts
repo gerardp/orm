@@ -226,14 +226,14 @@ export default class SecondSeeder extends Seeder {
     expect(await SeedUser.query().count()).toBe(0);
   });
 
-  test("SeederRunner does not open a nested transaction for search_path tenants", async () => {
+  test("SeederRunner opens its own transaction for search_path tenants", async () => {
     const originalCurrent = TenantContext.current;
     const calls: string[] = [];
     const connection = {
       isInTransaction: () => false,
-      transaction: async () => {
+      transaction: async (cb: (c: any) => Promise<unknown>) => {
         calls.push("transaction");
-        throw new Error("should not open transaction");
+        return await cb(connection);
       },
     } as any;
 
@@ -257,7 +257,7 @@ export default class SecondSeeder extends Seeder {
 
     try {
       await new SeederRunner().run(SearchPathSeeder);
-      expect(calls).toEqual(["run"]);
+      expect(calls).toEqual(["transaction", "run"]);
     } finally {
       TenantContext.current = originalCurrent;
     }

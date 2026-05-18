@@ -1,0 +1,610 @@
+import { Builder } from "../query/Builder.js";
+import { ObserverRegistry } from "./Observer.js";
+import { IdentityMap } from "./IdentityMap.js";
+import { ModelNotFoundError } from "./ModelNotFoundError.js";
+import { Collection } from "../support/Collection.js";
+import { findRelationMethod } from "./ModelBase.js";
+import type { ModelConstructor, BulkModelOptions, SaveOptions, ModelAttributeInput } from "./ModelBase.js";
+import { ModelCore } from "./ModelCore.js";
+
+export class ModelPersistence<T extends Record<string, any> = any> extends ModelCore<T> {
+  static async shouldAutoGeneratePrimaryKey(): Promise<boolean> {
+    if ((this as any).usesUuids || this.keyType === "uuid") return true;
+    const { Schema } = await import("../schema/Schema.js");
+    const column = await Schema.getColumn((this as any).getTable(), this.primaryKey);
+    if (!column) return false;
+    if (!column.primary) return false;
+    if (column.autoIncrement) return false;
+    const type = String(column.type || "").toLowerCase();
+    const numericTypes = new Set(["integer", "int", "bigint", "smallint", "tinyint", "real", "float", "double", "decimal", "numeric"]);
+    return !numericTypes.has(type);
+  }
+
+  static async prepareBulkRecords<M extends ModelConstructor>(
+    this: M,
+    records: ModelAttributeInput<InstanceType<M>>[]
+  ): Promise<Record<string, any>[]> {
+    const generatePk = await (this as any).shouldAutoGeneratePrimaryKey();
+    const now = this.timestamps ? new Date().toISOString() : null;
+    const prepared: Record<string, any>[] = [];
+
+    for (const record of records) {
+      const instance = new this() as InstanceType<M>;
+      instance.fill(record as any);
+      const attributes = { ...(instance.$attributes as Record<string, any>) };
+
+      if (now) {
+        if (attributes.created_at === undefined) attributes.created_at = now;
+        if (attributes.updated_at === undefined) attributes.updated_at = now;
+      }
+
+      if (generatePk) {
+        const pk = this.primaryKey;
+        const pkValue = attributes[pk];
+        if (pkValue === null || pkValue === undefined || pkValue === "") {
+          attributes[pk] = crypto.randomUUID();
+        }
+      }
+
+      prepared.push(attributes);
+    }
+    return prepared;
+  }
+
+  static async prepareBulkRecord<M extends ModelConstructor>(
+    this: M,
+    record: ModelAttributeInput<InstanceType<M>>,
+    options: { touchCreatedAt?: boolean; touchUpdatedAt?: boolean; generatePrimaryKey?: boolean } = {}
+  ): Promise<Record<string, any>> {
+    const instance = new this() as InstanceType<M>;
+    instance.fill(record as any);
+    const attributes = { ...(instance.$attributes as Record<string, any>) };
+
+    if (this.timestamps) {
+      const now = instance.freshTimestamp();
+      if (options.touchCreatedAt !== false && attributes.created_at === undefined) attributes.created_at = now;
+      if (options.touchUpdatedAt !== false && attributes.updated_at === undefined) attributes.updated_at = now;
+    }
+
+    if (options.generatePrimaryKey !== false) {
+      const primaryKey = this.primaryKey;
+      const primaryKeyValue = attributes[primaryKey];
+      if ((primaryKeyValue === null || primaryKeyValue === undefined || primaryKeyValue === "") && await (this as any).shouldAutoGeneratePrimaryKey()) {
+        attributes[primaryKey] = crypto.randomUUID();
+      }
+    }
+
+    return attributes;
+  }
+
+  static async withoutTimestamps<M extends ModelConstructor, R>(this: M, callback: () => Promise<R>): Promise<R> {
+    const original = this.timestamps;
+    (this as any).timestamps = false;
+    try {
+      return await callback();
+    } finally {
+      (this as any).timestamps = original;
+    }
+  }
+
+  static hydrate<M extends ModelConstructor>(
+    this: M,
+    row: Record<string, any>,
+    connection?: import("../connection/Connection.js").Connection
+  ): InstanceType<M> {
+    const instance = new this() as InstanceType<M>;
+    instance.$attributes = { ...(instance.$attributes as Record<string, any>), ...row } as any;
+    instance.$original = { ...row } as any;
+    instance.$castCache = {};
+    instance.$dirtyKeys?.clear();
+    instance.$exists = true;
+    if (connection) {
+      instance.setConnection(connection);
+    }
+    return instance;
+  }
+
+  static async create<M extends ModelConstructor>(
+    this: M,
+    attributes: ModelAttributeInput<InstanceType<M>>,
+    options: SaveOptions = {}
+  ): Promise<InstanceType<M>> {
+    const instance = new this() as InstanceType<M>;
+    instance.fill(attributes as any);
+    await instance.save(options);
+    return instance;
+  }
+
+  static async forceCreate<M extends ModelConstructor>(
+    this: M,
+    attributes: ModelAttributeInput<InstanceType<M>>,
+    options: SaveOptions = {}
+  ): Promise<InstanceType<M>> {
+    const instance = new this() as InstanceType<M>;
+    for (const [key, value] of Object.entries(attributes)) {
+      instance.setAttribute(key as any, value as any);
+    }
+    await instance.save(options);
+    return instance;
+  }
+
+  static async truncate<M extends ModelConstructor>(this: M): Promise<void> {
+    const connection = (this as any).getConnection();
+    await connection.run(`DELETE FROM ${connection.qualifyTable((this as any).getTable())}`);
+  }
+
+  static async insert<M extends ModelConstructor>(
+    this: M,
+    records: ModelAttributeInput<InstanceType<M>> | ModelAttributeInput<InstanceType<M>>[],
+    options: Omit<BulkModelOptions, "events"> = {}
+  ): Promise<any> {
+    const prepared = await (this as any).prepareBulkRecords(Array.isArray(records) ? records : [records]);
+    const chunkSize = options.chunkSize || prepared.length || 1;
+    let result: any;
+    for (let i = 0; i < prepared.length; i += chunkSize) {
+      result = await (this as any).query().insert(prepared.slice(i, i + chunkSize) as any);
+    }
+    return result;
+  }
+
+  static async upsert<M extends ModelConstructor>(
+    this: M,
+    records: ModelAttributeInput<InstanceType<M>> | ModelAttributeInput<InstanceType<M>>[],
+    uniqueBy: any | any[],
+    updateColumns?: any[],
+    options: Omit<BulkModelOptions, "events"> = {}
+  ): Promise<any> {
+    const prepared = await (this as any).prepareBulkRecords(Array.isArray(records) ? records : [records]);
+    const chunkSize = options.chunkSize || prepared.length || 1;
+    let columns = updateColumns;
+    if (!columns && this.timestamps) {
+      const uniqueColumns = new Set(Array.isArray(uniqueBy) ? uniqueBy : [uniqueBy]);
+      columns = Object.keys(prepared[0] || {}).filter((column) => column !== "created_at" && !uniqueColumns.has(column as any)) as any;
+    }
+    let result: any;
+    for (let i = 0; i < prepared.length; i += chunkSize) {
+      result = await (this as any).query().upsert(prepared.slice(i, i + chunkSize) as any, uniqueBy as any, columns as any);
+    }
+    return result;
+  }
+
+  static async updateOrInsert<M extends ModelConstructor>(
+    this: M,
+    attributes: ModelAttributeInput<InstanceType<M>>,
+    values: ModelAttributeInput<InstanceType<M>> = {}
+  ): Promise<boolean> {
+    const exists = await (this as any).where(attributes).exists();
+    if (exists) {
+      const update = await (this as any).prepareBulkRecord(values, { touchUpdatedAt: true, touchCreatedAt: false, generatePrimaryKey: false });
+      await (this as any).where(attributes).update(update as any);
+      return true;
+    }
+    await (this as any).insert({ ...attributes, ...values } as any);
+    return true;
+  }
+
+  static async createMany<M extends ModelConstructor>(
+    this: M,
+    records: ModelAttributeInput<InstanceType<M>>[],
+    options: BulkModelOptions = {}
+  ): Promise<InstanceType<M>[]> {
+    const models = records.map((attributes) => new this(attributes) as InstanceType<M>);
+    await (this as any).saveMany(models, options);
+    return models;
+  }
+
+  static async saveMany<M extends ModelConstructor>(
+    this: M,
+    models: InstanceType<M>[],
+    options: BulkModelOptions = {}
+  ): Promise<InstanceType<M>[]> {
+    const chunkSize = options.chunkSize || models.length || 1;
+    const events = options.events !== false;
+    if (events) {
+      for (const model of models) {
+        await model.save();
+      }
+      return models;
+    }
+
+    for (let i = 0; i < models.length; i += chunkSize) {
+      const chunk = models.slice(i, i + chunkSize);
+      const newModels = chunk.filter((model) => !model.$exists);
+      const existingModels = chunk.filter((model) => model.$exists);
+
+      if (newModels.length > 0) {
+        const shouldGeneratePrimaryKey = await (this as any).shouldAutoGeneratePrimaryKey();
+        const bulkModels: InstanceType<M>[] = [];
+        for (const model of newModels) {
+          const pk = model.getAttribute(this.primaryKey);
+          if (!shouldGeneratePrimaryKey && (pk === null || pk === undefined || pk === "")) {
+            const record = await (this as any).prepareBulkRecord(model.$attributes as any);
+            const id = await (this as any).query().insertGetId(record as any);
+            if (id) record[this.primaryKey] = id;
+            model.$attributes = record as any;
+            model.$original = { ...record } as any;
+            model.$dirtyKeys?.clear();
+            model.$exists = true;
+          } else {
+            bulkModels.push(model);
+          }
+        }
+
+        if (bulkModels.length > 0) {
+          const records = await (this as any).prepareBulkRecords(bulkModels.map((model) => model.$attributes as any));
+          await (this as any).query().insert(records as any);
+          for (let index = 0; index < bulkModels.length; index++) {
+            bulkModels[index].$attributes = records[index] as any;
+            bulkModels[index].$original = { ...records[index] } as any;
+            bulkModels[index].$dirtyKeys?.clear();
+            bulkModels[index].$exists = true;
+          }
+        }
+      }
+
+      for (const model of existingModels) {
+        let dirty = model.getDirty();
+        if (Object.keys(dirty).length > 0 && this.timestamps) {
+          const now = model.freshTimestamp();
+          (model.$attributes as any).updated_at = now;
+          delete model.$castCache.updated_at;
+          dirty["updated_at"] = now;
+        }
+        if (Object.keys(dirty).length === 0) continue;
+        await (this as any).query().where(this.primaryKey, model.getAttribute(this.primaryKey)).update(dirty as any);
+        model.$original = { ...model.$attributes };
+        model.$dirtyKeys?.clear();
+      }
+    }
+    return models;
+  }
+
+  static async find<M extends ModelConstructor>(this: M, id: any): Promise<InstanceType<M> | null> {
+    return (this as any).query().find(id, this.primaryKey);
+  }
+
+  static async findMany<M extends ModelConstructor>(this: M, ids: any[]): Promise<Collection<InstanceType<M>>> {
+    return (this as any).query().findMany(ids, this.primaryKey);
+  }
+
+  static async findOrFail<M extends ModelConstructor>(this: M, id: any): Promise<InstanceType<M>> {
+    const result = await (this as any).find(id);
+    if (!result) {
+      throw new ModelNotFoundError(this.name, id);
+    }
+    return result;
+  }
+
+  static async first<M extends ModelConstructor>(this: M): Promise<InstanceType<M> | null> {
+    return (this as any).query().first();
+  }
+
+  static firstWhere<M extends ModelConstructor>(this: M, column: any, operator: any, value?: any): Promise<InstanceType<M> | null> {
+    return (this as any).query().firstWhere(column, operator, value);
+  }
+
+  static async firstOrFail<M extends ModelConstructor>(this: M): Promise<InstanceType<M>> {
+    const result = await (this as any).first();
+    if (!result) {
+      throw new ModelNotFoundError(this.name);
+    }
+    return result;
+  }
+
+  static async firstOrNew<M extends ModelConstructor>(
+    this: M,
+    attributes: ModelAttributeInput<InstanceType<M>> = {},
+    values: ModelAttributeInput<InstanceType<M>> = {}
+  ): Promise<InstanceType<M>> {
+    const found = await (this as any).where(attributes).first();
+    if (found) return found;
+    return new this({ ...attributes, ...values } as any) as InstanceType<M>;
+  }
+
+  static async firstOrCreate<M extends ModelConstructor>(
+    this: M,
+    attributes: ModelAttributeInput<InstanceType<M>> = {},
+    values: ModelAttributeInput<InstanceType<M>> = {}
+  ): Promise<InstanceType<M>> {
+    const found = await (this as any).where(attributes).first();
+    if (found) return found;
+    return (this as any).create({ ...attributes, ...values } as any);
+  }
+
+  static async updateOrCreate<M extends ModelConstructor>(
+    this: M,
+    attributes: ModelAttributeInput<InstanceType<M>>,
+    values: ModelAttributeInput<InstanceType<M>> = {}
+  ): Promise<InstanceType<M>> {
+    const found = await (this as any).where(attributes).first();
+    if (found) {
+      found.fill(values);
+      await found.save();
+      return found;
+    }
+    return (this as any).create({ ...attributes, ...values } as any);
+  }
+
+  // Instance persistence methods
+  async save(options: SaveOptions = {}): Promise<this> {
+    const constructor = this.getModelConstructor() as typeof ModelPersistence;
+    const events = options.events !== false;
+
+    if (this.$exists) {
+      this.$wasRecentlyCreated = false;
+      if (events) await ObserverRegistry.dispatch("saving", this as any);
+
+      let dirty = this.getDirty();
+      if (Object.keys(dirty).length > 0 && constructor.timestamps) {
+        const now = this.freshTimestamp();
+        (this.$attributes as any)["updated_at"] = now;
+        delete this.$castCache.updated_at;
+        (dirty as any)["updated_at"] = now;
+      }
+      if (Object.keys(dirty).length > 0) {
+        if (events) await ObserverRegistry.dispatch("updating", this as any);
+        const pk = this.getAttribute(constructor.primaryKey);
+        const connection = this.getConnection();
+        await new Builder(connection, connection.qualifyTable(constructor.getTable()))
+          .where(constructor.primaryKey, pk)
+          .update(dirty);
+        this.$changes = { ...dirty };
+        if (events) await ObserverRegistry.dispatch("updated", this as any);
+      } else {
+        this.$changes = {};
+      }
+
+      this.$original = { ...this.$attributes };
+      this.$dirtyKeys?.clear();
+
+      if (events) await ObserverRegistry.dispatch("saved", this as any);
+    } else {
+      if (events) await ObserverRegistry.dispatch("creating", this as any);
+      if (events) await ObserverRegistry.dispatch("saving", this as any);
+
+      if (constructor.timestamps) {
+        const now = this.freshTimestamp();
+        (this.$attributes as any)["created_at"] = now;
+        (this.$attributes as any)["updated_at"] = now;
+        delete this.$castCache.created_at;
+        delete this.$castCache.updated_at;
+      }
+
+      const primaryKey = constructor.primaryKey;
+      const primaryKeyValue = this.getAttribute(primaryKey);
+      const shouldGeneratePrimaryKey = await constructor.shouldAutoGeneratePrimaryKey();
+      if ((primaryKeyValue === null || primaryKeyValue === undefined || primaryKeyValue === "") && shouldGeneratePrimaryKey) {
+        const generated = crypto.randomUUID();
+        (this.$attributes as any)[primaryKey] = generated;
+        delete this.$castCache[primaryKey];
+      }
+
+      const connection = this.getConnection();
+      if (shouldGeneratePrimaryKey || primaryKeyValue !== null && primaryKeyValue !== undefined && primaryKeyValue !== "") {
+        await new Builder(connection, connection.qualifyTable(constructor.getTable())).insert(this.$attributes);
+      } else {
+        const result = await new Builder(connection, connection.qualifyTable(constructor.getTable())).insertGetId(this.$attributes);
+        if (result) {
+          (this.$attributes as any)[constructor.primaryKey] = result;
+          delete this.$castCache[constructor.primaryKey];
+        }
+      }
+
+      this.$exists = true;
+      this.$wasRecentlyCreated = true;
+      this.$original = { ...this.$attributes };
+      this.$changes = {};
+      this.$dirtyKeys?.clear();
+
+      if (events) await ObserverRegistry.dispatch("created", this as any);
+      if (events) await ObserverRegistry.dispatch("saved", this as any);
+    }
+
+    const identityMap = IdentityMap.current();
+    if (identityMap) {
+      const pk = this.getAttribute(constructor.primaryKey);
+      if (pk !== null && pk !== undefined && pk !== "") {
+        IdentityMap.set(constructor.getTable(), pk, this as any);
+      }
+    }
+
+    await this.touchOwners();
+
+    return this;
+  }
+
+  async update(attributes: Partial<T> | ModelAttributeInput<this>, options: SaveOptions = {}): Promise<this> {
+    this.fill(attributes);
+    return this.save(options);
+  }
+
+  private async touchOwners(): Promise<void> {
+    const constructor = this.getModelConstructor() as typeof ModelPersistence;
+    const touches = constructor.touches || [];
+    for (const relationName of touches) {
+      const method = findRelationMethod(this, relationName);
+      if (!method) continue;
+      const relation = method.call(this);
+      if (relation && typeof relation.getResults === "function") {
+        const related = await relation.getResults();
+        if (related && typeof (related as any).touch === "function") {
+          await (related as any).touch();
+        }
+      }
+    }
+  }
+
+  saveQuietly(): Promise<this> {
+    return this.save({ events: false });
+  }
+
+  async touch(): Promise<boolean> {
+    if (!this.$exists) return false;
+    const constructor = this.getModelConstructor() as typeof ModelPersistence;
+    if (!constructor.timestamps) return false;
+    const now = this.freshTimestamp();
+    const pk = this.getAttribute(constructor.primaryKey);
+    const connection = this.getConnection();
+    await new Builder(connection, connection.qualifyTable(constructor.getTable()))
+      .where(constructor.primaryKey, pk)
+      .update({ updated_at: now } as any);
+    (this.$attributes as any)["updated_at"] = now;
+    delete this.$castCache.updated_at;
+    this.$original = { ...this.$attributes };
+    this.$dirtyKeys?.clear();
+    return true;
+  }
+
+  async increment<K extends string>(column: K, amount: number = 1, extra: Record<string, any> = {}): Promise<this> {
+    const constructor = this.getModelConstructor() as typeof ModelPersistence;
+    const pk = this.getAttribute(constructor.primaryKey);
+    if (!pk) return this;
+
+    const connection = this.getConnection();
+    const builder = new Builder(connection, connection.qualifyTable(constructor.getTable()))
+      .where(constructor.primaryKey, pk);
+
+    if (constructor.timestamps) {
+      extra = { ...extra, updated_at: this.freshTimestamp() };
+    }
+
+    await builder.increment(column, amount, extra);
+    (this.$attributes as any)[column] = ((this.$attributes as any)[column] || 0) + amount;
+    delete this.$castCache[column as string];
+    for (const [key, value] of Object.entries(extra)) {
+      (this.$attributes as any)[key] = value;
+      delete this.$castCache[key];
+    }
+    this.$original = { ...this.$attributes };
+    this.$dirtyKeys?.clear();
+    return this;
+  }
+
+  async decrement<K extends string>(column: K, amount: number = 1, extra: Record<string, any> = {}): Promise<this> {
+    return this.increment(column, -amount, extra);
+  }
+
+  async delete(): Promise<boolean> {
+    const constructor = this.getModelConstructor() as typeof ModelPersistence;
+    const pk = this.getAttribute(constructor.primaryKey);
+    if (!pk) return false;
+    await ObserverRegistry.dispatch("deleting", this as any);
+
+    if (constructor.softDeletes) {
+      const deletedAt = this.freshTimestamp();
+      const connection = this.getConnection();
+      await new Builder(connection, connection.qualifyTable(constructor.getTable()))
+        .where(constructor.primaryKey, pk)
+        .update({ [constructor.deletedAtColumn]: deletedAt } as any);
+      (this.$attributes as any)[constructor.deletedAtColumn] = deletedAt;
+      delete this.$castCache[constructor.deletedAtColumn];
+      this.$original = { ...this.$attributes };
+      this.$dirtyKeys?.clear();
+    } else {
+      const connection = this.getConnection();
+      await new Builder(connection, connection.qualifyTable(constructor.getTable()))
+        .where(constructor.primaryKey, pk)
+        .delete();
+      this.$exists = false;
+      this.$dirtyKeys?.clear();
+    }
+
+    const identityMap = IdentityMap.current();
+    if (identityMap) {
+      IdentityMap.delete(constructor.getTable(), pk);
+    }
+
+    await ObserverRegistry.dispatch("deleted", this as any);
+    return true;
+  }
+
+  async deleteQuietly(): Promise<boolean> {
+    const constructor = this.getModelConstructor() as typeof ModelPersistence;
+    const pk = this.getAttribute(constructor.primaryKey);
+    if (!pk) return false;
+
+    if (constructor.softDeletes) {
+      const deletedAt = this.freshTimestamp();
+      const connection = this.getConnection();
+      await new Builder(connection, connection.qualifyTable(constructor.getTable()))
+        .where(constructor.primaryKey, pk)
+        .update({ [constructor.deletedAtColumn]: deletedAt } as any);
+      (this.$attributes as any)[constructor.deletedAtColumn] = deletedAt;
+      delete this.$castCache[constructor.deletedAtColumn];
+      this.$original = { ...this.$attributes };
+      this.$dirtyKeys?.clear();
+    } else {
+      const connection = this.getConnection();
+      await new Builder(connection, connection.qualifyTable(constructor.getTable()))
+        .where(constructor.primaryKey, pk)
+        .delete();
+      this.$exists = false;
+      this.$dirtyKeys?.clear();
+    }
+
+    const identityMap = IdentityMap.current();
+    if (identityMap) IdentityMap.delete(constructor.getTable(), pk);
+
+    return true;
+  }
+
+  async restore(): Promise<boolean> {
+    const constructor = this.getModelConstructor() as typeof ModelPersistence;
+    if (!constructor.softDeletes) return false;
+    const pk = this.getAttribute(constructor.primaryKey);
+    if (!pk) return false;
+
+    const connection = this.getConnection();
+    await new Builder(connection, connection.qualifyTable(constructor.getTable()))
+      .where(constructor.primaryKey, pk)
+      .update({ [constructor.deletedAtColumn]: null } as any);
+    (this.$attributes as any)[constructor.deletedAtColumn] = null;
+    delete this.$castCache[constructor.deletedAtColumn];
+    this.$original = { ...this.$attributes };
+    this.$dirtyKeys?.clear();
+    this.$exists = true;
+    return true;
+  }
+
+  async forceDelete(): Promise<boolean> {
+    const constructor = this.getModelConstructor() as typeof ModelPersistence;
+    const pk = this.getAttribute(constructor.primaryKey);
+    if (!pk) return false;
+    const connection = this.getConnection();
+    await new Builder(connection, connection.qualifyTable(constructor.getTable()))
+      .where(constructor.primaryKey, pk)
+      .delete();
+    this.$exists = false;
+    this.$dirtyKeys?.clear();
+
+    const identityMap = IdentityMap.current();
+    if (identityMap) {
+      IdentityMap.delete(constructor.getTable(), pk);
+    }
+
+    return true;
+  }
+
+  async refresh(): Promise<this> {
+    const constructor = this.getModelConstructor() as typeof ModelPersistence;
+    const pk = this.getAttribute(constructor.primaryKey);
+    if (!pk) return this;
+
+    const identityMap = IdentityMap.current();
+    if (identityMap) {
+      IdentityMap.delete(constructor.getTable(), pk);
+    }
+
+    const result = await constructor.find(pk);
+    if (result) {
+      this.$attributes = result.$attributes as T;
+      this.$original = { ...result.$attributes } as Partial<T>;
+      this.$castCache = {};
+      this.$dirtyKeys?.clear();
+      if (identityMap) {
+        IdentityMap.set(constructor.getTable(), pk, this as any);
+      }
+    }
+    return this;
+  }
+}

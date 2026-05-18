@@ -19,7 +19,7 @@ function getModelConstructor(model: Model): typeof Model {
   return Object.getPrototypeOf(model).constructor as typeof Model;
 }
 
-export class MorphTo<T extends Model = Model> {
+export class MorphTo<T extends Record<string, any> = Model> {
   protected parent: Model;
   protected name: string;
   protected typeColumn: string;
@@ -180,7 +180,7 @@ export class MorphTo<T extends Model = Model> {
   }
 }
 
-export class MorphOne<T extends Model = Model, N extends string = string, Fixed extends string = never> {
+export class MorphOne<T extends Record<string, any> = Model, N extends string = string, Fixed extends string = never> {
   protected builder: Builder<T>;
   protected parent: Model;
   protected related: ModelConstructor;
@@ -331,7 +331,7 @@ export class MorphOne<T extends Model = Model, N extends string = string, Fixed 
   }
 }
 
-export class MorphMany<T extends Model = Model, N extends string = string, Fixed extends string = never> {
+export class MorphMany<T extends Record<string, any> = Model, N extends string = string, Fixed extends string = never> {
   protected builder: Builder<T>;
   protected parent: Model;
   protected related: ModelConstructor;
@@ -492,7 +492,7 @@ export class MorphMany<T extends Model = Model, N extends string = string, Fixed
 }
 
 export class MorphToMany<
-  T extends Model = Model,
+  T extends Record<string, any> = Model,
   N extends string = string,
   RelatedFixed extends string = never,
   PivotFixed extends string = never

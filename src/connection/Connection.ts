@@ -13,9 +13,13 @@ export class Connection {
   private schema?: string;
   private ownsDriver: boolean;
   private transactionDepth = 0;
+  private transactionActive = false;
+  private transactionRoot = false;
   private savepointId = 0;
+  private dedicated = false;
   private reservedDriver?: SQL & { release?: () => void };
   static logQueries = false;
+  static defaultPostgresPoolMax = 10;
   logQueries?: boolean;
 
   constructor(config: ConnectionConfig, options: { driver?: SQL; schema?: string; ownsDriver?: boolean } = {}) {
@@ -48,9 +52,10 @@ export class Connection {
       }
 
       const prepare = config.prepare ?? (this.driverName === "postgres" ? false : undefined);
+      const max = config.max ?? (this.driverName === "postgres" ? Connection.defaultPostgresPoolMax : undefined);
       return new SQL({
         url,
-        ...(config.max !== undefined ? { max: config.max } : {}),
+        ...(max !== undefined ? { max } : {}),
         ...(prepare !== undefined ? { prepare } : {}),
       });
     })();
@@ -163,8 +168,8 @@ export class Connection {
   }
 
   async beginTransaction(): Promise<void> {
-    if (this.transactionDepth === 0) {
-      if (this.driverName === "postgres") {
+    if (this.transactionDepth === 0 && !this.transactionActive) {
+      if (this.driverName === "postgres" && !this.dedicated) {
         this.reservedDriver = await (this.driver as any).reserve();
       }
       try {
@@ -173,9 +178,13 @@ export class Connection {
         this.releaseReservedDriver();
         throw error;
       }
-    } else {
-      await this.getDriver().unsafe(`SAVEPOINT bunny_trans_${++this.savepointId}`);
+      this.transactionActive = true;
+      this.transactionRoot = true;
+      this.transactionDepth = 1;
+      return;
     }
+
+    await this.getDriver().unsafe(`SAVEPOINT bunny_trans_${++this.savepointId}`);
     this.transactionDepth++;
   }
 
@@ -186,7 +195,7 @@ export class Connection {
 
   async commit(): Promise<void> {
     if (this.transactionDepth <= 0) return;
-    if (this.transactionDepth === 1) {
+    if (this.transactionDepth === 1 && this.transactionRoot) {
       try {
         await this.getDriver().unsafe("COMMIT");
       } catch (error) {
@@ -194,6 +203,8 @@ export class Connection {
         throw error;
       } finally {
         this.transactionDepth = 0;
+        this.transactionActive = false;
+        this.transactionRoot = false;
         this.releaseReservedDriver();
       }
     } else {
@@ -204,11 +215,13 @@ export class Connection {
 
   async rollback(): Promise<void> {
     if (this.transactionDepth <= 0) return;
-    if (this.transactionDepth === 1) {
+    if (this.transactionDepth === 1 && this.transactionRoot) {
       try {
         await this.getDriver().unsafe("ROLLBACK");
       } finally {
         this.transactionDepth = 0;
+        this.transactionActive = false;
+        this.transactionRoot = false;
         this.releaseReservedDriver();
       }
     } else {
@@ -219,13 +232,45 @@ export class Connection {
   }
 
   isInTransaction(): boolean {
-    return this.transactionDepth > 0;
+    return this.transactionActive || this.transactionDepth > 0;
   }
 
   async transaction<T>(callback: (connection: Connection) => T | Promise<T>): Promise<T> {
     if (!this.ownsDriver) {
+      // A borrowed connection can be either transaction-rooted already or
+      // still outside any transaction. Track that separately from nesting
+      // depth so a root transaction starts with BEGIN and nested calls use
+      // SAVEPOINTs.
+      if (!this.transactionActive) {
+        if (this.driverName === "postgres" && !this.dedicated) {
+          this.reservedDriver = await (this.driver as any).reserve();
+        }
+        try {
+          await this.getDriver().unsafe("BEGIN");
+        } catch (error) {
+          this.releaseReservedDriver();
+          throw error;
+        }
+        this.transactionActive = true;
+        this.transactionRoot = true;
+        this.transactionDepth = 1;
+        try {
+          const result = await callback(this);
+          await this.getDriver().unsafe("COMMIT");
+          return result;
+        } catch (error) {
+          await this.getDriver().unsafe("ROLLBACK").catch(() => null);
+          throw error;
+        } finally {
+          this.transactionDepth = 0;
+          this.transactionActive = false;
+          this.transactionRoot = false;
+          this.releaseReservedDriver();
+        }
+      }
       const savepointName = `bunny_trans_${++this.savepointId}`;
       await this.getDriver().unsafe(`SAVEPOINT ${savepointName}`);
+      this.transactionDepth++;
       try {
         const result = await callback(this);
         await this.getDriver().unsafe(`RELEASE SAVEPOINT ${savepointName}`);
@@ -235,6 +280,8 @@ export class Connection {
         await this.getDriver().unsafe(`RELEASE SAVEPOINT ${savepointName}`).catch(() => null);
         this.savepointId--;
         throw error;
+      } finally {
+        this.transactionDepth--;
       }
     }
     return await this.driver.begin(async (sql) => {
@@ -244,7 +291,13 @@ export class Connection {
         ownsDriver: false,
       });
       connection.logQueries = this.logQueries;
-      return await callback(connection);
+      connection.transactionActive = true;
+      connection.transactionRoot = false;
+      try {
+        return await callback(connection);
+      } finally {
+        connection.transactionActive = false;
+      }
     });
   }
 
@@ -277,10 +330,25 @@ export class Connection {
       throw new Error("search_path schema switching is only supported for PostgreSQL connections.");
     }
     Connection.assertSafeIdentifier(schema, "schema name");
-    return await this.transaction(async (connection) => {
-      await connection.run(`SET LOCAL search_path TO ${connection.quoteIdentifier(schema)}`);
-      return await callback(connection);
+    // Reserve a dedicated connection (no surrounding transaction) and set the
+    // search_path at session scope. Avoids pinning the request inside one long
+    // transaction (lock hold / idle-in-transaction). The connection is still
+    // dedicated for the callback's duration, then reset and released.
+    const reserved = (await (this.driver as any).reserve()) as SQL & { release?: () => void };
+    const connection = new Connection(this.config, {
+      driver: reserved as unknown as SQL,
+      schema: this.schema,
+      ownsDriver: false,
     });
+    connection.logQueries = this.logQueries;
+    connection.dedicated = true;
+    try {
+      await connection.run(`SET search_path TO ${connection.quoteIdentifier(schema)}`);
+      return await callback(connection);
+    } finally {
+      await connection.run("RESET search_path").catch(() => null);
+      reserved.release?.();
+    }
   }
 
   async close(): Promise<void> {

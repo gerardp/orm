@@ -47,6 +47,8 @@
   "scripts": {
     "build": "tsc",
     "prepack": "bun run build",
+    "test": "bun test --path-ignore-patterns='**/benchmark*'",
+    "bench": "bun test tests/benchmark*.test.ts",
     "migrate": "bun run bin/bunny.ts migrate",
     "migrate:make": "bun run bin/bunny.ts migrate:make",
     "migrate:rollback": "bun run bin/bunny.ts migrate:rollback",

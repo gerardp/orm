@@ -13,7 +13,7 @@ function defaultPivotTable(parent: Model, related: ModelConstructor): string {
   return `${names[0]}_${names[1]}`;
 }
 
-export class BelongsToMany<T extends Model = Model, RelatedFixed extends string = never, PivotFixed extends string = never> {
+export class BelongsToMany<T extends Record<string, any> = Model, RelatedFixed extends string = never, PivotFixed extends string = never> {
   protected parent: Model;
   protected related: ModelConstructor;
   protected table: string;

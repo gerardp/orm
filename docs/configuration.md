@@ -112,6 +112,41 @@ connection: { driver: "sqlite", filename: "./app.db" }
 
 For PostgreSQL, `prepare` defaults to `false`. Bunny generates dynamic SQL for model queries, validation checks, migrations, and schema-qualified tenant queries; disabling named prepared statements avoids intermittent stale-plan errors after schema changes or when a long-running server reuses pooled connections. Set `prepare: true` only when you know your Postgres deployment benefits from Bun's persisted named prepared statements and your query result shapes are stable.
 
+For PostgreSQL, the pool `max` defaults to `10` when unset (`Connection.defaultPostgresPoolMax`). Override per-connection with `max`, or globally before constructing connections:
+
+```ts
+import { Connection } from "@bunnykit/orm";
+Connection.defaultPostgresPoolMax = 20;
+```
+
+### Multi-tenant connection budget
+
+Each distinct connection opens its **own** pool of up to `max` sockets. Postgres `max_connections` defaults to 100, so the ceiling is roughly:
+
+```
+total sockets ≈ (number of distinct connections) × max
+```
+
+Strategy implications:
+
+- **`qualify`** (recommended for high concurrency): all tenants share the base connection's pool — table names are schema-prefixed (`tenant_x.users`). One pool total. No connection pinned per request. Best scalability.
+- **`search_path`**: correctness-isolated via a per-request transaction. **One pool connection is pinned for the entire request duration** (including any external I/O inside the handler). Concurrent requests must stay below `max`. Keep handlers fast; prefer `qualify` unless you need raw-SQL/`search_path` isolation.
+- **`database`**: each distinct tenant database gets its **own pool**. `T` tenants ⇒ `T × max` sockets — this exhausts `max_connections` fast. Mitigate with TTL + the eviction sweep:
+
+```ts
+import { ConnectionManager } from "@bunnykit/orm";
+
+// Idle per-tenant pools expire after 5 min (applies to database-strategy
+// contexts that own their pool; a resolution-level `ttl` always wins).
+ConnectionManager.defaultTenantTtl = 5 * 60_000;
+
+// Opt-in background sweep that closes expired tenant pools. The timer is
+// unref'd (never keeps the process alive). Call once at startup.
+ConnectionManager.enableTenantSweep(60_000);
+```
+
+Without the sweep, expired `database`-strategy pools are only reclaimed lazily the next time that same tenant is resolved — idle tenants in between keep their sockets open until `ConnectionManager.closeAll()`.
+
 ## `migrationsPath` vs `migrations`
 
 There are two shapes for declaring where migration files live.

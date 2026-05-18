@@ -57,7 +57,11 @@ export class SeederRunner {
   private async runAtomic<T>(callback: (connection: Connection) => T | Promise<T>): Promise<T> {
     const connection = this.getConnection();
     const context = TenantContext.current();
-    const usesTenantTransaction = context?.strategy === "schema" && context.schemaMode === "search_path" || context?.strategy === "rls";
+    // rls runs inside withTenant()'s transaction, so the seeder must not open
+    // another. search_path is no longer transactional (reserved connection,
+    // session-scoped SET) — the seeder opens its own real transaction on the
+    // dedicated connection for atomicity.
+    const usesTenantTransaction = context?.strategy === "rls";
     const previousDefaultConnection = ConnectionManager.getDefault();
 
     const bind = async (boundConnection: Connection, runner: () => T | Promise<T>): Promise<T> => {

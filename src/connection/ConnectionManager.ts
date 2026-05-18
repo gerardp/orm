@@ -23,6 +23,36 @@ export class ConnectionManager {
   private static connections = new Map<string, Connection>();
   private static tenantResolver?: TenantResolver;
   private static tenantCache = new Map<string, ActiveTenantContext>();
+  private static sweepTimer?: ReturnType<typeof setInterval>;
+
+  /**
+   * Default TTL (ms) applied to tenant contexts that own their own connection
+   * pool (the `database` strategy). Prevents idle per-tenant pools from
+   * accumulating indefinitely. `null`/`undefined` = no default (legacy behavior).
+   * A resolution-level `ttl` always overrides this.
+   */
+  static defaultTenantTtl?: number;
+
+  /**
+   * Start a background sweep that closes expired tenant contexts so idle
+   * per-tenant connection pools are reclaimed. Opt-in (no global timers by
+   * default). The timer is `unref`'d so it never keeps the process alive.
+   */
+  static enableTenantSweep(intervalMs = 60_000): void {
+    this.disableTenantSweep();
+    const timer = setInterval(() => {
+      void this.purgeExpiredTenants({ close: true }).catch(() => {});
+    }, intervalMs);
+    (timer as any).unref?.();
+    this.sweepTimer = timer;
+  }
+
+  static disableTenantSweep(): void {
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = undefined;
+    }
+  }
 
   static setDefault(connection: Connection): void {
     this.defaultConnection = connection;
@@ -96,13 +126,15 @@ export class ConnectionManager {
       connection = connection.withSchema(schema);
     }
 
+    const effectiveTtl = policy.ttl ?? (ownsConnection ? this.defaultTenantTtl : undefined);
+
     const context: ActiveTenantContext = {
       tenantId,
       connection,
       connectionName: resolution.name,
       strategy: resolution.strategy,
       resolvedAt,
-      expiresAt: policy.ttl ? resolvedAt + policy.ttl : undefined,
+      expiresAt: effectiveTtl ? resolvedAt + effectiveTtl : undefined,
       closeOnPurge: policy.closeOnPurge ?? ownsConnection,
       ownsConnection,
       schema,
@@ -161,6 +193,7 @@ export class ConnectionManager {
     const connections = new Set<Connection>(this.connections.values());
     if (this.defaultConnection) connections.add(this.defaultConnection);
 
+    this.disableTenantSweep();
     this.connections.clear();
     this.tenantCache.clear();
     this.defaultConnection = undefined;
