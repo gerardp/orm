@@ -28,6 +28,7 @@ export class BelongsToMany<T extends Model = Model, RelatedFixed extends string 
   protected pivotWheres: Array<{ column: string; operator: string; value: any; boolean: "and" | "or" }> = [];
   protected extraConstraints: Array<(builder: Builder<T>) => void> = [];
   protected pivotAccessor = "pivot";
+  protected $skipEagerQuery = false;
 
   protected decoratePivotQuery(builder: Builder<any>): Builder<any> & PivotQueryBuilder {
     const query = builder as Builder<any> & PivotQueryBuilder;
@@ -360,7 +361,8 @@ export class BelongsToMany<T extends Model = Model, RelatedFixed extends string 
   }
 
   addEagerConstraints(models: Model[]): void {
-    const keys = models.map((m) => m.getAttribute(this.parentKey));
+    const keys = models.map((m) => m.getAttribute(this.parentKey)).filter((k) => k != null);
+    if (keys.length === 0) { this.$skipEagerQuery = true; return; }
     this.builder = this.decoratePivotQuery((this.related as any).on(this.parent.getConnection()));
     const relatedTable = this.related.getTable();
     const pivotSelect = this.getPivotSelectColumns();
@@ -377,6 +379,7 @@ export class BelongsToMany<T extends Model = Model, RelatedFixed extends string 
   }
 
   async getEager(): Promise<Collection<any>> {
+    if (this.$skipEagerQuery) return new Collection<any>([]);
     return this.builder.get();
   }
 

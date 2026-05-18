@@ -36,6 +36,25 @@ describe("Connection", () => {
     expect(rows[0].name).toBe("Alice");
   });
 
+  test("normalizes Date bindings to ISO strings", async () => {
+    const calls: any[][] = [];
+    const driver = {
+      unsafe(_sql: string, bindings?: any[]) {
+        calls.push(bindings ?? []);
+        return [];
+      },
+    };
+    const conn = new Connection({ url: "postgres://user:pass@localhost:5432/db" }, { driver: driver as any });
+    const date = new Date("2026-05-17T00:00:00.000+08:00");
+
+    await conn.query("SELECT $1", [date, [date]]);
+
+    expect(calls[0]).toEqual([
+      "2026-05-16T16:00:00.000Z",
+      ["2026-05-16T16:00:00.000Z"],
+    ]);
+  });
+
   test("supports transactions", async () => {
     const conn = new Connection({ url: "sqlite://:memory:" });
     await conn.run("CREATE TABLE tx_test (id INTEGER PRIMARY KEY)");

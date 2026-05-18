@@ -159,7 +159,7 @@ import User from "../src/models/User";
 import UserObserver from "../src/observers/UserObserver";
 
 beforeEach(() => {
-  ObserverRegistry.register(User, new UserObserver());
+  UserObserver.observe(User);
 });
 
 afterEach(() => {

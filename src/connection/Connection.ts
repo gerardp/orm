@@ -42,9 +42,18 @@ export class Connection {
       : url.startsWith("mysql")
       ? "mysql"
       : "postgres";
-    this.driver = options.driver || (this.driverName !== "sqlite" && config.max !== undefined
-      ? new SQL({ url, max: config.max })
-      : new SQL(url));
+    this.driver = options.driver || (() => {
+      if (this.driverName === "sqlite") {
+        return new SQL(url);
+      }
+
+      const prepare = config.prepare ?? (this.driverName === "postgres" ? false : undefined);
+      return new SQL({
+        url,
+        ...(config.max !== undefined ? { max: config.max } : {}),
+        ...(prepare !== undefined ? { prepare } : {}),
+      });
+    })();
 
     switch (this.driverName) {
       case "sqlite":
@@ -131,14 +140,26 @@ export class Connection {
     }
   }
 
+  private normalizeBinding(value: any): any {
+    if (value instanceof Date) return value.toISOString();
+    if (Array.isArray(value)) return value.map((item) => this.normalizeBinding(item));
+    return value;
+  }
+
+  private normalizeBindings(bindings?: any[]): any[] | undefined {
+    return bindings?.map((binding) => this.normalizeBinding(binding));
+  }
+
   async query(sqlString: string, bindings?: any[]): Promise<any[]> {
-    this.log(sqlString, bindings);
-    return (await this.getDriver().unsafe(sqlString, bindings)) as any[];
+    const normalizedBindings = this.normalizeBindings(bindings);
+    this.log(sqlString, normalizedBindings);
+    return (await this.getDriver().unsafe(sqlString, normalizedBindings)) as any[];
   }
 
   async run(sqlString: string, bindings?: any[]): Promise<any> {
-    this.log(sqlString, bindings);
-    return await this.getDriver().unsafe(sqlString, bindings);
+    const normalizedBindings = this.normalizeBindings(bindings);
+    this.log(sqlString, normalizedBindings);
+    return await this.getDriver().unsafe(sqlString, normalizedBindings);
   }
 
   async beginTransaction(): Promise<void> {

@@ -1,6 +1,8 @@
 import { expect, test, describe, beforeAll } from "bun:test";
-import { Model, Schema, ObserverRegistry } from "../src/index.js";
+import { Model, Schema, Observer, ObserverRegistry } from "../src/index.js";
 import { setupTestDb } from "./helpers.js";
+
+function expectType<T>(_value: T): void {}
 
 class ObservedUser extends Model {
   static table = "observed_users";
@@ -14,6 +16,10 @@ class UnsavedDeleteUser extends Model {
   static table = "unsaved_delete_users";
 }
 
+class Admission extends Model {
+  static table = "admissions";
+}
+
 describe("Observers", () => {
   beforeAll(async () => {
     setupTestDb();
@@ -23,6 +29,11 @@ describe("Observers", () => {
       table.timestamps();
     });
     await Schema.create("clean_save_users", (table) => {
+      table.increments("id");
+      table.string("name");
+      table.timestamps();
+    });
+    await Schema.create("admissions", (table) => {
       table.increments("id");
       table.string("name");
       table.timestamps();
@@ -156,5 +167,37 @@ describe("Observers", () => {
     const user = new UnsavedDeleteUser({ name: "No row" });
     expect(await user.delete()).toBe(false);
     expect(events).toEqual([]);
+  });
+
+  test("observer subclasses can self-register with observe()", async () => {
+    const events: string[] = [];
+
+    class AdmissionObserver extends Observer<Admission> {
+      created(admission: Admission) {
+        events.push(admission.getAttribute("name"));
+      }
+    }
+
+    AdmissionObserver.observe(Admission);
+
+    await Admission.create({ name: "Self Registered" });
+    expect(events).toEqual(["Self Registered"]);
+
+    ObserverRegistry.unregister(Admission);
+  });
+
+  test("observer hook methods accept the model type from the generic", async () => {
+    class TypedAdmissionObserver extends Observer<Admission> {
+      async created(admission: Admission) {
+        expectType<Admission>(admission);
+        events.push(admission.getAttribute("name"));
+      }
+    }
+
+    const events: string[] = [];
+    TypedAdmissionObserver.observe(Admission);
+    await Admission.create({ name: "Typed" });
+    expect(events).toEqual(["Typed"]);
+    ObserverRegistry.unregister(Admission);
   });
 });

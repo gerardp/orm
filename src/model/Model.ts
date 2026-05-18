@@ -519,6 +519,7 @@ export abstract class Relation<T extends Model = Model> {
   protected localKey: string;
   protected extraConstraints: Array<(builder: Builder<T>) => void> = [];
   protected whereConstraints: Array<{ column: string; operator: string; value: any; boolean: "and" | "or" }> = [];
+  protected $skipEagerQuery = false;
 
   constructor(parent: Model, related: ModelConstructor, foreignKey?: string, localKey?: string) {
     this.parent = parent;
@@ -697,12 +698,14 @@ export class HasMany<T extends Model = Model> extends Relation<T> {
 
   addEagerConstraints(models: Model[]): void {
     this.builder = (this.related as any).on(this.parent.getConnection());
-    const keys = models.map((m) => m.getAttribute(this.localKey));
+    const keys = models.map((m) => m.getAttribute(this.localKey)).filter((k) => k != null);
+    if (keys.length === 0) { this.$skipEagerQuery = true; return; }
     this.builder.whereIn(this.foreignKey, keys);
     this.applyExtraConstraints();
   }
 
   async getEager(): Promise<Collection<any>> {
+    if (this.$skipEagerQuery) return new Collection<any>([]);
     return this.builder.get();
   }
 
@@ -769,12 +772,14 @@ export class BelongsTo<T extends Model = Model> extends Relation<T> {
 
   addEagerConstraints(models: Model[]): void {
     this.builder = (this.related as any).on(this.parent.getConnection());
-    const keys = models.map((m) => m.getAttribute(this.foreignKey));
+    const keys = models.map((m) => m.getAttribute(this.foreignKey)).filter((k) => k != null);
+    if (keys.length === 0) { this.$skipEagerQuery = true; return; }
     this.builder.whereIn(this.localKey, keys);
     this.applyExtraConstraints();
   }
 
   async getEager(): Promise<Collection<any>> {
+    if (this.$skipEagerQuery) return new Collection<any>([]);
     return this.builder.get();
   }
 
@@ -867,7 +872,8 @@ export class HasManyThrough<T extends Model = Model> extends Relation<T> {
   addEagerConstraints(models: Model[]): void {
     const throughTable = this.through.getTable();
     const relatedTable = this.related.getTable();
-    const keys = models.map((m) => m.getAttribute(this.localKey));
+    const keys = models.map((m) => m.getAttribute(this.localKey)).filter((k) => k != null);
+    if (keys.length === 0) { this.$skipEagerQuery = true; return; }
     this.builder = (this.related as any).on(this.parent.getConnection());
     this.builder.select(`${relatedTable}.*`, `${throughTable}.${this.firstKey}`);
     this.builder.join(
@@ -881,6 +887,7 @@ export class HasManyThrough<T extends Model = Model> extends Relation<T> {
   }
 
   async getEager(): Promise<Collection<any>> {
+    if (this.$skipEagerQuery) return new Collection<any>([]);
     return this.builder.get();
   }
 
@@ -966,12 +973,14 @@ export class HasOne<T extends Model = Model> extends Relation<T> {
 
   addEagerConstraints(models: Model[]): void {
     this.builder = (this.related as any).on(this.parent.getConnection());
-    const keys = models.map((m) => m.getAttribute(this.localKey));
+    const keys = models.map((m) => m.getAttribute(this.localKey)).filter((k) => k != null);
+    if (keys.length === 0) { this.$skipEagerQuery = true; return; }
     this.builder.whereIn(this.foreignKey, keys);
     this.applyExtraConstraints();
   }
 
   async getEager(): Promise<Collection<any>> {
+    if (this.$skipEagerQuery) return new Collection<any>([]);
     return this.builder.get();
   }
 

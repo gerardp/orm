@@ -190,6 +190,7 @@ export class MorphOne<T extends Model = Model, N extends string = string, Fixed 
   protected localKey: string;
   protected extraConstraints: Array<(builder: Builder<T>) => void> = [];
   protected whereConstraints: Array<{ column: string; operator: string; value: any; boolean: "and" | "or" }> = [];
+  protected $skipEagerQuery = false;
 
   constructor(
     parent: Model,
@@ -234,7 +235,8 @@ export class MorphOne<T extends Model = Model, N extends string = string, Fixed 
 
   addEagerConstraints(models: Model[]): void {
     this.builder = (this.related as any).on(this.parent.getConnection());
-    const keys = models.map((m) => m.getAttribute(this.localKey));
+    const keys = models.map((m) => m.getAttribute(this.localKey)).filter((k) => k != null);
+    if (keys.length === 0) { this.$skipEagerQuery = true; return; }
     this.builder.whereIn(this.idColumn, keys);
     this.builder.where(this.typeColumn, this.getMorphType());
     this.applyExtraConstraints();
@@ -282,6 +284,7 @@ export class MorphOne<T extends Model = Model, N extends string = string, Fixed 
   }
 
   async getEager(): Promise<Collection<any>> {
+    if (this.$skipEagerQuery) return new Collection<any>([]);
     return this.builder.get();
   }
 
@@ -338,6 +341,7 @@ export class MorphMany<T extends Model = Model, N extends string = string, Fixed
   protected localKey: string;
   protected extraConstraints: Array<(builder: Builder<T>) => void> = [];
   protected whereConstraints: Array<{ column: string; operator: string; value: any; boolean: "and" | "or" }> = [];
+  protected $skipEagerQuery = false;
 
   constructor(
     parent: Model,
@@ -382,7 +386,8 @@ export class MorphMany<T extends Model = Model, N extends string = string, Fixed
 
   addEagerConstraints(models: Model[]): void {
     this.builder = (this.related as any).on(this.parent.getConnection());
-    const keys = models.map((m) => m.getAttribute(this.localKey));
+    const keys = models.map((m) => m.getAttribute(this.localKey)).filter((k) => k != null);
+    if (keys.length === 0) { this.$skipEagerQuery = true; return; }
     this.builder.whereIn(this.idColumn, keys);
     this.builder.where(this.typeColumn, this.getMorphType());
     this.applyExtraConstraints();
@@ -419,6 +424,7 @@ export class MorphMany<T extends Model = Model, N extends string = string, Fixed
   }
 
   async getEager(): Promise<Collection<any>> {
+    if (this.$skipEagerQuery) return new Collection<any>([]);
     return this.builder.get();
   }
 
@@ -507,6 +513,7 @@ export class MorphToMany<
   protected whereConstraints: Array<{ column: string; operator: string; value: any; boolean: "and" | "or" }> = [];
   protected pivotWheres: Array<{ column: string; operator: string; value: any; boolean: "and" | "or" }> = [];
   protected extraConstraints: Array<(builder: Builder<T>) => void> = [];
+  protected $skipEagerQuery = false;
 
   protected decoratePivotQuery(builder: Builder<any>): Builder<any> & PivotQueryBuilder {
     const query = builder as Builder<any> & PivotQueryBuilder;
@@ -805,7 +812,8 @@ export class MorphToMany<
   }
 
   addEagerConstraints(models: Model[]): void {
-    const keys = models.map((m) => m.getAttribute(this.parentKey));
+    const keys = models.map((m) => m.getAttribute(this.parentKey)).filter((k) => k != null);
+    if (keys.length === 0) { this.$skipEagerQuery = true; return; }
     const relatedTable = this.related.getTable();
     this.builder = this.decoratePivotQuery((this.related as any).on(this.parent.getConnection()));
     const pivotSelect = this.getPivotSelectColumns();
@@ -825,6 +833,7 @@ export class MorphToMany<
   }
 
   async getEager(): Promise<Collection<any>> {
+    if (this.$skipEagerQuery) return new Collection<any>([]);
     const results = await this.builder.get();
     this.attachPivotToResults(results);
     return results;

@@ -1,5 +1,5 @@
 import { expect, test, describe, beforeAll } from "bun:test";
-import { rule, Validator, ValidationError, DB, Schema, ConnectionManager, type RuleContract, type ValidationContext, type ValidationFile } from "../src/index.js";
+import { rule, Validator, ValidationError, DB, Schema, ConnectionManager, type RuleContract, type ValidationContext, type ValidationFile, type InferOutputFromSchema } from "../src/index.js";
 import { setupTestDb } from "./helpers.js";
 
 function expectType<T>(_value: T): void {}
@@ -397,6 +397,10 @@ describe("Validator — sync rules", () => {
       section_id: string;
       academic_level_id: string;
     }>(admissionData);
+
+    const objectSchema = Validator.schema(schema);
+    type ObjectSchemaOutput = InferOutputFromSchema<typeof objectSchema>;
+    expectType<ObjectSchemaOutput>(out);
   });
 
   test("custom validators can be inline callbacks or reusable RuleContract objects", async () => {
@@ -544,6 +548,50 @@ describe("Validator — sync rules", () => {
 
     const requestResult = await schema.parse(request);
     expect(requestResult.email).toBe("ada@example.com");
+  });
+
+  test("Validator.schema accepts SvelteKit-style FormData names for nested arrays", async () => {
+    const schema = Validator.schema({
+      guardians: rule().sometimes().array().max(2),
+      "guardians.*.firstname": rule().required().string(),
+      "guardians.*.lastname": rule().required().string(),
+      "guardians.*.contact_number": rule().required().string(),
+      "guardians.*.relationship": rule().required().string(),
+      "guardians.*.email": rule().string().email().sometimes().nullable(),
+      year_level: rule().required().number(),
+      active: rule().required().boolean(),
+    });
+
+    const formData = new FormData();
+    formData.set("guardians[0].firstname", "Jane");
+    formData.set("guardians[0].lastname", "Doe");
+    formData.set("guardians[0].contact_number", "09171234567");
+    formData.set("guardians[0].relationship", "Mother");
+    formData.set("guardians[0].email", "jane@example.com");
+    formData.set("n:year_level", "2");
+    formData.set("b:active", "true");
+
+    const result = await schema.parse(formData);
+    expect(result.guardians?.[0].firstname).toBe("Jane");
+    expect(result.guardians?.[0].email).toBe("jane@example.com");
+    expect(result.year_level).toBe(2);
+    expect(result.active).toBe(true);
+  });
+
+  test("Validator.schema accepts PHP-style FormData names for nested arrays", async () => {
+    const schema = Validator.schema({
+      guardians: rule().sometimes().array().max(2),
+      "guardians.*.firstname": rule().required().string(),
+      "guardians.*.lastname": rule().required().string(),
+    });
+
+    const formData = new FormData();
+    formData.set("guardians[0][firstname]", "Jane");
+    formData.set("guardians[0][lastname]", "Doe");
+
+    const result = await schema.parse(formData);
+    expect(result.guardians?.[0].firstname).toBe("Jane");
+    expect(result.guardians?.[0].lastname).toBe("Doe");
   });
 
   test("Validator.schema treats empty FormData strings as omitted", async () => {

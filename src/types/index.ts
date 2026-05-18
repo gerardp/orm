@@ -84,7 +84,7 @@ export interface UnionClause {
 }
 
 export type ConnectionConfig =
-  | { url: string; schema?: string; max?: number }
+  | { url: string; schema?: string; max?: number; prepare?: boolean }
   | {
       driver: "sqlite" | "mysql" | "postgres";
       host?: string;
@@ -95,4 +95,5 @@ export type ConnectionConfig =
       filename?: string; // sqlite
       schema?: string;
       max?: number;
+      prepare?: boolean;
     };

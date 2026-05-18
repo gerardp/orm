@@ -202,10 +202,79 @@ function appendInputValue(target: Record<string, any>, key: string, value: unkno
   target[key] = value;
 }
 
+function inputNameParts(name: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+
+  for (let i = 0; i < name.length; i++) {
+    const char = name[i];
+    if (char === ".") {
+      if (current) {
+        parts.push(current);
+        current = "";
+      }
+      continue;
+    }
+    if (char === "[") {
+      if (current) {
+        parts.push(current);
+        current = "";
+      }
+      const close = name.indexOf("]", i);
+      if (close === -1) {
+        current += char;
+        continue;
+      }
+      const segment = name.slice(i + 1, close);
+      if (segment) parts.push(segment);
+      i = close;
+      continue;
+    }
+    current += char;
+  }
+
+  if (current) parts.push(current);
+  return parts;
+}
+
+function coerceFormValue(prefix: string | undefined, value: unknown): unknown {
+  if (prefix === "b" && typeof value === "string") {
+    return value === "true" || value === "on" || value === "1";
+  }
+  if (prefix === "n" && typeof value === "string") {
+    const numeric = Number(value);
+    return Number.isNaN(numeric) ? value : numeric;
+  }
+  return value;
+}
+
+function appendNestedInputValue(target: Record<string, any>, name: string, value: unknown): void {
+  const prefixMatch = name.match(/^([bn]):(.+)$/);
+  const key = prefixMatch?.[2] ?? name;
+  const coerced = coerceFormValue(prefixMatch?.[1], value);
+  if (coerced === "") return;
+
+  const parts = inputNameParts(key);
+  if (parts.length <= 1) {
+    appendInputValue(target, key, coerced);
+    return;
+  }
+
+  let current: any = target;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const part = parts[i];
+    const next = parts[i + 1];
+    current[part] ??= /^\d+$/.test(next) ? [] : {};
+    current = current[part];
+  }
+
+  appendInputValue(current, parts[parts.length - 1], coerced);
+}
+
 function formDataToObject(formData: { entries(): IterableIterator<[string, unknown]> }): Record<string, any> {
   const output: Record<string, any> = {};
   for (const [key, value] of formData.entries()) {
-    appendInputValue(output, key, value);
+    appendNestedInputValue(output, key, value);
   }
   return output;
 }

@@ -11,7 +11,33 @@ Observers fire automatically whenever a model is saved, updated, or deleted thro
 
 ## Registering
 
-`ObserverRegistry.register(ModelClass, observer)` attaches one or more handlers to a model. Call it once at app startup — typically right after `configureBunny()`:
+For larger observers, extend `Observer<Model>` and call `YourObserver.observe(ModelClass)` once at app startup — typically right after `configureBunny()`:
+
+```ts
+import { Observer } from "@bunnykit/orm";
+import Admission from "./models/Admission";
+import { AdmissionStatusEnum } from "./enums";
+
+export class AdmissionObserver extends Observer<Admission> {
+  async created(model: Admission) {
+    if (model.status === AdmissionStatusEnum.SUBMITTED) {
+      // send a notification, write an audit log, etc.
+    }
+  }
+
+  updated(model: Admission) {
+    if (model.wasChanged("status")) {
+      // react to status changes
+    }
+  }
+}
+
+AdmissionObserver.observe(Admission);
+```
+
+The `Observer<Admission>` generic makes the generated hook signatures show `model: Admission` in IntelliSense. TypeScript does not infer unannotated parameters for class method overrides, so write `model: Admission` on method parameters when `strict` mode is enabled.
+
+For small inline observers, `ObserverRegistry.register(ModelClass, observer)` attaches one or more handlers to a model:
 
 ```ts
 import { ObserverRegistry } from "@bunnykit/orm";
@@ -37,6 +63,13 @@ Multiple observers can be registered for the same model — they run in registra
 ObserverRegistry.register(User, auditObserver);
 ObserverRegistry.register(User, cacheObserver);
 ObserverRegistry.register(User, notificationObserver);
+```
+
+You can mix class observers and registry observers for the same model:
+
+```ts
+UserObserver.observe(User);
+ObserverRegistry.register(User, auditObserver);
 ```
 
 Remove all observers for a model with `ObserverRegistry.unregister(User)` — useful in tests.
@@ -148,7 +181,7 @@ import User from "../src/models/User";
 import { UserObserver } from "../src/observers/UserObserver";
 
 beforeEach(() => {
-  ObserverRegistry.register(User, new UserObserver());
+  UserObserver.observe(User);
 });
 
 afterEach(() => {

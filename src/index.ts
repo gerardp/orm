@@ -46,7 +46,7 @@ export type {
   PivotQueryBuilder,
 } from "./model/Model.js";
 export { ModelNotFoundError } from "./model/ModelNotFoundError.js";
-export { ObserverRegistry, type ObserverContract } from "./model/Observer.js";
+export { Observer, ObserverRegistry, type ObserverContract } from "./model/Observer.js";
 export { MorphMap } from "./model/MorphMap.js";
 export { MorphTo, MorphOne, MorphMany, MorphToMany } from "./model/MorphRelations.js";
 export { BelongsToMany } from "./model/BelongsToMany.js";
@@ -70,6 +70,7 @@ export type {
   ValidationFile,
   ValidationSchema,
   InferOutput,
+  InferOutputFromSchema,
   ValidationObjectSchema,
   RuleContract,
   ValidationContext,

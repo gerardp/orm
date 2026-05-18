@@ -83,6 +83,7 @@ connection: {
   url: "postgres://localhost/mydb",
   schema: "app",   // default search_path / qualifier
   max: 20,         // pool size
+  prepare: false,  // default for Postgres; avoids stale named prepared plans
 }
 ```
 
@@ -99,6 +100,7 @@ connection: {
   username: "app",
   password: process.env.DB_PASSWORD!,
   max: 20,
+  prepare: false,
 }
 ```
 
@@ -107,6 +109,8 @@ SQLite uses `filename` instead of `host`/`port`:
 ```ts
 connection: { driver: "sqlite", filename: "./app.db" }
 ```
+
+For PostgreSQL, `prepare` defaults to `false`. Bunny generates dynamic SQL for model queries, validation checks, migrations, and schema-qualified tenant queries; disabling named prepared statements avoids intermittent stale-plan errors after schema changes or when a long-running server reuses pooled connections. Set `prepare: true` only when you know your Postgres deployment benefits from Bun's persisted named prepared statements and your query result shapes are stable.
 
 ## `migrationsPath` vs `migrations`
 

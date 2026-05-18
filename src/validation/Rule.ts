@@ -1187,17 +1187,24 @@ type WildcardChildSchema<S extends ValidationSchema, P extends string> = {
 type WildcardGroupOutput<S extends ValidationSchema, P extends string> =
   P extends keyof S
     ? PresenceOf<S[P]> extends "optional"
-      ? { [K in P]?: Array<InferOutputFromSchema<WildcardChildSchema<S, P>>> }
-      : { [K in P]: Array<InferOutputFromSchema<WildcardChildSchema<S, P>>> }
-    : { [K in P]?: Array<InferOutputFromSchema<WildcardChildSchema<S, P>>> };
+      ? { [K in P]?: Array<InferOutputFromEntries<WildcardChildSchema<S, P>>> }
+      : { [K in P]: Array<InferOutputFromEntries<WildcardChildSchema<S, P>>> }
+    : { [K in P]?: Array<InferOutputFromEntries<WildcardChildSchema<S, P>>> };
 type WildcardSchemaOutput<S extends ValidationSchema> = Simplify<IntersectFromUnion<{
   [P in WildcardPrefixes<S>]: WildcardGroupOutput<S, P>;
 }[WildcardPrefixes<S>]>>;
-type InferOutputFromSchema<S extends ValidationSchema> = Simplify<DirectSchemaOutput<S> & WildcardSchemaOutput<S>>;
+type InferOutputFromEntries<S extends ValidationSchema> = Simplify<DirectSchemaOutput<S> & WildcardSchemaOutput<S>>;
+
+export type InferOutputFromSchema<T> =
+  T extends { readonly entries: infer S extends ValidationSchema }
+    ? InferOutputFromEntries<S>
+    : T extends ValidationSchema
+      ? InferOutputFromEntries<T>
+      : never;
 
 export type InferOutput<T> =
   T extends { readonly entries: infer S extends ValidationSchema }
-    ? InferOutputFromSchema<S>
+    ? InferOutputFromEntries<S>
     : T extends ValidationSchema
-      ? InferOutputFromSchema<T>
+      ? InferOutputFromEntries<T>
       : never;
