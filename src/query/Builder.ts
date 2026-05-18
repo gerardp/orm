@@ -751,7 +751,11 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   cacheTags(...tags: (string | string[])[]): this {
-    this.cacheTagNames.push(...tags.flat());
+    const next = new Set(this.cacheTagNames);
+    for (const tag of tags.flat()) {
+      next.add(tag);
+    }
+    this.cacheTagNames = [...next];
     return this;
   }
 

@@ -77,10 +77,11 @@ export class Cache {
 
   private static prefixOptions(options: CacheRememberOptions): CacheRememberOptions {
     const tags = typeof options.tags === "string" ? [options.tags] : options.tags;
+    const normalizedTags = tags ? [...new Set(tags)] : undefined;
     return {
       ...options,
       ttl: options.ttl ?? this.defaultTtl,
-      tags: tags?.map((tag) => this.prefixKey(tag)),
+      tags: normalizedTags?.map((tag) => this.prefixKey(tag)),
     };
   }
 }

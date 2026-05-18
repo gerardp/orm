@@ -264,6 +264,35 @@ class CachedBook extends Model {
 }
 
 describe("Query builder cache", () => {
+  test("cacheTags dedupes repeated tags across multiple calls", async () => {
+    const connection = setupTestDb();
+    const seen: string[][] = [];
+    const store: CacheStore = {
+      async get() { return null; },
+      async set(_key, _value, options = {}) {
+        const tags = typeof options.tags === "string" ? [options.tags] : options.tags ?? [];
+        seen.push(tags);
+      },
+      async forget() {},
+      async forgetTag() {},
+      async forgetTags() {},
+      async flush() {},
+    };
+    Cache.configure({ store });
+
+    await connection.run("CREATE TABLE cached_dedupes (id INTEGER PRIMARY KEY, name TEXT)");
+    await connection.run("INSERT INTO cached_dedupes (name) VALUES ('one')");
+
+    await new Builder(connection, "cached_dedupes")
+      .remember("dedupe")
+      .cacheTags("a")
+      .cacheTags("a", ["b", "a"])
+      .get();
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual(["a", "b"]);
+  });
+
   test("remember avoids duplicate DB reads and hydrates cached rows", async () => {
     const connection = setupTestDb();
     Cache.configure({ store: new MemoryCacheStore() });
