@@ -143,21 +143,23 @@ Use `Cache.remember()` for composed payloads where one cached value depends on s
 ```ts
 import { Cache } from "@bunnykit/orm/cache";
 
+const countries = await Cache.remember("countries", async () => {
+  return buildCountryList();
+});
+
+await Cache.remember("hello", "world", 3600);
+
 const payload = await Cache.remember(
   `tenant:${tenantId}:admissions-reference`,
+  async () => buildAdmissionsReferencePayload(),
   {
     ttl: 3600,
-    tags: [
-      `tenant:${tenantId}:admissions-reference`,
-      `tenant:${tenantId}:curricula`,
-      `tenant:${tenantId}:subjects`,
-    ],
+    tags: `tenant:${tenantId}:admissions-reference`,
   },
-  async () => buildAdmissionsReferencePayload(),
 );
 ```
 
-If the value is already cached, the callback is not called. If there is a miss, Bunny stores the returned value as JSON.
+If the value is already cached, a resolver callback is not called and a direct value is not written. If there is a miss, Bunny stores the returned or provided value as JSON.
 
 You can also use lower-level operations:
 
@@ -185,6 +187,12 @@ await Cache.forgetTags([
   `tenant:${tenantId}:subjects`,
   `tenant:${tenantId}:admissions-reference`,
 ]);
+
+await Cache.forgetTags(
+  `tenant:${tenantId}:curricula`,
+  `tenant:${tenantId}:subjects`,
+  `tenant:${tenantId}:admissions-reference`,
+);
 ```
 
 Recommended tenant-scoped tags:
@@ -237,6 +245,19 @@ const curricula = await Curriculum
 
 Cached query rows are stored before model hydration. On cache hits, Bunny hydrates models normally, so casts, accessors, collections, and model instances behave the same as a database-backed read.
 
+When the cached builder includes eager loads, Bunny caches the full hydrated model graph:
+
+```ts
+const periods = await EnrollmentPeriod
+  .with(["academicYear", "semesters"])
+  .orderBy("start_date", "desc")
+  .remember("admission_periods")
+  .cacheTags("admission_periods")
+  .get();
+```
+
+The first read queries `enrollment_periods` and the eager-loaded relations. Later reads for the same cache key rehydrate the parent models and their loaded relations from cache. After `Cache.forgetTag("admission_periods")`, the next read queries and refreshes the whole graph.
+
 Use multiple tags when a query result depends on more than one concept:
 
 ```ts
@@ -261,7 +282,6 @@ Bunny intentionally keeps query caching narrow:
 - Random-order queries are not cached.
 - Internal `chunk`, `chunkById`, `cursor`, `each`, and `lazy` iteration queries do not reuse one cache key across pages.
 - Mutations and raw writes are not cached.
-- Eager-load follow-up queries are not automatically cached.
 
 For composed responses that include several models or eager-loaded datasets, prefer `Cache.remember()` around the full payload builder.
 

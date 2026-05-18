@@ -28,7 +28,7 @@ export class RedisCacheStore implements CacheStore {
       await this.client.set(cacheKey, serialized);
     }
 
-    const tags = options.tags ?? [];
+    const tags = typeof options.tags === "string" ? [options.tags] : options.tags ?? [];
     for (const tag of tags) {
       await this.client.sadd(this.tagKey(tag), cacheKey);
     }
@@ -75,4 +75,3 @@ export class RedisCacheStore implements CacheStore {
     return `${this.prefix}tag:${tag}`;
   }
 }
-

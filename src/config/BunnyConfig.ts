@@ -1,6 +1,9 @@
+import { redis } from "bun";
 import { Connection } from "../connection/Connection.js";
 import { ConnectionManager } from "../connection/ConnectionManager.js";
 import type { TenantResolver } from "../connection/ConnectionManager.js";
+import { Cache, RedisCacheStore } from "../cache/index.js";
+import type { CacheStore } from "../cache/index.js";
 import { Model } from "../model/Model.js";
 import { Schema } from "../schema/Schema.js";
 import { Migrator, type MigratorOptions } from "../migration/Migrator.js";
@@ -38,6 +41,11 @@ export interface BunnyConfig {
   typeDeclarationSingularModels?: boolean;
   typeStubs?: boolean;
   logQueries?: boolean;
+  cache?: {
+    store?: CacheStore;
+    prefix?: string;
+    defaultTtl?: number;
+  };
 }
 
 export interface ConfiguredBunny {
@@ -70,6 +78,14 @@ export function configureBunny(config: BunnyConfig): ConfiguredBunny {
 
   if (config.logQueries) {
     Connection.logQueries = true;
+  }
+
+  if (config.cache) {
+    Cache.configure({
+      store: config.cache.store ?? new RedisCacheStore(redis),
+      prefix: config.cache.prefix,
+      defaultTtl: config.cache.defaultTtl,
+    });
   }
 
   const buildMigrator = (scope: "landlord" | "tenant" = "landlord", overrides: MigratorOptions = {}) => {

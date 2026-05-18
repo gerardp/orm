@@ -1,4 +1,6 @@
 import { Connection } from "../connection/Connection.js";
+import { TransactionContext } from "../connection/TransactionContext.js";
+import { Cache } from "../cache/index.js";
 import { MorphTo } from "../model/MorphRelations.js";
 import type { WhereClause, OrderClause, HavingClause, UnionClause } from "../types/index.js";
 import type { AttachedToRelationName, BelongsToRelationName, EagerLoadDefinition, EagerLoadInput, Model, ModelAttributeInput, ModelColumn, ModelColumnValue, ModelConstructor, ModelRelationName, MorphToRelationName, TypedEagerLoad, TypedConstraintMap, TypedConstraintSelection, TypedExistsConstraintMap, ExtractStringPaths, WithLoadedRelations, WithLoadedRelationsFromConstraintMap, WithRelationCount, WithRelationExists, WithRelationExistsMap, Relation, RelationConstraintQuery, NestedRelationPath, LiteralUnion, RelationRelatedModel, MorphToConstraintCallback } from "../model/Model.js";
@@ -11,6 +13,17 @@ type RelationConstraint<TModel = any, TRelation extends string = string> = (quer
 type ExistsConstraintMap<TResult> = Record<string, RelationConstraint<TResult, any> | undefined>;
 type RelatedColumn<TResult, R extends string> = ModelColumn<RelationRelatedModel<TResult, R>>;
 type RelationShortcutInput = Model | Model[] | Collection<Model>;
+
+type CachedRelationValue =
+  | { type: "collection"; models: CachedModelGraph[] }
+  | { type: "model"; model: CachedModelGraph | null }
+  | { type: "value"; value: any };
+
+interface CachedModelGraph {
+  attributes: Record<string, any>;
+  relations: Record<string, CachedRelationValue>;
+}
+
 export interface PaginatorJson<T> {
   data: CollectionJson<T>;
   current_page: number;
@@ -191,6 +204,9 @@ export class Builder<T = Record<string, any>, TResult = T> {
   private parameterize = false;
   private sqlCache?: string;
   private booleanResultColumns = new Set<string>();
+  private cacheKey?: string;
+  private cacheTtl?: number;
+  private cacheTagNames: string[] = [];
 
   constructor(connection: Connection, table: string) {
     this.connection = connection;
@@ -212,6 +228,64 @@ export class Builder<T = Record<string, any>, TResult = T> {
       row[column] = value === true || value === 1 || value === "1" || value === "t" || value === "true";
     }
     return row;
+  }
+
+  private isModelLike(value: any): value is Model {
+    return Boolean(value) && typeof value === "object" && "$attributes" in value && "$relations" in value;
+  }
+
+  private serializeModelGraph(model: any): CachedModelGraph {
+    const relations: Record<string, CachedRelationValue> = {};
+    for (const [name, value] of Object.entries(model.$relations ?? {})) {
+      if (value instanceof Collection || Array.isArray(value)) {
+        const items = Array.from(value as any[]);
+        relations[name] = items.every((item) => this.isModelLike(item))
+          ? { type: "collection", models: items.map((item) => this.serializeModelGraph(item)) }
+          : { type: "value", value: items };
+      } else if (value === null || this.isModelLike(value)) {
+        relations[name] = { type: "model", model: value ? this.serializeModelGraph(value) : null };
+      } else {
+        relations[name] = { type: "value", value };
+      }
+    }
+    return {
+      attributes: { ...(model.$attributes ?? {}) },
+      relations,
+    };
+  }
+
+  private hydrateCachedGraph(graph: CachedModelGraph, model: ModelConstructor): any {
+    const instance = (model as any).hydrate(graph.attributes, this.connection);
+
+    for (const [name, cached] of Object.entries(graph.relations)) {
+      if (cached.type === "value") {
+        instance.setRelation(name, cached.value);
+        continue;
+      }
+
+      const relationMethod = findRelationMethod(model, name);
+      const relation = relationMethod ? relationMethod.call(instance) as any : null;
+      const relatedModel = relation?.getRelatedModelConstructor?.();
+
+      if (!relatedModel) {
+        instance.setRelation(name, cached.type === "collection" ? new Collection([]) : null);
+        continue;
+      }
+
+      if (cached.type === "collection") {
+        instance.setRelation(
+          name,
+          new Collection(cached.models.map((item) => this.hydrateCachedGraph(item, relatedModel)))
+        );
+      } else {
+        instance.setRelation(
+          name,
+          cached.model ? this.hydrateCachedGraph(cached.model, relatedModel) : null
+        );
+      }
+    }
+
+    return instance;
   }
 
   private parseRelationAlias(relation: string, defaultSuffix: string): { relationName: string; alias: string } {
@@ -670,6 +744,24 @@ export class Builder<T = Record<string, any>, TResult = T> {
     return this as any;
   }
 
+  remember(key: string, ttl?: number): this {
+    this.cacheKey = key;
+    this.cacheTtl = ttl;
+    return this;
+  }
+
+  cacheTags(...tags: (string | string[])[]): this {
+    this.cacheTagNames.push(...tags.flat());
+    return this;
+  }
+
+  private withoutCache(): this {
+    this.cacheKey = undefined;
+    this.cacheTtl = undefined;
+    this.cacheTagNames = [];
+    return this;
+  }
+
   withoutGlobalScope(scope: string): this {
     this.invalidateSqlCache();
     this.wheres = this.wheres.filter((where) => where.scope !== scope);
@@ -1005,6 +1097,9 @@ export class Builder<T = Record<string, any>, TResult = T> {
     cloned.bindings = [...this.bindings];
     cloned.parameterize = this.parameterize;
     cloned.booleanResultColumns = new Set(this.booleanResultColumns);
+    cloned.cacheKey = this.cacheKey;
+    cloned.cacheTtl = this.cacheTtl;
+    cloned.cacheTagNames = [...this.cacheTagNames];
     return cloned;
   }
 
@@ -1199,8 +1294,25 @@ export class Builder<T = Record<string, any>, TResult = T> {
     this.parameterize = true;
     const sql = this.toSql();
     this.parameterize = false;
-    const results = await this.connection.query(sql, this.bindings);
-    const rows = Array.from(results).map((row: any) => this.coerceBooleanResultColumns(row));
+    const bindings = [...this.bindings];
+    const cacheable = this.shouldUseCache();
+    const cachesEagerGraph = cacheable && Boolean(this.model) && this.eagerLoads.length > 0;
+    const cachedGraph = cachesEagerGraph ? await Cache.get<CachedModelGraph[]>(this.cacheKey!) : null;
+    if (cachedGraph) {
+      return new Collection(
+        cachedGraph.map((item) => this.hydrateCachedGraph(item, this.model!))
+      ) as unknown as Collection<TResult>;
+    }
+
+    const cachedRows = cacheable && !cachesEagerGraph ? await Cache.get<any[]>(this.cacheKey!) : null;
+    const rows = cachedRows ?? Array.from(await this.connection.query(sql, bindings)).map((row: any) => this.coerceBooleanResultColumns(row));
+
+    if (cacheable && !cachesEagerGraph && cachedRows === null) {
+      await Cache.set(this.cacheKey!, rows, {
+        ttl: this.cacheTtl,
+        tags: this.cacheTagNames,
+      });
+    }
 
     if (this.model) {
       const identityMap = IdentityMap.current();
@@ -1239,10 +1351,25 @@ export class Builder<T = Record<string, any>, TResult = T> {
         await (this.model as any).eagerLoadRelations(models, this.eagerLoads);
       }
 
+      if (cachesEagerGraph) {
+        await Cache.set(this.cacheKey!, models.map((model: any) => this.serializeModelGraph(model)), {
+          ttl: this.cacheTtl,
+          tags: this.cacheTagNames,
+        });
+      }
+
       return new Collection(models) as unknown as Collection<TResult>;
     }
 
     return new Collection(rows as T[]) as unknown as Collection<TResult>;
+  }
+
+  private shouldUseCache(): boolean {
+    return Boolean(this.cacheKey)
+      && !this.randomOrderFlag
+      && !this.lockMode
+      && !this.connection.isInTransaction()
+      && !TransactionContext.current();
   }
 
   async getArray(): Promise<TResult[]> {
@@ -1467,7 +1594,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
       builder.wheres.push({ type: "nested", column: "", query: this.compileCursorWheres(orders, cursorValues), boolean: "and", scope: undefined });
     }
 
-    const items = await builder.get() as unknown as Collection<TResult>;
+    const items = await builder.withoutCache().get() as unknown as Collection<TResult>;
     const hasMore = items.length > perPage;
     const data = new Collection(items.slice(0, perPage));
     const lastItem = data[data.length - 1];
@@ -1487,7 +1614,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   async chunk(count: number, callback: (items: Collection<TResult>) => void | Promise<void>): Promise<void> {
     let page = 1;
     while (true) {
-      const items = await this.clone().forPage(page, count).get() as unknown as Collection<TResult>;
+      const items = await this.clone().withoutCache().forPage(page, count).get() as unknown as Collection<TResult>;
       if (items.length === 0) break;
       await callback(items);
       if (items.length < count) break;
@@ -1515,7 +1642,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
       if (lastId !== null) {
         builder.where(qualifiedColumn as ModelColumn<T>, ">", lastId);
       }
-      const items = await builder.get() as unknown as Collection<TResult>;
+      const items = await builder.withoutCache().get() as unknown as Collection<TResult>;
       if (items.length === 0) break;
       await callback(items);
       const last = items[items.length - 1];
@@ -1535,7 +1662,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
       if (lastId !== null) {
         builder.where(qualifiedColumn as ModelColumn<T>, "<", lastId);
       }
-      const items = await builder.get() as unknown as Collection<TResult>;
+      const items = await builder.withoutCache().get() as unknown as Collection<TResult>;
       if (items.length === 0) break;
       await callback(items);
       const last = items[items.length - 1];
@@ -1577,7 +1704,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
         builder.wheres.push({ type: "nested", column: "", query: this.compileCursorWheres(builder.orders, lastValues), boolean: "and", scope: undefined });
       }
 
-      const items = await builder.get();
+      const items = await builder.withoutCache().get();
       if (items.length === 0) break;
 
       for (const item of items) {
@@ -1718,7 +1845,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   async *lazy(count: number = 1000): AsyncGenerator<T> {
     let page = 1;
     while (true) {
-      const items = await this.clone().forPage(page, count).get();
+      const items = await this.clone().withoutCache().forPage(page, count).get();
       if (items.length === 0) break;
       for (const item of items) {
         yield item;
@@ -1739,7 +1866,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
       if (lastId !== null) {
         builder.where(qualifiedColumn as ModelColumn<T>, ">", lastId);
       }
-      const items = await builder.get() as unknown as Collection<TResult>;
+      const items = await builder.withoutCache().get() as unknown as Collection<TResult>;
       if (items.length === 0) break;
       for (const item of items) {
         yield item;

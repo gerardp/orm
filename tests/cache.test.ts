@@ -60,7 +60,8 @@ class CustomCacheStore implements CacheStore {
 
   async set<T = unknown>(key: string, value: T, options: CacheRememberOptions = {}): Promise<void> {
     this.values.set(key, value);
-    for (const tag of options.tags ?? []) {
+    const tags = typeof options.tags === "string" ? [options.tags] : options.tags ?? [];
+    for (const tag of tags) {
       let keys = this.tags.get(tag);
       if (!keys) {
         keys = new Set<string>();
@@ -144,14 +145,14 @@ describe("Cache stores", () => {
     Cache.configure({ store, prefix: "app:", defaultTtl: 30 });
     let calls = 0;
 
-    const first = await Cache.remember("payload", { tags: ["payloads"] }, async () => {
+    const first = await Cache.remember("payload", async () => {
       calls++;
       return { value: 1 };
-    });
-    const second = await Cache.remember("payload", { tags: ["payloads"] }, async () => {
+    }, { tags: "payloads" });
+    const second = await Cache.remember("payload", async () => {
       calls++;
       return { value: 2 };
-    });
+    }, { tags: "payloads" });
 
     expect(first).toEqual({ value: 1 });
     expect(second).toEqual({ value: 1 });
@@ -160,6 +161,58 @@ describe("Cache stores", () => {
 
     await Cache.forgetTag("payloads");
     expect(await Cache.get("payload")).toBeNull();
+  });
+
+  test("Cache facade supports direct values, resolver callbacks, and direct key/tag forgetting", async () => {
+    const store = new MemoryCacheStore();
+    Cache.configure({ store });
+    let calls = 0;
+
+    const first = await Cache.remember("shorthand", async () => {
+      calls++;
+      return "cached";
+    });
+    const second = await Cache.remember("shorthand", async () => {
+      calls++;
+      return "miss";
+    });
+
+    expect(first).toBe("cached");
+    expect(second).toBe("cached");
+    expect(calls).toBe(1);
+
+    const direct = await Cache.remember("direct", "world", { tags: "direct-tag" });
+    expect(direct).toBe("world");
+    expect(await Cache.get("direct")).toBe("world");
+    await Cache.forgetTag("direct-tag");
+    expect(await Cache.get("direct")).toBeNull();
+
+    await Cache.forget("shorthand");
+    expect(await Cache.get("shorthand")).toBeNull();
+
+    await Cache.set("one", 1, { tags: ["a"] });
+    await Cache.set("two", 2, { tags: ["b"] });
+    await Cache.forgetTags("a", "b");
+    expect(await Cache.get("one")).toBeNull();
+    expect(await Cache.get("two")).toBeNull();
+  });
+
+  test("Cache.remember uses configured defaultTtl when ttl is omitted", async () => {
+    const redis = new FakeRedis();
+    Cache.configure({
+      store: new RedisCacheStore(redis as any),
+      defaultTtl: 45,
+    });
+
+    await Cache.remember("default-ttl", "value");
+
+    expect(redis.calls).toContainEqual([
+      "set",
+      "bunny:cache:default-ttl",
+      JSON.stringify("value"),
+      "EX",
+      45,
+    ]);
   });
 
   test("configureBunny installs Redis by default when cache config is present", () => {
@@ -192,6 +245,24 @@ class CachedWidget extends Model {
   static timestamps = false;
 }
 
+class CachedAuthor extends Model {
+  static table = "cached_authors";
+  static timestamps = false;
+
+  books() {
+    return this.hasMany(CachedBook, "author_id");
+  }
+}
+
+class CachedBook extends Model {
+  static table = "cached_books";
+  static timestamps = false;
+
+  author() {
+    return this.belongsTo(CachedAuthor, "author_id");
+  }
+}
+
 describe("Query builder cache", () => {
   test("remember avoids duplicate DB reads and hydrates cached rows", async () => {
     const connection = setupTestDb();
@@ -216,6 +287,61 @@ describe("Query builder cache", () => {
     expect(first[0]).toBeInstanceOf(CachedWidget);
     expect(second[0]).toBeInstanceOf(CachedWidget);
     expect(second[0].name).toBe("Alpha");
+  });
+
+  test("remember caches eager-loaded relations as hydrated model graphs", async () => {
+    const connection = setupTestDb();
+    Cache.configure({ store: new MemoryCacheStore() });
+    await Schema.create("cached_authors", (table) => {
+      table.increments("id");
+      table.string("name");
+    });
+    await Schema.create("cached_books", (table) => {
+      table.increments("id");
+      table.integer("author_id");
+      table.string("title");
+    });
+    const author = await CachedAuthor.create({ name: "Graph" });
+    await CachedBook.create({ author_id: author.id, title: "Cached Book" });
+
+    let reads = 0;
+    const originalQuery = connection.query.bind(connection);
+    connection.query = ((sql: string, bindings?: any[]) => {
+      if (sql.includes("cached_authors") || sql.includes("cached_books")) reads++;
+      return originalQuery(sql, bindings);
+    }) as any;
+
+    const first = await CachedAuthor
+      .with("books")
+      .remember("authors-with-books", 60)
+      .cacheTags("authors")
+      .get();
+    expect(first[0]).toBeInstanceOf(CachedAuthor);
+    expect(first[0].books[0]).toBeInstanceOf(CachedBook);
+    expect(first[0].books[0].title).toBe("Cached Book");
+    expect(reads).toBe(2);
+
+    await connection.run("UPDATE cached_books SET title = 'Changed'");
+
+    const second = await CachedAuthor
+      .with("books")
+      .remember("authors-with-books", 60)
+      .cacheTags("authors")
+      .get();
+    expect(reads).toBe(2);
+    expect(second[0]).toBeInstanceOf(CachedAuthor);
+    expect(second[0].books).toHaveLength(1);
+    expect(second[0].books[0]).toBeInstanceOf(CachedBook);
+    expect(second[0].books[0].title).toBe("Cached Book");
+
+    await Cache.forgetTag("authors");
+    const third = await CachedAuthor
+      .with("books")
+      .remember("authors-with-books", 60)
+      .cacheTags("authors")
+      .get();
+    expect(reads).toBe(4);
+    expect(third[0].books[0].title).toBe("Changed");
   });
 
   test("cacheTags allows invalidation through Cache.forgetTag", async () => {

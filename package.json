@@ -32,6 +32,20 @@
     "./validation": {
       "types": "./dist/src/validation/index.d.ts",
       "import": "./dist/src/validation/index.js"
+    },
+    "./cache": {
+      "types": "./dist/src/cache/index.d.ts",
+      "import": "./dist/src/cache/index.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "cache": [
+        "dist/src/cache/index.d.ts"
+      ],
+      "validation": [
+        "dist/src/validation/index.d.ts"
+      ]
     }
   },
   "type": "module",

@@ -28,7 +28,8 @@ export class MemoryCacheStore implements CacheStore {
       }
     }
 
-    const tags = new Set(options.tags ?? []);
+    const optionTags = typeof options.tags === "string" ? [options.tags] : options.tags ?? [];
+    const tags = new Set(optionTags);
     this.entries.set(key, {
       value: JSON.stringify(value),
       expiresAt: options.ttl ? Date.now() + options.ttl * 1000 : undefined,

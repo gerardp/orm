@@ -32,11 +32,19 @@ export class Cache {
     await this.getStore().set(this.prefixKey(key), value, this.prefixOptions(options));
   }
 
-  static async remember<T>(key: string, options: CacheRememberOptions | number | undefined, callback: () => T | Promise<T>): Promise<T> {
-    const normalized = typeof options === "number" ? { ttl: options } : options ?? {};
+  static async remember<T>(key: string, value: T | Promise<T> | (() => T | Promise<T>), ttl?: number): Promise<T>;
+  static async remember<T>(key: string, value: T | Promise<T> | (() => T | Promise<T>), options?: CacheRememberOptions): Promise<T>;
+  static async remember<T>(
+    key: string,
+    valueOrResolver: T | Promise<T> | (() => T | Promise<T>),
+    ttlOrOptions?: number | CacheRememberOptions
+  ): Promise<T> {
+    const normalized = typeof ttlOrOptions === "number" ? { ttl: ttlOrOptions } : ttlOrOptions ?? {};
     const cached = await this.get<T>(key);
     if (cached !== null) return cached;
-    const value = await callback();
+    const value = await (typeof valueOrResolver === "function"
+      ? (valueOrResolver as () => T | Promise<T>)()
+      : valueOrResolver);
     await this.set(key, value, {
       ...normalized,
       ttl: normalized.ttl ?? this.defaultTtl,
@@ -52,8 +60,11 @@ export class Cache {
     await this.getStore().forgetTag(this.prefixKey(tag));
   }
 
-  static async forgetTags(tags: string[]): Promise<void> {
-    await this.getStore().forgetTags(tags.map((tag) => this.prefixKey(tag)));
+  static async forgetTags(tags: string[]): Promise<void>;
+  static async forgetTags(...tags: string[]): Promise<void>;
+  static async forgetTags(...tags: [string[]] | string[]): Promise<void> {
+    const list = Array.isArray(tags[0]) ? tags[0] : tags as string[];
+    await this.getStore().forgetTags(list.map((tag) => this.prefixKey(tag)));
   }
 
   static async flush(): Promise<void> {
@@ -65,11 +76,11 @@ export class Cache {
   }
 
   private static prefixOptions(options: CacheRememberOptions): CacheRememberOptions {
+    const tags = typeof options.tags === "string" ? [options.tags] : options.tags;
     return {
       ...options,
       ttl: options.ttl ?? this.defaultTtl,
-      tags: options.tags?.map((tag) => this.prefixKey(tag)),
+      tags: tags?.map((tag) => this.prefixKey(tag)),
     };
   }
 }
-

@@ -21,6 +21,8 @@ export { Builder, CursorPaginator, Paginator, SimplePaginator } from "./query/Bu
 export type { CursorPaginatorJson, PaginatorJson, SimplePaginatorJson } from "./query/Builder.js";
 export { DB } from "./query/DB.js";
 export { Collection, collect } from "./support/Collection.js";
+export { Cache, RedisCacheStore, MemoryCacheStore } from "./cache/index.js";
+export type { CacheConfig, CacheStore, CacheRememberOptions, RedisCacheStoreOptions } from "./cache/index.js";
 
 export { Model, HasMany, BelongsTo, HasOne, HasManyThrough, HasOneThrough } from "./model/Model.js";
 export type {

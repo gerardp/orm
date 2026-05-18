@@ -1,6 +1,6 @@
 export interface CacheRememberOptions {
   ttl?: number;
-  tags?: string[];
+  tags?: string | string[];
 }
 
 export interface CacheStore {
@@ -11,4 +11,3 @@ export interface CacheStore {
   forgetTags(tags: string[]): Promise<void>;
   flush(): Promise<void>;
 }
-
