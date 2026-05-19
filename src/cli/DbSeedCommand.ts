@@ -4,7 +4,7 @@ import type { Connection } from "../connection/Connection.js";
 import type { BunnyConfig } from "../config/BunnyConfig.js";
 
 export function makeDbSeedCommand(config: BunnyConfig, connection: Connection) {
-  return class extends Command.define("db:seed {seeder?} {--landlord} {--tenants} {--tenant=}") {
+  return class extends Command.define("db:seed {seeder? : Seeder class name to run} {--landlord : Run on landlord connection} {--tenants : Run on all tenants} {--tenant= : Run on a specific tenant}") {
     static description = "Run database seeders.";
     async handle() {
       const seeder = this.argumentOptional("seeder");

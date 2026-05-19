@@ -4,7 +4,7 @@ import type { Connection } from "../connection/Connection.js";
 import type { BunnyConfig } from "../config/BunnyConfig.js";
 
 export function makeSchemaSquashCommand(config: BunnyConfig, connection: Connection) {
-  return class extends Command.define("schema:squash {path?}") {
+  return class extends Command.define("schema:squash {path? : Schema file path to squash from}") {
     static description = "Dump the schema and mark all migrations as run.";
     async handle() {
       const outputPath = this.argumentOptional("path") ?? "./database/schema.sql";

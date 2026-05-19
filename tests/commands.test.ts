@@ -147,12 +147,14 @@ describe("CommandRunner — class-based", () => {
     expect(received).toBe("Alice");
   });
 
-  it("throws on missing required argument", async () => {
+  it("sets exitCode 1 on missing required argument", async () => {
     class NeedArg extends Command {
       static signature = "need {arg}";
       async handle() { this.argument("arg"); }
     }
-    await expect(runner.run(NeedArg, [])).rejects.toThrow("Missing required argument: arg");
+    await runner.run(NeedArg, []);
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
   });
 
   it("provides default for optional argument", async () => {
@@ -275,12 +277,14 @@ describe("CommandRunner — function-based", () => {
     expect(received).toEqual(["a.ts", "b.ts"]);
   });
 
-  it("throws on missing required argument via context", async () => {
+  it("sets exitCode 1 on missing required argument via context", async () => {
     const cmd = defineCommand({
       signature: "need {arg}",
       async handle({ argument }) { argument("arg"); },
     });
-    await expect(runner.run(cmd, [])).rejects.toThrow("Missing required argument: arg");
+    await runner.run(cmd, []);
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
   });
 });
 

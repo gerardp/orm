@@ -11,7 +11,7 @@ import type { Connection } from "../connection/Connection.js";
 import type { BunnyConfig } from "../config/BunnyConfig.js";
 
 export function makeTypesGenerateCommand(config: BunnyConfig, connection: Connection) {
-  return class extends Command.define("types:generate {dir?} {--landlord} {--tenant=}") {
+  return class extends Command.define("types:generate {dir? : Output directory for generated types} {--landlord : Generate types for landlord models} {--tenant= : Generate types for a specific tenant}") {
     static description = "Generate TypeScript model type declarations from the database schema.";
 
     async handle() {

@@ -4,7 +4,7 @@ import type { Connection } from "../connection/Connection.js";
 import type { BunnyConfig } from "../config/BunnyConfig.js";
 
 export function makeSchemaDumpCommand(config: BunnyConfig, connection: Connection) {
-  return class extends Command.define("schema:dump {path?}") {
+  return class extends Command.define("schema:dump {path? : Output file path}") {
     static description = "Dump the current database schema to a SQL file.";
     async handle() {
       const outputPath = this.argumentOptional("path") ?? "./database/schema.sql";

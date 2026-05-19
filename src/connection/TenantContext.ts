@@ -33,6 +33,10 @@ export class TenantContext {
     return await storage.run({ ...context, connection }, callback);
   }
 
+  static async asLandlord<T>(callback: () => T | Promise<T>): Promise<T> {
+    return await storage.run(undefined as any, callback);
+  }
+
   static async run<T>(tenantId: string, callback: () => T | Promise<T>): Promise<T> {
     const context = await ConnectionManager.resolveTenant(tenantId);
     if (context.strategy === "schema" && context.schema && context.schemaMode === "search_path") {

@@ -10,6 +10,10 @@ import { makeDbSeedCommand } from "./DbSeedCommand.js";
 import { makeSchemaDumpCommand } from "./SchemaDumpCommand.js";
 import { makeSchemaSquashCommand } from "./SchemaSquashCommand.js";
 import { makeTypesGenerateCommand } from "./TypesGenerateCommand.js";
+import { makeQueueInstallCommand } from "./QueueInstallCommand.js";
+import { makeMakeModelCommand } from "./MakeModelCommand.js";
+import { makeMakeMigrationCommand } from "./MakeMigrationCommand.js";
+import { makeMakeCommandCommand } from "../commands/cli/index.js";
 import type { Connection } from "../connection/Connection.js";
 import type { BunnyConfig } from "../config/BunnyConfig.js";
 
@@ -25,4 +29,8 @@ export function registerOrmCommands(config: BunnyConfig, connection: Connection)
   registerCommand(makeSchemaDumpCommand(config, connection));
   registerCommand(makeSchemaSquashCommand(config, connection));
   registerCommand(makeTypesGenerateCommand(config, connection));
+  registerCommand(makeQueueInstallCommand(config));
+  registerCommand(makeMakeModelCommand(config));
+  registerCommand(makeMakeMigrationCommand(config));
+  registerCommand(makeMakeCommandCommand(config));
 }

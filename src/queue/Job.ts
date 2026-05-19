@@ -1,4 +1,5 @@
 import type { QueueDriver } from "./QueueDriver.js";
+import { TenantContext } from "../connection/TenantContext.js";
 
 export interface JobStatics {
   queue: string;
@@ -60,7 +61,8 @@ export abstract class DispatchableJob {
     const queue = this.queue ?? defaultQueue;
     const maxAttempts = this.maxAttempts ?? 3;
     const delay = this.delay ?? 0;
-    const payload = JSON.stringify({ args });
-    await d.dispatch(queue, this.name, payload, delay, maxAttempts);
+    const tenantId = TenantContext.current()?.tenantId;
+    const payload = JSON.stringify({ args, tenantId });
+    await TenantContext.asLandlord(() => d.dispatch(queue, this.name, payload, delay, maxAttempts));
   }
 }

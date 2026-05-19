@@ -13,6 +13,7 @@ import type { ModelDeclaration } from "../typegen/TypeGenerator.js";
 import type { ConnectionConfig } from "../types/index.js";
 import { Queue } from "../queue/Queue.js";
 import { DatabaseQueueDriver } from "../queue/DatabaseQueueDriver.js";
+import type { QueueDriver } from "../queue/QueueDriver.js";
 
 export interface ModelsPath {
   landlord?: string | string[];
@@ -49,6 +50,7 @@ export interface BunnyConfig {
     defaultTtl?: number;
   };
   queue?: {
+    driver?: QueueDriver;
     defaultQueue?: string;
     workers?: number;
     jobsPath?: string | string[];
@@ -103,7 +105,7 @@ export function configureBunny(config: BunnyConfig): ConfiguredBunny {
   }
 
   if (config.queue) {
-    const queueDriver = new DatabaseQueueDriver(connection, {
+    const queueDriver = config.queue.driver ?? new DatabaseQueueDriver(connection, {
       table: config.queue.table,
       failedTable: config.queue.failedTable,
     });

@@ -1,5 +1,6 @@
 import type { QueueDriver, JobRecord } from "./QueueDriver.js";
 import { resolveJob } from "./Job.js";
+import { TenantContext } from "../connection/TenantContext.js";
 
 export interface WorkerOptions {
   queue?: string;
@@ -71,7 +72,7 @@ export class Worker {
       return;
     }
 
-    let payload: { args: any[] };
+    let payload: { args: any[]; tenantId?: string };
     try {
       payload = JSON.parse(job.payload);
     } catch {
@@ -81,8 +82,10 @@ export class Worker {
 
     const instance = new JobClass(...(payload.args ?? []));
 
+    const run = () => instance.handle();
+
     try {
-      await instance.handle();
+      await (payload.tenantId ? TenantContext.run(payload.tenantId, run) : run());
       await this.driver.complete(job.id);
       console.log(`[Queue] Processed ${job.jobClass} (id=${job.id})`);
     } catch (err: unknown) {

@@ -10,7 +10,7 @@ import {
 const ANSI = {
   green:  (s: string) => `\x1b[32m${s}\x1b[0m`,
   yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
-  red:    (s: string) => `\x1b[31m${s}\x1b[0m`,
+  red:    (s: string) => `\x1b[41m\x1b[97m${s}\x1b[0m`,
 };
 
 function format(msg: string | object): string {
@@ -27,16 +27,32 @@ export class CommandRunner {
     }
 
     const sig = parseSignature(signature);
-    const { args, options } = this.parseRawArgs(sig, rawArgs);
 
-    if (isCommandConstructor(entry)) {
-      const instance = new entry();
-      instance._parsedArgs = args;
-      instance._parsedOptions = options;
-      await instance.handle();
-    } else {
-      const ctx = this.buildContext(args, options);
-      await entry.handle(ctx);
+    let args: Record<string, string | string[] | undefined>;
+    let options: Record<string, string | boolean | undefined>;
+    try {
+      ({ args, options } = this.parseRawArgs(sig, rawArgs));
+    } catch (err) {
+      console.error(ANSI.red(`\n Error: ${err instanceof Error ? err.message : String(err)} `));
+      this.printHelp(sig, isCommandConstructor(entry) ? entry.description : entry.description);
+      process.exitCode = 1;
+      return;
+    }
+
+    try {
+      if (isCommandConstructor(entry)) {
+        const instance = new entry();
+        instance._parsedArgs = args;
+        instance._parsedOptions = options;
+        await instance.handle();
+      } else {
+        const ctx = this.buildContext(args, options);
+        await entry.handle(ctx);
+      }
+    } catch (err) {
+      console.error(ANSI.red(`\n Error: ${err instanceof Error ? err.message : String(err)} `));
+      this.printHelp(sig, isCommandConstructor(entry) ? entry.description : entry.description);
+      process.exitCode = 1;
     }
   }
 
@@ -134,6 +150,7 @@ export class CommandRunner {
   }
 
   private printHelp(sig: ParsedSignature, description?: string): void {
+    const out = console.log;
     const c = {
       dim:    (s: string) => `\x1b[2m${s}\x1b[0m`,
       bold:   (s: string) => `\x1b[1m${s}\x1b[0m`,
@@ -148,32 +165,32 @@ export class CommandRunner {
       return ` ${c.green(`<${a.name}>`)}`;
     }).join("");
 
-    console.log(`\n${c.bold("Usage:")} bunny run ${c.yellow(sig.name)}${usageArgs}${sig.options.length ? c.dim(" [options]") : ""}\n`);
+    out(`\n${c.bold("Usage:")} bunny run ${c.yellow(sig.name)}${usageArgs}${sig.options.length ? c.dim(" [options]") : ""}\n`);
 
     if (description) {
-      console.log(`  ${description}\n`);
+      out(`  ${description}\n`);
     }
 
     if (sig.args.length > 0) {
-      console.log(c.bold("Arguments:"));
+      out(c.bold("Arguments:"));
       for (const a of sig.args) {
         const label = a.variadic ? `${a.name}...` : a.required ? a.name : `${a.name}?`;
         const def = a.defaultValue ? c.dim(` (default: ${a.defaultValue})`) : "";
         const desc = a.description ? `  ${a.description}` : "";
-        console.log(`  ${c.green(label.padEnd(20))}${def}${desc}`);
+        out(`  ${c.green(label.padEnd(20))}${def}${desc}`);
       }
-      console.log("");
+      out("");
     }
 
     if (sig.options.length > 0) {
-      console.log(c.bold("Options:"));
+      out(c.bold("Options:"));
       for (const o of sig.options) {
         const flag = o.type === "boolean" ? `--${o.name}` : `--${o.name}=<value>`;
         const def = o.defaultValue ? c.dim(` (default: ${o.defaultValue})`) : "";
         const desc = o.description ? `  ${o.description}` : "";
-        console.log(`  ${c.cyan(flag.padEnd(22))}${def}${desc}`);
+        out(`  ${c.cyan(flag.padEnd(22))}${def}${desc}`);
       }
-      console.log("");
+      out("");
     }
   }
 }

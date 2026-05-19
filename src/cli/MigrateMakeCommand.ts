@@ -5,7 +5,7 @@ import { getDefaultMigrationsPath } from "./MigrationHelpers.js";
 import type { BunnyConfig } from "../config/BunnyConfig.js";
 
 export function makeMigrateMakeCommand(config: BunnyConfig) {
-  return class extends Command.define("migrate:make {name} {dir?}") {
+  return class extends Command.define("migrate:make {name : Migration name} {dir? : Output directory}") {
     static description = "Create a new migration file.";
     async handle() {
       const name = this.argument("name");
