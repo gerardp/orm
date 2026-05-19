@@ -10,7 +10,7 @@ import {
 } from "./Rule.js";
 import { ValidationError } from "./ValidationError.js";
 import { resolveMessage, type MessageOverrides } from "./messages.js";
-import type { ErrorBag, ValidationContext } from "./types.js";
+import type { ErrorBag, ValidationContext, RuleContract } from "./types.js";
 import { ConditionalRule } from "./rules.js";
 
 function resolveConnection(explicit?: Connection): Connection {
@@ -597,7 +597,7 @@ export class Validator<S extends ValidationSchema> {
           continue;
         }
 
-        const runRules = async (specs: readonly RuleBuilder<any, any>["specs"]): Promise<"continue" | "stopField" | "stopAll" | "excluded"> => {
+        const runRules = async (specs: readonly RuleContract[]): Promise<"continue" | "stopField" | "stopAll" | "excluded"> => {
           // Defaults are ergonomic when declared last in a chain, e.g.
           // rule().in(["admin", "member"]).default("member").
           for (const ruleObj of specs) {
