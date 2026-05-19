@@ -1,0 +1,28 @@
+import { registerCommand } from "../commands/Command.js";
+import { makeMigrateCommand } from "./MigrateCommand.js";
+import { makeMigrateRollbackCommand } from "./MigrateRollbackCommand.js";
+import { makeMigrateResetCommand } from "./MigrateResetCommand.js";
+import { makeMigrateRefreshCommand } from "./MigrateRefreshCommand.js";
+import { makeMigrateFreshCommand } from "./MigrateFreshCommand.js";
+import { makeMigrateStatusCommand } from "./MigrateStatusCommand.js";
+import { makeMigrateMakeCommand } from "./MigrateMakeCommand.js";
+import { makeDbSeedCommand } from "./DbSeedCommand.js";
+import { makeSchemaDumpCommand } from "./SchemaDumpCommand.js";
+import { makeSchemaSquashCommand } from "./SchemaSquashCommand.js";
+import { makeTypesGenerateCommand } from "./TypesGenerateCommand.js";
+import type { Connection } from "../connection/Connection.js";
+import type { BunnyConfig } from "../config/BunnyConfig.js";
+
+export function registerOrmCommands(config: BunnyConfig, connection: Connection): void {
+  registerCommand(makeMigrateCommand(config, connection));
+  registerCommand(makeMigrateRollbackCommand(config, connection));
+  registerCommand(makeMigrateResetCommand(config, connection));
+  registerCommand(makeMigrateRefreshCommand(config, connection));
+  registerCommand(makeMigrateFreshCommand(config, connection));
+  registerCommand(makeMigrateStatusCommand(config, connection));
+  registerCommand(makeMigrateMakeCommand(config));
+  registerCommand(makeDbSeedCommand(config, connection));
+  registerCommand(makeSchemaDumpCommand(config, connection));
+  registerCommand(makeSchemaSquashCommand(config, connection));
+  registerCommand(makeTypesGenerateCommand(config, connection));
+}

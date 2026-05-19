@@ -724,239 +724,113 @@ async function loadConfig(allowFallback = false): Promise<BunnyConfig> {
 }
 
 async function main() {
-  const args = process.argv.slice(2);
+  const args    = process.argv.slice(2);
   const command = args[0];
 
-  if (command === "migrate:make") {
-    const name = args[1];
-    if (!name) {
-      console.error("Usage: bun run bunny migrate:make <name> [directory]");
-      process.exit(1);
+  // Static metadata for built-in commands — shown before config loads
+  const CORE_COMMANDS: Array<{ name: string; sig: string; desc: string }> = [
+    { name: "migrate",          sig: "migrate {--landlord} {--tenants} {--tenant=}",              desc: "Run pending migrations" },
+    { name: "migrate:rollback", sig: "migrate:rollback {--steps=} {--landlord} {--tenants} {--tenant=}", desc: "Rollback the last batch" },
+    { name: "migrate:reset",    sig: "migrate:reset {--landlord} {--tenants} {--tenant=}",        desc: "Rollback all migrations" },
+    { name: "migrate:refresh",  sig: "migrate:refresh {--landlord} {--tenants} {--tenant=}",      desc: "Reset and rerun all migrations" },
+    { name: "migrate:fresh",    sig: "migrate:fresh {--landlord} {--tenants} {--tenant=}",        desc: "Drop all tables and rerun migrations" },
+    { name: "migrate:status",   sig: "migrate:status {--landlord} {--tenants} {--tenant=}",       desc: "Show migration status" },
+    { name: "migrate:make",     sig: "migrate:make {name} {dir?}",                                desc: "Create a new migration file" },
+    { name: "db:seed",          sig: "db:seed {seeder?} {--landlord} {--tenants} {--tenant=}",    desc: "Run database seeders" },
+    { name: "schema:dump",      sig: "schema:dump {path?}",                                       desc: "Dump current schema to SQL" },
+    { name: "schema:squash",    sig: "schema:squash {path?}",                                     desc: "Dump schema and mark migrations as run" },
+    { name: "types:generate",   sig: "types:generate {dir?} {--landlord} {--tenant=}",            desc: "Generate TypeScript model types from DB schema" },
+    { name: "queue",            sig: "queue {--queue=} {--workers=}",                             desc: "Start the background job worker" },
+    { name: "repl",             sig: "repl",                                                      desc: "Start an interactive REPL" },
+  ];
+
+  const isHelp    = args.includes("--help") || args.includes("-h");
+  const isTopHelp = !command || command === "--help" || command === "-h";
+
+  function printStaticHelp() {
+    console.log("\nUsage: bunny <command> [options]\n");
+    console.log("Run \x1b[33mbunny <command> --help\x1b[0m for command-specific usage.\n");
+    console.log("Core commands:\n");
+    for (const { name, desc } of [...CORE_COMMANDS].sort((a, b) => a.name.localeCompare(b.name))) {
+      const color = (name === "queue" || name === "repl") ? "\x1b[32m" : "\x1b[33m";
+      console.log(`  ${color}${name.padEnd(30)}\x1b[0m${desc}`);
     }
-    const config = await loadConfig();
-    const creator = new MigrationCreator();
-    const migrationRoots = normalizePathList(config.migrationsPath || config.migrations?.landlord);
-    const targetPath = args[2] || migrationRoots[0] || getFirstMigrationPath(config.migrations?.landlord) || "./database/migrations";
-    const path = await creator.create(name, targetPath);
-    console.log(`Created migration: ${path}`);
-    return;
+    console.log("");
   }
 
-  if (command === "types:generate") {
-    const config = await loadConfig();
-    const { outDir: explicitOutDir, target } = parseTypeGenerateArgs(args.slice(1));
-    const { landlord: landlordModels, tenant: tenantModels } = getModelPaths(config);
-
-    // Register the default connection once so both landlord and tenant scopes can reuse it
-    const { connection: defaultConnection } = configureBunny(config);
-
-    const allGeneratedTables = new Map<string, string[]>();
-    const skipIndex = target.scope === "default" && !!(landlordModels && tenantModels);
-
-    // --- Landlord ---
-    if ((target.scope === "default" || target.scope === "landlord") && landlordModels) {
-      const modelRoots = normalizePathList(landlordModels);
-      const useModelTypesFolder = !explicitOutDir && !config.typesOutDir && modelRoots.length > 0;
-      const outDir = explicitOutDir || config.typesOutDir || (useModelTypesFolder ? join(modelRoots[0], "types") : "./generated/models");
-      const landlordExcludes = getScopeExclusions(landlordModels, tenantModels);
-      const allowedTables = modelRoots.length > 0 ? await discoverModelTables(modelRoots, landlordExcludes) : undefined;
-      if (modelRoots.length > 0 && (!allowedTables || allowedTables.length === 0)) {
-        console.warn(`Warning: No models discovered in landlord model path(s): ${modelRoots.join(", ")}`);
+  function printStaticCommandHelp(meta: (typeof CORE_COMMANDS)[number]) {
+    console.log(`\n\x1b[1m${meta.desc}\x1b[0m\n`);
+    console.log(`\x1b[1mUsage:\x1b[0m  bunny \x1b[33m${meta.sig}\x1b[0m\n`);
+    const tokens = meta.sig.match(/\{[^}]+\}/g) ?? [];
+    const opts   = tokens.filter((t) => t.startsWith("{--"));
+    if (opts.length > 0) {
+      console.log("\x1b[1mOptions:\x1b[0m");
+      for (const opt of opts) {
+        const inner   = opt.slice(1, -1);
+        const hasVal  = inner.endsWith("=");
+        const optName = hasVal ? inner.slice(0, -1) : inner;
+        const valHint = hasVal ? " <value>" : "";
+        console.log(`  \x1b[36m${(optName + valHint).padEnd(28)}\x1b[0m`);
       }
-      const generator = new TypeGenerator(defaultConnection, {
-        outDir,
-        stubs: config.typeStubs,
-        declarations: !config.typeStubs,
-        modelDeclarations: config.typeDeclarations,
-        modelDirectory: !useModelTypesFolder ? modelRoots[0] : undefined,
-        modelDirectories: useModelTypesFolder ? modelRoots : undefined,
-        excludeModelDirectories: landlordExcludes,
-        modelImportPrefix: config.typeDeclarationImportPrefix,
-        singularModels: config.typeDeclarationSingularModels,
-        declarationDirName: "types",
-        allowedTables,
-        skipIndex,
-      });
-      const tables = await generator.generate();
-      allGeneratedTables.set(outDir, [...(allGeneratedTables.get(outDir) || []), ...tables]);
-      const outputLabel = useModelTypesFolder ? modelRoots.map((root) => join(root, "types")).join(", ") : outDir;
-      console.log(`Generated landlord model type declarations in ${outputLabel}`);
+      console.log("");
     }
-
-    // --- Tenant ---
-    if ((target.scope === "default" || target.scope === "tenant") && tenantModels) {
-      if (!config.tenancy?.resolveTenant) {
-        throw new Error("Tenant type generation requires tenancy.resolveTenant() in bunny.config.ts.");
-      }
-      ConnectionManager.setTenantResolver(config.tenancy.resolveTenant);
-
-      const tenantId = target.scope === "tenant"
-        ? target.tenantId
-        : config.tenancy.listTenants
-          ? (await config.tenancy.listTenants())[0]
-          : undefined;
-
-      if (!tenantId) {
-        throw new Error("Tenant type generation requires either --tenant <id> or tenancy.listTenants() in bunny.config.ts.");
-      }
-
-      await TenantContext.run(tenantId, async () => {
-        const context = TenantContext.current()!;
-        const modelRoots = normalizePathList(tenantModels);
-        const useModelTypesFolder = !explicitOutDir && !config.typesOutDir && modelRoots.length > 0;
-        const outDir = explicitOutDir || config.typesOutDir || (useModelTypesFolder ? join(modelRoots[0], "types") : "./generated/models");
-        const tenantExcludes = getScopeExclusions(tenantModels, landlordModels);
-        const allowedTables = modelRoots.length > 0 ? await discoverModelTables(modelRoots, tenantExcludes) : undefined;
-        if (modelRoots.length > 0 && (!allowedTables || allowedTables.length === 0)) {
-          console.warn(`Warning: No models discovered in tenant model path(s): ${modelRoots.join(", ")}`);
-        }
-        const generator = new TypeGenerator(context.connection, {
-          outDir,
-          stubs: config.typeStubs,
-          declarations: !config.typeStubs,
-          modelDeclarations: config.typeDeclarations,
-          modelDirectory: !useModelTypesFolder ? modelRoots[0] : undefined,
-          modelDirectories: useModelTypesFolder ? modelRoots : undefined,
-          excludeModelDirectories: tenantExcludes,
-          modelImportPrefix: config.typeDeclarationImportPrefix,
-          singularModels: config.typeDeclarationSingularModels,
-          declarationDirName: "types",
-          allowedTables,
-          skipIndex,
-        });
-        const tables = await generator.generate();
-        allGeneratedTables.set(outDir, [...(allGeneratedTables.get(outDir) || []), ...tables]);
-        const outputLabel = useModelTypesFolder ? modelRoots.map((root) => join(root, "types")).join(", ") : outDir;
-        console.log(`Generated tenant model type declarations in ${outputLabel}`);
-      });
-
-      await ConnectionManager.closeTenant(tenantId);
-    }
-
-    // Write combined index files for shared outDirs
-    if (skipIndex) {
-      for (const [outDir, tables] of allGeneratedTables) {
-        const uniqueTables = [...new Set(tables)];
-        const indexLines = uniqueTables.map((table) => {
-          const className = table
-            .split("_")
-            .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-            .join("");
-          return `export * from "./${snakeCase(className)}";`;
-        });
-        await writeFile(join(outDir, "index.ts"), indexLines.join("\n") + "\n", "utf-8");
-      }
-    }
-
-    await defaultConnection.close();
-    return;
   }
 
+  // REPL runs before configureBunny (uses in-memory SQLite fallback)
   if (command === "repl") {
     const config = await loadConfig(true);
-    const replArgs = args.slice(1);
-    const exitCode = await runRepl(config, replArgs);
-    process.exit(exitCode);
+    process.exit(await runRepl(config, args.slice(1)));
   }
 
-  const config = await loadConfig();
-  const { connection } = configureBunny(config);
-
+  // Load config — if it fails and the user asked for help, show static fallback
+  let config: BunnyConfig;
   try {
-    if (command === "schema:dump" || command === "schema:squash") {
-      const outputPath = args[1] || "./database/schema.sql";
-      const migrator = buildMigrator(config, connection, getDefaultMigrationsPath(config), "landlord");
-      if (command === "schema:dump") {
-        await migrator.dumpSchema(outputPath);
-        console.log(`Schema dumped to ${outputPath}`);
-      } else {
-        await migrator.squash(outputPath);
-        console.log(`Schema squashed to ${outputPath}`);
-      }
-    } else if (command === "migrate") {
-      await runConfiguredMigrationCommand(command, config, connection, parseMigrationTarget(args.slice(1)));
-    } else if (command === "migrate:rollback") {
-      await runConfiguredMigrationCommand(command, config, connection, parseMigrationTarget(args.slice(1)));
-    } else if (command === "migrate:reset") {
-      await runConfiguredMigrationCommand(command, config, connection, parseMigrationTarget(args.slice(1)));
-    } else if (command === "migrate:refresh") {
-      await runConfiguredMigrationCommand(command, config, connection, parseMigrationTarget(args.slice(1)));
-    } else if (command === "migrate:fresh") {
-      await runConfiguredMigrationCommand(command, config, connection, parseMigrationTarget(args.slice(1)));
-    } else if (command === "migrate:status") {
-      await runConfiguredMigrationCommand(command, config, connection, parseMigrationTarget(args.slice(1)));
-    } else if (command === "db:seed") {
-      const { target, scope } = parseSeederInvocation(args.slice(1));
-      await runSeederCommand(config, connection, scope, target);
-    } else if (command === "run") {
-      const name = args[1];
+    config = await loadConfig();
+  } catch (err) {
+    if (isTopHelp) { printStaticHelp(); return; }
+    if (isHelp) {
+      const meta = CORE_COMMANDS.find((c) => c.name === command);
+      if (meta) { printStaticCommandHelp(meta); return; }
+    }
+    throw err;
+  }
 
-      // Auto-import from commandsPath
-      const commandsPaths = normalizePathList(config.commands?.commandsPath);
-      for (const commandsPath of commandsPaths) {
-        const resolvedPath = resolve(process.cwd(), commandsPath);
-        if (!existsSync(resolvedPath)) {
-          console.warn(`[Commands] commandsPath not found: ${resolvedPath}`);
+  const { connection } = configureBunny(config); // registers ORM commands via registerOrmCommands()
+
+  // Walk user commandsPath and register user-defined commands
+  for (const commandsPath of normalizePathList(config.commands?.commandsPath)) {
+    const resolvedPath = resolve(process.cwd(), commandsPath);
+    if (!existsSync(resolvedPath)) {
+      console.warn(`[Commands] commandsPath not found: ${resolvedPath}`);
+      continue;
+    }
+    for (const file of await walkJobFiles(resolvedPath)) {
+      const mod = await import(pathToFileURL(file).href);
+      for (const exported of Object.values(mod)) {
+        if (
+          typeof exported === "function" &&
+          typeof (exported as any).signature === "string" &&
+          typeof (exported as any).prototype?.handle === "function"
+        ) {
+          registerCommand(exported as any);
           continue;
         }
-        const files = await walkJobFiles(resolvedPath);
-        for (const file of files) {
-          const mod = await import(pathToFileURL(file).href);
-          for (const exported of Object.values(mod)) {
-            if (
-              typeof exported === "function" &&
-              typeof (exported as any).signature === "string" &&
-              typeof (exported as any).prototype?.handle === "function"
-            ) {
-              registerCommand(exported as any);
-              continue;
-            }
-            if (
-              typeof exported === "object" && exported !== null &&
-              typeof (exported as any).signature === "string" &&
-              typeof (exported as any).handle === "function"
-            ) {
-              registerCommand(exported as any);
-            }
-          }
+        if (
+          typeof exported === "object" && exported !== null &&
+          typeof (exported as any).signature === "string" &&
+          typeof (exported as any).handle === "function"
+        ) {
+          registerCommand(exported as any);
         }
       }
+    }
+  }
 
-      if (!name || name === "--help" || name === "-h") {
-        const commands = listCommands();
-        if (commands.length === 0) {
-          console.log("No commands registered. Set commands.commandsPath in bunny.config.ts.");
-        } else {
-          console.log("\nAvailable commands:\n");
-          for (const entry of commands) {
-            const sig = isCommandConstructor(entry) ? entry.signature : entry.signature;
-            const desc = isCommandConstructor(entry) ? entry.description : entry.description;
-            const cmdName = parseSignatureName(sig);
-            console.log(`  ${cmdName.padEnd(30)}${desc ?? ""}`);
-          }
-          console.log("");
-        }
-        return;
-      }
-
-      const entry = resolveCommand(name);
-      if (!entry) {
-        console.error(`Unknown command: ${name}`);
-        process.exit(1);
-      }
-
-      const runner = new CommandRunner();
-      try {
-        await runner.run(entry, args.slice(2));
-      } catch (err) {
-        console.error(`\x1b[31mError:\x1b[0m ${err instanceof Error ? err.message : String(err)}`);
-        console.error(`\nRun \x1b[33mbunny run ${name} --help\x1b[0m for usage.`);
-        process.exit(1);
-      }
-      return;
-    } else if (command === "queue") {
-      const restArgs = args.slice(1);
-      const queueName = getFlagValue(restArgs, "--queue") ?? config.queue?.defaultQueue ?? "default";
+  try {
+    // Queue worker — long-running, stays hardcoded
+    if (command === "queue") {
+      const restArgs    = args.slice(1);
+      const queueName   = getFlagValue(restArgs, "--queue") ?? config.queue?.defaultQueue ?? "default";
       const workerCount = parseInt(getFlagValue(restArgs, "--workers") ?? String(config.queue?.workers ?? 1), 10);
 
       const driver = new DatabaseQueueDriver(connection, {
@@ -965,15 +839,13 @@ async function main() {
       });
       await driver.migrate();
 
-      const jobsPaths = normalizePathList(config.queue?.jobsPath);
-      for (const jobsPath of jobsPaths) {
+      for (const jobsPath of normalizePathList(config.queue?.jobsPath)) {
         const resolvedPath = resolve(process.cwd(), jobsPath);
         if (!existsSync(resolvedPath)) {
           console.warn(`[Queue] jobsPath not found: ${resolvedPath}`);
           continue;
         }
-        const files = await walkJobFiles(resolvedPath);
-        for (const file of files) {
+        for (const file of await walkJobFiles(resolvedPath)) {
           const mod = await import(pathToFileURL(file).href);
           for (const exported of Object.values(mod)) {
             if (typeof exported === "function" && exported.prototype && typeof exported.prototype.handle === "function") {
@@ -988,47 +860,52 @@ async function main() {
         concurrency: workerCount,
         retryAfterSeconds: config.queue?.retryAfterSeconds,
       });
-
       console.log(`[Queue] Worker started. queue=${queueName} concurrency=${workerCount}`);
-
-      const shutdown = () => {
-        console.log("\n[Queue] Shutting down...");
-        worker.stop();
-      };
+      const shutdown = () => { console.log("\n[Queue] Shutting down..."); worker.stop(); };
       process.once("SIGTERM", shutdown);
       process.once("SIGINT", shutdown);
-
       await worker.run();
       console.log("[Queue] Worker stopped.");
       return;
-    } else {
-      console.log("Usage:");
-      console.log("  bun run bunny migrate              Run landlord migrations, then all tenant migrations when configured");
-      console.log("  bun run bunny migrate --landlord   Run landlord migrations only");
-      console.log("  bun run bunny migrate --tenants    Run all tenant migrations only");
-      console.log("  bun run bunny migrate --tenant <id> Run one tenant's migrations only");
-      console.log("  bun run bunny migrate:make <name> [dir] Create a new migration");
-      console.log("  bun run bunny migrate:rollback     Rollback the last batch");
-      console.log("  bun run bunny migrate:reset        Rollback all migrations");
-      console.log("  bun run bunny migrate:refresh      Reset and rerun migrations");
-      console.log("  bun run bunny migrate:fresh        Drop all tables and rerun migrations");
-      console.log("  bun run bunny migrate:status       Show migration status");
-      console.log("  bun run bunny db:seed              Run seeders from seedersPath");
-      console.log("  bun run bunny db:seed <seeder>     Run one seeder by file path or name");
-      console.log("  bun run bunny db:seed --tenant <id> Run seeders for one tenant");
-      console.log("  bun run bunny db:seed --tenants    Run seeders for every tenant");
-      console.log("  bun run bunny schema:dump [path]   Dump the current database schema");
-      console.log("  bun run bunny schema:squash [path] Dump schema and mark configured migrations as ran");
-      console.log("  bun run bunny types:generate [dir] [--landlord | --tenant <id>]");
-      console.log("                                     Generate model type declarations from DB schema");
-      console.log("  bun run bunny repl                 Start a Bunny REPL with Model, Schema, and db loaded");
-      console.log("                                     Falls back to in-memory SQLite when no config is present");
-      console.log("  bun run bunny queue                Start queue worker (uses config defaults)");
-      console.log("  bun run bunny queue --queue <name> Start worker for a specific queue");
-      console.log("  bun run bunny queue --workers <n>  Start worker with N concurrent slots");
-      console.log("  bun run bunny run                  List all registered commands");
-      console.log("  bun run bunny run <name> [args]    Run a command by name");
-      console.log("  bun run bunny run <name> --help    Show help for a command");
+    }
+
+    // No command or --help: list all registered commands
+    if (!command || command === "--help" || command === "-h") {
+      const commands = listCommands().sort((a, b) => parseSignatureName(a.signature).localeCompare(parseSignatureName(b.signature)));
+      console.log("\nUsage: bunny <command> [options]\n");
+      if (commands.length === 0) {
+        console.log("No commands registered.");
+      } else {
+        console.log("Available commands:\n");
+        const allEntries = ([] as Array<[string, string]>).concat(
+          commands.map((entry): [string, string] => [
+            parseSignatureName(entry.signature),
+            (isCommandConstructor(entry) ? entry.description : (entry as any).description) ?? "",
+          ]),
+          [["queue", "Start the background job worker"], ["repl", "Start an interactive REPL"]],
+        ).sort(([a], [b]) => a.localeCompare(b));
+        for (const [name, desc] of allEntries) {
+          const color = (name === "queue" || name === "repl") ? "\x1b[32m" : "\x1b[33m";
+          console.log(`  ${color}${name.padEnd(30)}\x1b[0m${desc}`);
+        }
+        console.log("");
+      }
+      return;
+    }
+
+    const entry = resolveCommand(command);
+    if (!entry) {
+      console.error(`\x1b[31mUnknown command:\x1b[0m ${command}`);
+      console.error(`Run \x1b[33mbunny --help\x1b[0m to list available commands.`);
+      process.exit(1);
+    }
+
+    try {
+      await new CommandRunner().run(entry, args.slice(1));
+    } catch (err) {
+      console.error(`\x1b[31mError:\x1b[0m ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`\nRun \x1b[33mbunny ${command} --help\x1b[0m for usage.`);
+      process.exit(1);
     }
   } finally {
     await ConnectionManager.closeAll();

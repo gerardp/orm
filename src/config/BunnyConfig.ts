@@ -13,6 +13,7 @@ import type { ModelDeclaration } from "../typegen/TypeGenerator.js";
 import type { ConnectionConfig } from "../types/index.js";
 import { Queue } from "../queue/Queue.js";
 import { DatabaseQueueDriver } from "../queue/DatabaseQueueDriver.js";
+import { registerOrmCommands } from "../cli/index.js";
 
 export interface ModelsPath {
   landlord?: string | string[];
@@ -109,6 +110,8 @@ export function configureBunny(config: BunnyConfig): ConfiguredBunny {
     });
     Queue.configure(queueDriver, config.queue.defaultQueue ?? "default");
   }
+
+  registerOrmCommands(config, connection);
 
   const buildMigrator = (scope: "landlord" | "tenant" = "landlord", overrides: MigratorOptions = {}) => {
     const path = resolveMigrationPath(config, scope);
