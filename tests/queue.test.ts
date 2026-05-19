@@ -139,7 +139,7 @@ describe("DispatchableJob", () => {
 
   it("serializes constructor args on dispatch", async () => {
     class SendEmail extends DispatchableJob {
-      constructor(public to: string, public subject: string) { super(); }
+      constructor(public to: string, public subject: string) { super(to, subject); }
       async handle() {}
     }
     registerJob(SendEmail);
@@ -204,6 +204,48 @@ describe("DispatchableJob", () => {
     registerJob(MyJob);
     expect(resolveJob("MyJob")).toBe(MyJob);
   });
+
+  it("Queue.dispatch() accepts an instance", async () => {
+    class SendEmail extends DispatchableJob {
+      constructor(public to: string) { super(to); }
+      async handle() {}
+    }
+    registerJob(SendEmail);
+
+    await Queue.dispatch(new SendEmail("a@b.com"));
+    const job = await driver.reserve("default", 90);
+    expect(job).not.toBeNull();
+    expect(job!.jobClass).toBe("SendEmail");
+    expect(JSON.parse(job!.payload).args).toEqual(["a@b.com"]);
+  });
+
+  it("Queue.dispatch() instance uses static queue from class", async () => {
+    class CriticalJob extends DispatchableJob {
+      static override queue = "critical";
+      constructor(public x: number) { super(x); }
+      async handle() {}
+    }
+    registerJob(CriticalJob);
+
+    await Queue.dispatch(new CriticalJob(42));
+    expect(await driver.size("critical")).toBe(1);
+    const job = await driver.reserve("critical", 90);
+    expect(JSON.parse(job!.payload).args).toEqual([42]);
+  });
+
+  it("Queue.dispatch() instance options override static values", async () => {
+    class FlexJob extends DispatchableJob {
+      static override queue = "low";
+      constructor(public n: number) { super(n); }
+      async handle() {}
+    }
+    registerJob(FlexJob);
+
+    await Queue.dispatch(new FlexJob(1), { queue: "high", maxAttempts: 5 });
+    expect(await driver.size("high")).toBe(1);
+    const job = await driver.reserve("high", 90);
+    expect(job!.maxAttempts).toBe(5);
+  });
 });
 
 describe("Worker", () => {
@@ -225,7 +267,7 @@ describe("Worker", () => {
     const handled: string[] = [];
 
     class GreetJob extends DispatchableJob {
-      constructor(public name: string) { super(); }
+      constructor(public name: string) { super(name); }
       async handle() { handled.push(this.name); }
     }
     registerJob(GreetJob);

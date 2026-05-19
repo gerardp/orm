@@ -43,7 +43,7 @@ export class SendWelcomeEmail extends DispatchableJob {
   static delay = 0;           // optional dispatch delay in seconds
 
   constructor(private userId: number) {
-    super();
+    super(userId); // forward args to base class so instance dispatch works
   }
 
   async handle(): Promise<void> {
@@ -57,25 +57,28 @@ Constructor arguments must be JSON-serializable (strings, numbers, arrays, plain
 
 ## Dispatching Jobs
 
-### Class static method
+The preferred form is instance dispatch — construct the job and pass it to `Queue.dispatch()`:
+
+```ts
+import { Queue } from "@bunnykit/orm/queue";
+
+await Queue.dispatch(new SendWelcomeEmail(user.id));
+
+// With options
+await Queue.dispatch(new SendWelcomeEmail(user.id), { delay: 30, queue: "critical" });
+```
+
+For convenience, the static method on the class also works:
 
 ```ts
 await SendWelcomeEmail.dispatch(user.id);
 ```
 
-### Queue facade
+### Class + args (alternative)
 
 ```ts
-import { Queue } from "@bunnykit/orm/queue";
-
 await Queue.dispatch(SendWelcomeEmail, [user.id]);
-
-// With overrides
-await Queue.dispatch(SendWelcomeEmail, [user.id], {
-  queue: "critical",
-  delay: 30,        // seconds
-  maxAttempts: 5,
-});
+await Queue.dispatch(SendWelcomeEmail, [user.id], { maxAttempts: 5 });
 ```
 
 ## Running the Worker

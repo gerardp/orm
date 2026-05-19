@@ -1,17 +1,39 @@
 import type { QueueDriver } from "./QueueDriver.js";
-import { setJobDriver, getJobDriver, getDefaultQueue, type JobConstructor, type DispatchOptions } from "./Job.js";
+import { DispatchableJob, setJobDriver, getJobDriver, getDefaultQueue, type JobConstructor, type JobStatics, type DispatchOptions } from "./Job.js";
 
 export class Queue {
   static configure(driver: QueueDriver, defaultQueue = "default"): void {
     setJobDriver(driver, defaultQueue);
   }
 
-  static async dispatch(jobClass: JobConstructor, args: any[], options: DispatchOptions = {}): Promise<void> {
+  static async dispatch(instance: DispatchableJob, options?: DispatchOptions): Promise<void>;
+  static async dispatch(jobClass: JobConstructor, args?: any[], options?: DispatchOptions): Promise<void>;
+  static async dispatch(
+    jobClassOrInstance: JobConstructor | DispatchableJob,
+    argsOrOptions?: any[] | DispatchOptions,
+    options: DispatchOptions = {},
+  ): Promise<void> {
     const d = getJobDriver();
-    const queue = options.queue ?? (jobClass as any).queue ?? getDefaultQueue();
-    const delay = options.delay ?? (jobClass as any).delay ?? 0;
-    const maxAttempts = options.maxAttempts ?? (jobClass as any).maxAttempts ?? 3;
-    const payload = JSON.stringify({ args });
+
+    let jobClass: JobConstructor;
+    let jobArgs: any[];
+    let opts: DispatchOptions;
+
+    if (jobClassOrInstance instanceof DispatchableJob) {
+      jobClass = jobClassOrInstance.constructor as JobConstructor;
+      jobArgs = jobClassOrInstance._jobArgs;
+      opts = (argsOrOptions as DispatchOptions) ?? {};
+    } else {
+      jobClass = jobClassOrInstance;
+      jobArgs = (argsOrOptions as any[]) ?? [];
+      opts = options;
+    }
+
+    const statics = jobClass as unknown as JobStatics;
+    const queue = opts.queue ?? statics.queue ?? getDefaultQueue();
+    const delay = opts.delay ?? statics.delay ?? 0;
+    const maxAttempts = opts.maxAttempts ?? statics.maxAttempts ?? 3;
+    const payload = JSON.stringify({ args: jobArgs });
     await d.dispatch(queue, jobClass.name, payload, delay, maxAttempts);
   }
 

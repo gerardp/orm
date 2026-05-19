@@ -85,17 +85,19 @@ export class Worker {
       await instance.handle();
       await this.driver.complete(job.id);
       console.log(`[Queue] Processed ${job.jobClass} (id=${job.id})`);
-    } catch (err: any) {
-      const message = err?.stack ?? String(err);
+    } catch (err: unknown) {
+      const asError = err instanceof Error ? err : undefined;
+      const message = asError?.stack ?? String(err);
+      const shortMessage = asError?.message ?? String(err);
       const attempts = job.attempts;
       const maxAttempts = job.maxAttempts;
 
       if (attempts >= maxAttempts) {
         await this.driver.fail(job.id, message);
-        console.error(`[Queue] Failed ${job.jobClass} (id=${job.id}) after ${attempts} attempt(s): ${err?.message ?? err}`);
+        console.error(`[Queue] Failed ${job.jobClass} (id=${job.id}) after ${attempts} attempt(s): ${shortMessage}`);
       } else {
         await this.driver.release(job.id, this.retryDelaySeconds);
-        console.warn(`[Queue] Retrying ${job.jobClass} (id=${job.id}) attempt ${attempts}/${maxAttempts}: ${err?.message ?? err}`);
+        console.warn(`[Queue] Retrying ${job.jobClass} (id=${job.id}) attempt ${attempts}/${maxAttempts}: ${shortMessage}`);
       }
     }
   }

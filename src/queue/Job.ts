@@ -1,6 +1,13 @@
 import type { QueueDriver } from "./QueueDriver.js";
 
-export type JobConstructor = new (...args: any[]) => DispatchableJob;
+export interface JobStatics {
+  queue: string;
+  maxAttempts: number;
+  delay: number;
+  name: string;
+}
+
+export type JobConstructor = (new (...args: any[]) => DispatchableJob) & JobStatics;
 
 export interface DispatchOptions {
   queue?: string;
@@ -39,6 +46,12 @@ export abstract class DispatchableJob {
   static queue: string = "default";
   static maxAttempts: number = 3;
   static delay: number = 0;
+
+  readonly _jobArgs: any[];
+
+  constructor(...args: any[]) {
+    this._jobArgs = args;
+  }
 
   abstract handle(): Promise<void>;
 

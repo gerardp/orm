@@ -74,13 +74,13 @@ export class RedisQueueDriver implements QueueDriver {
     await this.migrateDelayed(queue, now);
     await this.requeueTimedOut(queue, now, retryAfterSeconds);
 
-    const raw = await this.client.lpop(this.pendingKey(queue));
-    if (!raw) return null;
+    const popped = await this.client.lpop(this.pendingKey(queue));
+    if (!popped) return null;
 
-    const id = parseInt(raw, 10);
-    const fields = await this.client.hgetall(this.jobKey(id));
+    const id = parseInt(popped, 10);
+    const fields = (await this.client.hgetall(this.jobKey(id))) as unknown as StoredJob | undefined;
 
-    if (!fields || !fields.jobClass) {
+    if (!fields?.jobClass) {
       // Job data missing (evicted or manually deleted) — skip silently
       return null;
     }
@@ -92,7 +92,7 @@ export class RedisQueueDriver implements QueueDriver {
   }
 
   async complete(id: number): Promise<void> {
-    const fields = await this.client.hgetall(this.jobKey(id));
+    const fields = (await this.client.hgetall(this.jobKey(id))) as unknown as StoredJob | undefined;
     if (fields?.queue) {
       await this.client.zrem(this.reservedKey(fields.queue), String(id));
     }
@@ -100,8 +100,8 @@ export class RedisQueueDriver implements QueueDriver {
   }
 
   async fail(id: number, exception: string): Promise<void> {
-    const fields = await this.client.hgetall(this.jobKey(id));
-    if (!fields) return;
+    const fields = (await this.client.hgetall(this.jobKey(id))) as unknown as StoredJob | undefined;
+    if (!fields?.jobClass) return;
 
     const record = JSON.stringify({
       queue: fields.queue,
@@ -117,7 +117,7 @@ export class RedisQueueDriver implements QueueDriver {
   }
 
   async release(id: number, delaySeconds: number): Promise<void> {
-    const fields = await this.client.hgetall(this.jobKey(id));
+    const fields = (await this.client.hgetall(this.jobKey(id))) as unknown as StoredJob | undefined;
     if (!fields?.queue) return;
 
     const now = Math.floor(Date.now() / 1000);
@@ -169,7 +169,7 @@ export class RedisQueueDriver implements QueueDriver {
     }
   }
 
-  private toJobRecord(id: number, fields: Record<string, string>, attempts: number): JobRecord {
+  private toJobRecord(id: number, fields: StoredJob, attempts: number): JobRecord {
     return {
       id,
       queue: fields.queue,
