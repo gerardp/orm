@@ -67,6 +67,7 @@ function resolveMigrationPath(config: BunnyConfig, scope: "landlord" | "tenant")
 }
 
 export function configureBunny(config: BunnyConfig): ConfiguredBunny {
+  void ConnectionManager.closeAll().catch(() => {});
   const connection = new Connection(config.connection);
   ConnectionManager.setDefault(connection);
   Model.setConnection(connection);

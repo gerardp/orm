@@ -548,6 +548,8 @@ Higher-level rules:
 | `use(ruleObject)` | Reusable custom rule object implementing `RuleContract`. |
 | `password(...)` | Password builder with `min`, `letters`, `mixedCase`, `numbers`, and `symbols`. |
 
+Use `custom()` for one-off checks that stay close to the schema. Use `use()` when you want a reusable rule object, usually because the logic needs a class or will be shared across schemas.
+
 ```ts
 enum Status {
   Active = "active",
@@ -572,25 +574,64 @@ await Validator.make(input, {
 }).validate();
 ```
 
-Reusable custom rules implement `RuleContract`:
+Context is available in both `custom()` and `use()` rules. The first example below uses an inline callback, and the second uses a reusable class. The inline version can compare values from the input:
+
+```ts
+await Validator.make(input, {
+  nickname: rule().string().custom(
+    "self_edit_only",
+    (value, ctx) => {
+      if (!value) return true;
+      return ctx.get("user_id") === ctx.get("current_user_id");
+    },
+    "Nickname changes are only allowed on your own profile.",
+  ),
+}).validate();
+```
+
+Reusable custom rules implement `RuleContract`. This version reads from context as well:
 
 ```ts
 import type { RuleContract, ValidationContext } from "@bunnykit/orm/validation";
 
-class EvenRule implements RuleContract {
-  name = "even";
+class CompanyEmailRule implements RuleContract {
+  name = "company_email";
 
   validate(value: unknown) {
-    return typeof value === "number" && value % 2 === 0;
+    return typeof value === "string" && value.endsWith("@example.com");
   }
 
   message(ctx: ValidationContext) {
-    return `The ${ctx.attribute} field must be even.`;
+    return `The ${ctx.attribute} field must end with @example.com.`;
   }
 }
 
 await Validator.make(input, {
-  count: rule().number().use(new EvenRule()),
+  email: rule().string().use(new CompanyEmailRule()),
+}).validate();
+```
+
+This class-based rule compares two fields through `ValidationContext`:
+
+```ts
+import type { RuleContract, ValidationContext } from "@bunnykit/orm/validation";
+
+class MustMatchFieldRule implements RuleContract {
+  name = "must_match_field";
+
+  constructor(private otherField: string) {}
+
+  validate(value: unknown, ctx: ValidationContext) {
+    return value === ctx.get(this.otherField);
+  }
+
+  message(ctx: ValidationContext) {
+    return `The ${ctx.attribute} field must match ${this.otherField}.`;
+  }
+}
+
+await Validator.make(input, {
+  password_confirmation: rule().string().use(new MustMatchFieldRule("password")),
 }).validate();
 ```
 
@@ -633,10 +674,12 @@ rule().trim()
 rule().lowercase()
 rule().default("member")
 rule().when(isAdmin, (r) => r.required())
+rule().when((ctx) => ctx.get("field1") && ctx.get("field2"), (r) => r.required())
 rule().unless(isDraft, (r) => r.required())
 ```
 
 `default()` is applied before validation, even if it appears later in the chain.
+`when()` and `unless()` also accept a `(ctx) => ...` predicate when the condition depends on other fields in the same payload.
 
 ## Nested Data
 

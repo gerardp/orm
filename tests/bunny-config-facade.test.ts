@@ -1,7 +1,7 @@
 import { expect, test, describe, beforeAll, afterAll } from "bun:test";
 import { mkdir, rm, writeFile } from "fs/promises";
 import { join } from "path";
-import { configureBunny, Schema } from "../src/index.js";
+import { ConnectionManager, configureBunny, Schema } from "../src/index.js";
 
 const MIGRATIONS_DIR = join(process.cwd(), "tests", "temp_bcf_migrations");
 const TENANT_MIGRATIONS_DIR = join(process.cwd(), "tests", "temp_bcf_tenant_migrations");
@@ -62,9 +62,32 @@ export default class WidgetSeeder extends Seeder {
   });
 
   afterAll(async () => {
+    await ConnectionManager.closeAll();
     await rm(MIGRATIONS_DIR, { recursive: true, force: true });
     await rm(TENANT_MIGRATIONS_DIR, { recursive: true, force: true });
     await rm(SEEDERS_DIR, { recursive: true, force: true });
+  });
+
+  test("configureBunny closes the previous default connection before replacing it", async () => {
+    const first = configureBunny({
+      connection: { url: "sqlite://:memory:" },
+      migrationsPath: MIGRATIONS_DIR,
+    });
+
+    let closed = false;
+    const originalClose = first.connection.close.bind(first.connection);
+    first.connection.close = async () => {
+      closed = true;
+      await originalClose();
+    };
+
+    configureBunny({
+      connection: { url: "sqlite://:memory:" },
+      migrationsPath: MIGRATIONS_DIR,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(closed).toBe(true);
   });
 
   test("migrate() runs landlord migrations from config.migrationsPath", async () => {

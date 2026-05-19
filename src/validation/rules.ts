@@ -1170,6 +1170,29 @@ export class CustomRule implements RuleContract {
   }
 }
 
+export class ConditionalRule implements RuleContract {
+  name = "conditional";
+
+  constructor(
+    private predicate: (ctx: ValidationContext) => unknown,
+    public readonly branch: readonly RuleContract[],
+    private negate = false,
+  ) {}
+
+  shouldApply(ctx: ValidationContext): boolean {
+    const result = Boolean(this.predicate(ctx));
+    return this.negate ? !result : result;
+  }
+
+  validate(): RuleResult {
+    return PASS;
+  }
+
+  message(c: ValidationContext) {
+    return `The ${c.attribute} field is invalid.`;
+  }
+}
+
 export class PasswordRule implements RuleContract {
   name = "password";
   private minLength = 8;

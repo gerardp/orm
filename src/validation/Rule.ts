@@ -1,4 +1,4 @@
-import type { RuleContract } from "./types.js";
+import type { RuleContract, ValidationContext } from "./types.js";
 import { Connection } from "../connection/Connection.js";
 import { ConnectionManager } from "../connection/ConnectionManager.js";
 import { TenantContext } from "../connection/TenantContext.js";
@@ -104,6 +104,7 @@ import {
   DefaultRule,
   TrimRule,
   LowercaseRule,
+  ConditionalRule,
 } from "./rules.js";
 
 /**
@@ -162,6 +163,16 @@ function isAbsent(v: unknown): boolean {
   return v === undefined || v === null || v === "";
 }
 
+function hasImplicitValidation(specs: readonly RuleContract[]): boolean {
+  return specs.some((ruleObj) => {
+    if (ROOT_IMPLICIT_RULES.has(ruleObj.name)) return true;
+    if (ruleObj instanceof ConditionalRule) {
+      return hasImplicitValidation(ruleObj.branch);
+    }
+    return false;
+  });
+}
+
 const ROOT_IMPLICIT_RULES = new Set([
   "accepted",
   "accepted_if",
@@ -211,10 +222,51 @@ export class RuleBuilder<TValue = unknown, TPresence extends Presence = "require
     return this;
   }
 
+  private async runSpecs(
+    value: unknown,
+    ctx: ValidationContext,
+    specs: readonly RuleContract[],
+    issues: StandardSchemaIssue[],
+  ): Promise<{ value: unknown; skip: boolean; exclude: boolean }> {
+    for (const ruleObj of specs) {
+      if (ruleObj.name === "default") continue;
+      if (ruleObj.coerce) {
+        value = ruleObj.coerce(value);
+      }
+
+      if (ruleObj instanceof ConditionalRule) {
+        if (ruleObj.shouldApply(ctx)) {
+          const nested = await this.runSpecs(value, ctx, ruleObj.branch, issues);
+          value = nested.value;
+          if (nested.exclude) return nested;
+          if (nested.skip) return nested;
+        }
+        continue;
+      }
+
+      const result = await ruleObj.validate(value, ctx);
+      const pass = typeof result === "boolean" ? result : result.pass;
+      const skip = typeof result === "boolean" ? false : !!result.skip;
+      const exclude = typeof result === "boolean" ? false : !!result.exclude;
+
+      if (exclude) {
+        return { value: undefined, skip, exclude };
+      }
+      if (!pass) {
+        issues.push({ message: ruleObj.message(ctx) });
+      }
+      if (skip) {
+        return { value, skip, exclude };
+      }
+    }
+
+    return { value, skip: false, exclude: false };
+  }
+
   private async validateRootValue(input: unknown): Promise<StandardSchemaResult<TValue> | StandardSchemaFailure> {
     let value = input;
     const absent = isAbsent(value);
-    const shouldValidateMissing = this.specs.some((ruleObj) => ROOT_IMPLICIT_RULES.has(ruleObj.name));
+    const shouldValidateMissing = hasImplicitValidation(this.specs);
 
     if (absent && !shouldValidateMissing) {
       return { value: value as TValue };
@@ -241,26 +293,11 @@ export class RuleBuilder<TValue = unknown, TPresence extends Presence = "require
       }
     }
 
-    for (const ruleObj of this.specs) {
-      if (ruleObj.name === "default") continue;
-      if (ruleObj.coerce) {
-        value = ruleObj.coerce(value);
-      }
-      const result = await ruleObj.validate(value, ctx);
-      const pass = typeof result === "boolean" ? result : result.pass;
-      const skip = typeof result === "boolean" ? false : !!result.skip;
-      const exclude = typeof result === "boolean" ? false : !!result.exclude;
-
-      if (exclude) {
-        return { value: undefined as TValue };
-      }
-      if (!pass) {
-        issues.push({ message: ruleObj.message(ctx) });
-      }
-      if (skip) {
-        break;
-      }
+    const result = await this.runSpecs(value, ctx, this.specs, issues);
+    if (result.exclude) {
+      return { value: undefined as TValue };
     }
+    value = result.value;
 
     if (issues.length > 0) {
       return { issues };
@@ -1124,8 +1161,14 @@ export class RuleBuilder<TValue = unknown, TPresence extends Presence = "require
   /**
    * Conditionally apply rules when a predicate is true.
    * Example: `rule().when(isAdmin, (r) => r.required())`
+   * Or: `rule().when((ctx) => ctx.get("field1") && ctx.get("field2"), (r) => r.required())`
    */
-  when(condition: boolean, callback: (rule: this) => this | void): this {
+  when(condition: boolean | ((ctx: ValidationContext) => unknown), callback: (rule: this) => this | void): this {
+    if (typeof condition === "function") {
+      const branch = new RuleBuilder<TValue, TPresence>();
+      callback(branch as any);
+      return this.push(new ConditionalRule(condition, branch.specs)) as any;
+    }
     if (condition) callback(this);
     return this;
   }
@@ -1133,7 +1176,12 @@ export class RuleBuilder<TValue = unknown, TPresence extends Presence = "require
    * Conditionally apply rules when a predicate is false.
    * Example: `rule().unless(isAdmin, (r) => r.required())`
    */
-  unless(condition: boolean, callback: (rule: this) => this | void): this {
+  unless(condition: boolean | ((ctx: ValidationContext) => unknown), callback: (rule: this) => this | void): this {
+    if (typeof condition === "function") {
+      const branch = new RuleBuilder<TValue, TPresence>();
+      callback(branch as any);
+      return this.push(new ConditionalRule(condition, branch.specs, true)) as any;
+    }
     if (!condition) callback(this);
     return this;
   }

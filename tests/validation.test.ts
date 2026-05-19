@@ -133,6 +133,46 @@ describe("Validator — sync rules", () => {
     ).toBe(true);
   });
 
+  test("when accepts a validation context predicate", async () => {
+    const schema = {
+      field1: rule().required().string(),
+      field2: rule().string(),
+      field3: rule().when((ctx) => ctx.get("field1") && ctx.get("field2"), (r) => r.required().string()),
+    };
+
+    expect(
+      await Validator.make({ field1: "a", field2: "b" }, schema).fails(),
+    ).toBe(true);
+
+    expect(
+      await Validator.make({ field1: "a", field3: "ok" }, schema).passes(),
+    ).toBe(true);
+
+    expect(
+      await Validator.make({ field1: "a", field2: "b", field3: "ok" }, schema).passes(),
+    ).toBe(true);
+  });
+
+  test("unless accepts a validation context predicate", async () => {
+    const schema = {
+      field1: rule().required().string(),
+      field2: rule().string(),
+      field3: rule().unless((ctx) => ctx.get("field1") && ctx.get("field2"), (r) => r.required().string()),
+    };
+
+    expect(
+      await Validator.make({ field1: "a", field2: "b" }, schema).passes(),
+    ).toBe(true);
+
+    expect(
+      await Validator.make({ field1: "a" }, schema).fails(),
+    ).toBe(true);
+
+    expect(
+      await Validator.make({ field1: "a", field2: "b", field3: "ok" }, schema).passes(),
+    ).toBe(true);
+  });
+
   test("conditional rules accept multiple expected values", async () => {
     expect(
       await Validator.make(

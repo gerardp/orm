@@ -11,6 +11,7 @@ import {
 import { ValidationError } from "./ValidationError.js";
 import { resolveMessage, type MessageOverrides } from "./messages.js";
 import type { ErrorBag, ValidationContext } from "./types.js";
+import { ConditionalRule } from "./rules.js";
 
 function resolveConnection(explicit?: Connection): Connection {
   if (explicit) return explicit;
@@ -375,6 +376,16 @@ const IMPLICIT_RULES = new Set([
   "required_without_all",
 ]);
 
+function hasImplicitValidation(specs: readonly { name: string }[]): boolean {
+  return specs.some((ruleObj) => {
+    if (IMPLICIT_RULES.has(ruleObj.name)) return true;
+    if (ruleObj instanceof ConditionalRule) {
+      return hasImplicitValidation(ruleObj.branch);
+    }
+    return false;
+  });
+}
+
 export class Validator<S extends ValidationSchema> {
   private customMessages: MessageOverrides = {};
   private stopOnFirst = false;
@@ -578,52 +589,68 @@ export class Validator<S extends ValidationSchema> {
         let value = getPath(data, field);
         let excluded = false;
         const wasSupplied = hasPath(data, field);
-        const shouldValidateMissing = builder.specs.some((ruleObj) => IMPLICIT_RULES.has(ruleObj.name));
+        const shouldValidateMissing = hasImplicitValidation(builder.specs);
         const isNullable = builder.specs.some((ruleObj) => ruleObj.name === "nullable");
         const isMissing = !wasSupplied || value === undefined || value === "" || (value === null && !isNullable);
 
-      if (isMissing && !shouldValidateMissing) {
-        continue;
-      }
-
-      // Defaults are ergonomic when declared last in a chain, e.g.
-      // rule().in(["admin", "member"]).default("member").
-      for (const ruleObj of builder.specs) {
-        if (ruleObj.name === "default" && ruleObj.coerce) {
-          value = ruleObj.coerce(value);
-        }
-      }
-
-      for (const ruleObj of builder.specs) {
-        if (ruleObj.name === "default") continue;
-        if (ruleObj.coerce) {
-          value = ruleObj.coerce(value);
-        }
-        const result = await ruleObj.validate(value, ctx);
-        const pass = typeof result === "boolean" ? result : result.pass;
-        const skip = typeof result === "boolean" ? false : !!result.skip;
-        const exclude = typeof result === "boolean" ? false : !!result.exclude;
-
-        if (exclude) {
-          excluded = true;
-          break;
+        if (isMissing && !shouldValidateMissing) {
+          continue;
         }
 
-        if (!pass) {
-          const msg = resolveMessage(this.customMessages, field, ruleObj, ctx);
-          (this.bag[field] ??= []).push(msg);
-          if (this.stopOnFirst) return;
-          if (!this.collectAll) break; // default: stop running rules for this field after first failure
-        }
-        if (skip) {
-          break;
-        }
-      }
+        const runRules = async (specs: readonly RuleBuilder<any, any>["specs"]): Promise<"continue" | "stopField" | "stopAll" | "excluded"> => {
+          // Defaults are ergonomic when declared last in a chain, e.g.
+          // rule().in(["admin", "member"]).default("member").
+          for (const ruleObj of specs) {
+            if (ruleObj.name === "default" && ruleObj.coerce) {
+              value = ruleObj.coerce(value);
+            }
+          }
 
-      // Include the (possibly coerced/defaulted) value when the field passed
-      // and either was supplied in the input or produced by a default/coerce.
-      const hadError = !!this.bag[field];
-      if (!excluded && !hadError && (value !== undefined || (isNullable && value === null))) {
+          for (const ruleObj of specs) {
+            if (ruleObj.name === "default") continue;
+            if (ruleObj.coerce) {
+              value = ruleObj.coerce(value);
+            }
+
+            if (ruleObj instanceof ConditionalRule) {
+              if (ruleObj.shouldApply(ctx)) {
+                const nested = await runRules(ruleObj.branch);
+                if (nested !== "continue") return nested;
+              }
+              continue;
+            }
+
+            const result = await ruleObj.validate(value, ctx);
+            const pass = typeof result === "boolean" ? result : result.pass;
+            const skip = typeof result === "boolean" ? false : !!result.skip;
+            const exclude = typeof result === "boolean" ? false : !!result.exclude;
+
+            if (exclude) {
+              excluded = true;
+              return "excluded";
+            }
+
+            if (!pass) {
+              const msg = resolveMessage(this.customMessages, field, ruleObj, ctx);
+              (this.bag[field] ??= []).push(msg);
+              if (this.stopOnFirst) return "stopAll";
+              if (!this.collectAll) return "stopField"; // default: stop running rules for this field after first failure
+            }
+            if (skip) {
+              return "stopField";
+            }
+          }
+
+          return "continue";
+        };
+
+        const status = await runRules(builder.specs);
+        if (status === "stopAll") return;
+
+        // Include the (possibly coerced/defaulted) value when the field passed
+        // and either was supplied in the input or produced by a default/coerce.
+        const hadError = !!this.bag[field];
+        if (!excluded && !hadError && (value !== undefined || (isNullable && value === null))) {
           setPath(this.output, field, value);
         }
       }
