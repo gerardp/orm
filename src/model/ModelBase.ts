@@ -76,6 +76,7 @@ interface ModelType<T extends Record<string, any> = any> {
   save(options?: any): Promise<this>;
   setRelation(name: string, value: any): void;
   getRelation(name: string): any;
+  isInstanceOf<M extends ModelConstructor<any>>(modelClass: M): this is InstanceType<M>;
 }
 
 type BaseModelInstanceKey =
@@ -86,7 +87,7 @@ type BaseModelInstanceKey =
   | "serializeCastAttribute" | "mergeCasts" | "getDirty" | "isDirty"
   | "wasChanged" | "getChanges" | "getOriginal" | "replicate" | "makeHidden"
   | "makeVisible" | "append" | "setAppends" | "getAppends" | "save" | "update"
-  | "updateTimestamps" | "touch" | "increment" | "decrement" | "is" | "isNot"
+  | "updateTimestamps" | "touch" | "increment" | "decrement" | "is" | "isNot" | "isInstanceOf"
   | "load" | "loadMorph" | "loadCount" | "loadSum" | "loadAvg" | "loadMin"
   | "loadMax" | "delete" | "saveQuietly" | "deleteQuietly" | "restore"
   | "forceDelete" | "refresh" | "toJSON" | "json" | "toString" | "freshTimestamp"

@@ -20,6 +20,10 @@ class Admission extends Model {
   static table = "admissions";
 }
 
+class Order extends Model {
+  static table = "orders";
+}
+
 describe("Observers", () => {
   beforeAll(async () => {
     setupTestDb();
@@ -36,6 +40,11 @@ describe("Observers", () => {
     await Schema.create("admissions", (table) => {
       table.increments("id");
       table.string("name");
+      table.timestamps();
+    });
+    await Schema.create("orders", (table) => {
+      table.increments("id");
+      table.string("number");
       table.timestamps();
     });
   });
@@ -199,5 +208,59 @@ describe("Observers", () => {
     await Admission.create({ name: "Typed" });
     expect(events).toEqual(["Typed"]);
     ObserverRegistry.unregister(Admission);
+  });
+
+  test("observer.observe accepts multiple model classes", async () => {
+    const events: string[] = [];
+
+    class AuditObserver extends Observer<Model> {
+      created(model: Model) {
+        if (model.isInstanceOf(ObservedUser)) {
+          events.push(`user:${model.getAttribute("name")}`);
+        }
+        if (model.isInstanceOf(Order)) {
+          events.push(`order:${model.getAttribute("number")}`);
+        }
+      }
+    }
+
+    AuditObserver.observe([ObservedUser, Order]);
+
+    await ObservedUser.create({ name: "Multi User" });
+    await Order.create({ number: "ORD-1" });
+
+    expect(events).toEqual(["user:Multi User", "order:ORD-1"]);
+
+    ObserverRegistry.unregister(ObservedUser);
+    ObserverRegistry.unregister(Order);
+  });
+
+  test("observer.unobserve removes only the registrations owned by that observer", async () => {
+    const events: string[] = [];
+
+    class AuditObserver extends Observer<Model> {
+      created(model: Model) {
+        if (model.isInstanceOf(ObservedUser)) {
+          events.push(`user:${model.getAttribute("name")}`);
+        }
+        if (model.isInstanceOf(Order)) {
+          events.push(`order:${model.getAttribute("number")}`);
+        }
+      }
+    }
+
+    AuditObserver.observe([ObservedUser, Order]);
+
+    await ObservedUser.create({ name: "Before Unobserve" });
+    await Order.create({ number: "ORD-2" });
+    expect(events).toEqual(["user:Before Unobserve", "order:ORD-2"]);
+
+    AuditObserver.unobserve([ObservedUser, Order]);
+    events.length = 0;
+
+    await ObservedUser.create({ name: "After Unobserve" });
+    await Order.create({ number: "ORD-3" });
+
+    expect(events).toEqual([]);
   });
 });

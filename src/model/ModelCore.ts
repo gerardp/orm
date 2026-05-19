@@ -421,6 +421,10 @@ export class ModelCore<T extends Record<string, any> = any> {
       String(this.getAttribute(ctor.primaryKey)) === String(other.getAttribute(otherCtor.primaryKey));
   }
 
+  isInstanceOf<M extends ModelConstructor<any>>(modelClass: M): this is InstanceType<M> {
+    return (this.getModelConstructor() as unknown) === modelClass;
+  }
+
   isNot(other: ModelCore | null | undefined): boolean {
     return !this.is(other);
   }

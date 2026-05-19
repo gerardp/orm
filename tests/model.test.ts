@@ -2,6 +2,8 @@ import { expect, test, describe, beforeAll } from "bun:test";
 import { Model, Schema } from "../src/index.js";
 import { setupTestDb } from "./helpers.js";
 
+function expectType<T>(_value: T): void {}
+
 class TestUser extends Model {
   static table = "test_users";
 }
@@ -147,6 +149,16 @@ describe("Model", () => {
     const all = await TestUser.all();
     expect(all.length).toBeGreaterThanOrEqual(1);
     expect(all[0]).toBeInstanceOf(TestUser);
+  });
+
+  test("isInstanceOf narrows the current model", async () => {
+    const user = await TestUser.create({ name: "Jill" });
+    if (user.isInstanceOf(TestUser)) {
+      expectType<TestUser>(user);
+      expect(user.getAttribute("name")).toBe("Jill");
+    } else {
+      throw new Error("expected model to match TestUser");
+    }
   });
 
   test("where returns builder", async () => {

@@ -34,26 +34,62 @@ export class Observer<T = any> implements ObserverContract<T> {
   static observe<TModel, TObserver extends ObserverContract<TModel>>(
     this: new () => TObserver,
     modelClass: ModelConstructor<TModel>,
+  ): void;
+  static observe<TModel, TObserver extends ObserverContract<TModel>>(
+    this: new () => TObserver,
+    modelClasses: readonly ModelConstructor<TModel>[],
+  ): void;
+  static observe<TModel, TObserver extends ObserverContract<TModel>>(
+    this: new () => TObserver,
+    modelClassOrClasses: ModelConstructor<TModel> | readonly ModelConstructor<TModel>[],
   ): void {
-    ObserverRegistry.register(modelClass, new this());
+    const observer = new this();
+    const modelClasses = Array.isArray(modelClassOrClasses) ? modelClassOrClasses : [modelClassOrClasses];
+    for (const modelClass of modelClasses) {
+      ObserverRegistry.register(modelClass, observer, this);
+    }
+  }
+
+  static unobserve<TModel>(
+    this: new () => ObserverContract<TModel>,
+    modelClass: ModelConstructor<TModel>,
+  ): void;
+  static unobserve<TModel>(
+    this: new () => ObserverContract<TModel>,
+    modelClasses: readonly ModelConstructor<TModel>[],
+  ): void;
+  static unobserve<TModel>(
+    this: new () => ObserverContract<TModel>,
+    modelClassOrClasses: ModelConstructor<TModel> | readonly ModelConstructor<TModel>[],
+  ): void {
+    const modelClasses = Array.isArray(modelClassOrClasses) ? modelClassOrClasses : [modelClassOrClasses];
+    for (const modelClass of modelClasses) {
+      ObserverRegistry.unregisterOwned(modelClass, this);
+    }
   }
 }
 
-export class ObserverRegistry {
-  private static observers = new Map<ModelConstructor<any>, ObserverContract[]>();
-  private static byEvent = new Map<string, Map<ModelConstructor<any>, ObserverContract<any>[]>>();
+type ObserverEntry = {
+  observer: ObserverContract<any>;
+  owner?: Function;
+};
 
-  static register<T>(modelClass: ModelConstructor<T>, observer: ObserverContract<T>): void {
+export class ObserverRegistry {
+  private static observers = new Map<ModelConstructor<any>, ObserverEntry[]>();
+  private static byEvent = new Map<string, Map<ModelConstructor<any>, ObserverEntry[]>>();
+
+  static register<T>(modelClass: ModelConstructor<T>, observer: ObserverContract<T>, owner?: Function): void {
     if (!this.observers.has(modelClass)) {
       this.observers.set(modelClass, []);
     }
-    this.observers.get(modelClass)!.push(observer);
+    const entry: ObserverEntry = { observer, owner };
+    this.observers.get(modelClass)!.push(entry);
     for (const event of OBSERVER_EVENTS) {
       const handler = observer[event];
       if (handler && handler !== Observer.prototype[event]) {
         const map = this.byEvent.get(event) || new Map();
         const list = map.get(modelClass) || [];
-        list.push(observer);
+        list.push(entry);
         map.set(modelClass, list);
         this.byEvent.set(event, map);
       }
@@ -61,7 +97,7 @@ export class ObserverRegistry {
   }
 
   static get<T>(modelClass: ModelConstructor<T>): ObserverContract<T>[] {
-    return this.observers.get(modelClass) || [];
+    return (this.observers.get(modelClass) || []).map((entry) => entry.observer);
   }
 
   static unregister<T>(modelClass: ModelConstructor<T>): void {
@@ -71,13 +107,35 @@ export class ObserverRegistry {
     }
   }
 
+  static unregisterOwned<T>(modelClass: ModelConstructor<T>, owner: Function): void {
+    const current = this.observers.get(modelClass);
+    if (!current) return;
+    const remaining = current.filter((entry) => entry.owner !== owner);
+    if (remaining.length === 0) {
+      this.observers.delete(modelClass);
+    } else {
+      this.observers.set(modelClass, remaining);
+    }
+
+    for (const map of this.byEvent.values()) {
+      const list = map.get(modelClass);
+      if (!list) continue;
+      const filtered = list.filter((entry) => entry.owner !== owner);
+      if (filtered.length === 0) {
+        map.delete(modelClass);
+      } else {
+        map.set(modelClass, filtered);
+      }
+    }
+  }
+
   static async dispatch<T>(event: keyof ObserverContract, model: T): Promise<void> {
     const eventMap = this.byEvent.get(event);
     if (!eventMap) return;
     const observers = eventMap.get(Object.getPrototypeOf(model).constructor as ModelConstructor<T>);
     if (!observers) return;
-    for (const observer of observers) {
-      const handler = observer[event];
+    for (const entry of observers) {
+      const handler = entry.observer[event];
       if (handler) {
         await handler(model);
       }

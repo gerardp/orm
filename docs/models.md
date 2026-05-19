@@ -531,6 +531,16 @@ a.is(b);                  // true
 a.isNot(b);               // false
 ```
 
+### `isInstanceOf`
+
+Check whether the current instance belongs to a model class, which is useful in observers and shared helpers:
+
+```ts
+if (model.isInstanceOf(User)) {
+  model.getAttribute("email");
+}
+```
+
 ## Serialization
 
 `toJSON()` (or its alias `json()`) returns a plain object combining attributes and loaded relations:

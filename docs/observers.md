@@ -9,6 +9,39 @@ Observers let you hook into a model's lifecycle without scattering side-effects 
 
 Observers fire automatically whenever a model is saved, updated, or deleted through a model instance (`user.save()`, `user.delete()`, `User.create(...)`). They do **not** fire on raw builder operations (`User.where(...).update(...)`).
 
+Inside a shared observer, `model.isInstanceOf(User)` is the easiest way to branch on the concrete model class.
+For IntelliSense to narrow correctly, type the hook parameter as `Model` or a union of model types, not `any`:
+
+```ts
+import { Model, Observer } from "@bunnykit/orm";
+import User from "./models/User";
+import Order from "./models/Order";
+
+class AuditObserver extends Observer<Model> {
+  created(model: Model) {
+    if (model.isInstanceOf(User)) {
+      model.getAttribute("email");
+    }
+
+    if (model.isInstanceOf(Order)) {
+      model.getAttribute("total");
+    }
+  }
+}
+```
+
+To register the same observer for multiple models in one call, pass an array:
+
+```ts
+AuditObserver.observe([User, Order]);
+```
+
+To remove those registrations later, call:
+
+```ts
+AuditObserver.unobserve([User, Order]);
+```
+
 ## Registering
 
 For larger observers, extend `Observer<Model>` and call `YourObserver.observe(ModelClass)` once at app startup — typically right after `configureBunny()`:
