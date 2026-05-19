@@ -11,6 +11,8 @@ import { SeederRunner } from "../seeding/Seeder.js";
 import { TenantContext } from "../connection/TenantContext.js";
 import type { ModelDeclaration } from "../typegen/TypeGenerator.js";
 import type { ConnectionConfig } from "../types/index.js";
+import { Queue } from "../queue/Queue.js";
+import { DatabaseQueueDriver } from "../queue/DatabaseQueueDriver.js";
 
 export interface ModelsPath {
   landlord?: string | string[];
@@ -45,6 +47,14 @@ export interface BunnyConfig {
     store?: CacheStore;
     prefix?: string;
     defaultTtl?: number;
+  };
+  queue?: {
+    defaultQueue?: string;
+    workers?: number;
+    jobsPath?: string | string[];
+    retryAfterSeconds?: number;
+    table?: string;
+    failedTable?: string;
   };
 }
 
@@ -87,6 +97,14 @@ export function configureBunny(config: BunnyConfig): ConfiguredBunny {
       prefix: config.cache.prefix,
       defaultTtl: config.cache.defaultTtl,
     });
+  }
+
+  if (config.queue) {
+    const queueDriver = new DatabaseQueueDriver(connection, {
+      table: config.queue.table,
+      failedTable: config.queue.failedTable,
+    });
+    Queue.configure(queueDriver, config.queue.defaultQueue ?? "default");
   }
 
   const buildMigrator = (scope: "landlord" | "tenant" = "landlord", overrides: MigratorOptions = {}) => {

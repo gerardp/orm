@@ -15,6 +15,9 @@ import { pathToFileURL } from "url";
 import { normalizePathList, snakeCase } from "../src/utils.js";
 import { discoverModelTables } from "../src/typegen/discoverModelTables.js";
 import type { ModelsPath } from "../src/config/BunnyConfig.js";
+import { DatabaseQueueDriver } from "../src/queue/DatabaseQueueDriver.js";
+import { Worker } from "../src/queue/Worker.js";
+import { registerJob } from "../src/queue/Job.js";
 import {
   BelongsTo,
   BelongsToMany,
@@ -119,6 +122,30 @@ function getScopeExclusions(ourModels: string | string[] | undefined, otherModel
   return otherRoots.filter((other) =>
     ourRoots.some((our) => other.startsWith(our + sep) || other === our)
   );
+}
+
+function getFlagValue(args: string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag);
+  if (idx === -1) return undefined;
+  return args[idx + 1];
+}
+
+async function walkJobFiles(dir: string): Promise<string[]> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    const fullPath = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await walkJobFiles(fullPath));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const name = entry.name;
+    if (name.endsWith(".d.ts") || name.endsWith(".test.ts") || name.endsWith(".spec.ts")) continue;
+    if (![".ts", ".js", ".mts", ".mjs"].includes(extname(name))) continue;
+    files.push(fullPath);
+  }
+  return files;
 }
 
 function parseTypeGenerateArgs(args: string[]): { outDir?: string; target: MigrationTarget } {
@@ -858,6 +885,53 @@ async function main() {
     } else if (command === "db:seed") {
       const { target, scope } = parseSeederInvocation(args.slice(1));
       await runSeederCommand(config, connection, scope, target);
+    } else if (command === "queue") {
+      const restArgs = args.slice(1);
+      const queueName = getFlagValue(restArgs, "--queue") ?? config.queue?.defaultQueue ?? "default";
+      const workerCount = parseInt(getFlagValue(restArgs, "--workers") ?? String(config.queue?.workers ?? 1), 10);
+
+      const driver = new DatabaseQueueDriver(connection, {
+        table: config.queue?.table,
+        failedTable: config.queue?.failedTable,
+      });
+      await driver.migrate();
+
+      const jobsPaths = normalizePathList(config.queue?.jobsPath);
+      for (const jobsPath of jobsPaths) {
+        const resolvedPath = resolve(process.cwd(), jobsPath);
+        if (!existsSync(resolvedPath)) {
+          console.warn(`[Queue] jobsPath not found: ${resolvedPath}`);
+          continue;
+        }
+        const files = await walkJobFiles(resolvedPath);
+        for (const file of files) {
+          const mod = await import(pathToFileURL(file).href);
+          for (const exported of Object.values(mod)) {
+            if (typeof exported === "function" && exported.prototype && typeof exported.prototype.handle === "function") {
+              registerJob(exported as any);
+            }
+          }
+        }
+      }
+
+      const worker = new Worker(driver, {
+        queue: queueName,
+        concurrency: workerCount,
+        retryAfterSeconds: config.queue?.retryAfterSeconds,
+      });
+
+      console.log(`[Queue] Worker started. queue=${queueName} concurrency=${workerCount}`);
+
+      const shutdown = () => {
+        console.log("\n[Queue] Shutting down...");
+        worker.stop();
+      };
+      process.once("SIGTERM", shutdown);
+      process.once("SIGINT", shutdown);
+
+      await worker.run();
+      console.log("[Queue] Worker stopped.");
+      return;
     } else {
       console.log("Usage:");
       console.log("  bun run bunny migrate              Run landlord migrations, then all tenant migrations when configured");
@@ -880,6 +954,9 @@ async function main() {
       console.log("                                     Generate model type declarations from DB schema");
       console.log("  bun run bunny repl                 Start a Bunny REPL with Model, Schema, and db loaded");
       console.log("                                     Falls back to in-memory SQLite when no config is present");
+      console.log("  bun run bunny queue                Start queue worker (uses config defaults)");
+      console.log("  bun run bunny queue --queue <name> Start worker for a specific queue");
+      console.log("  bun run bunny queue --workers <n>  Start worker with N concurrent slots");
     }
   } finally {
     await ConnectionManager.closeAll();

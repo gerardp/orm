@@ -208,7 +208,8 @@ Recommended tenant-scoped tags:
 Use observers to invalidate exact tags when models change:
 
 ```ts
-import { Cache, Observer } from "@bunnykit/orm";
+import { Observer } from "@bunnykit/orm";
+import { Cache } from "@bunnykit/orm/cache";
 
 class CurriculumObserver extends Observer<Curriculum> {
   saved(model: Curriculum) {
@@ -229,6 +230,42 @@ class CurriculumObserver extends Observer<Curriculum> {
 }
 
 CurriculumObserver.observe(Curriculum);
+```
+
+You can also isolate cache invalidation in a dedicated observer that watches every model affecting the same read cache. This keeps cache logic separate from domain observers that send notifications, write audits, or enforce business rules:
+
+```ts
+import { Observer } from "@bunnykit/orm";
+import { Cache } from "@bunnykit/orm/cache";
+import Category from "./models/Category";
+import Product from "./models/Product";
+import ProductPrice from "./models/ProductPrice";
+
+type CatalogCacheModel = Category | Product | ProductPrice;
+
+class CatalogCacheObserver extends Observer<CatalogCacheModel> {
+  created() {
+    return this.invalidate();
+  }
+
+  updated() {
+    return this.invalidate();
+  }
+
+  deleted() {
+    return this.invalidate();
+  }
+
+  private invalidate() {
+    return Cache.forgetTags([
+      "catalog",
+      "catalog:categories",
+      "catalog:products",
+    ]);
+  }
+}
+
+CatalogCacheObserver.observe([Category, Product, ProductPrice]);
 ```
 
 ## Query Caching

@@ -732,13 +732,13 @@ export class Builder<T = Record<string, any>, TResult = T> {
 
   with<K extends string & NestedRelationPath<T>>(constraint: TypedConstraintSelection<T, K>): Builder<T, WithLoadedRelationsFromConstraintMap<TResult, TypedConstraintSelection<T, K>>>;
   with<R extends TypedConstraintMap<T> & object>(constraint: R): Builder<T, WithLoadedRelationsFromConstraintMap<TResult, R>>;
+  with<Rs extends ReadonlyArray<TypedEagerLoad<T>>>(relations: Rs): Builder<T, WithLoadedRelations<TResult, ExtractStringPaths<Rs[number]>>>;
+  with<Rs extends ReadonlyArray<TypedEagerLoad<T>>>(...relations: Rs): Builder<T, WithLoadedRelations<TResult, ExtractStringPaths<Rs[number]>>>;
   with<R extends string & NestedRelationPath<T>>(relation: R): Builder<T, WithLoadedRelations<TResult, R>>;
   with(relation: LiteralUnion<string & NestedRelationPath<T>>): Builder<T, WithLoadedRelations<TResult, string>>;
   with<R extends string & MorphToRelationName<T>>(relation: R, callback: MorphToConstraintCallback): Builder<T, WithLoadedRelations<TResult, R>>;
   with<R extends string & NestedRelationPath<T>>(relation: R, callback: RelationConstraint<T, R>): Builder<T, WithLoadedRelations<TResult, R>>;
   with(relation: LiteralUnion<string & NestedRelationPath<T>>, callback: EagerLoadDefinition["constraint"]): Builder<T, WithLoadedRelations<TResult, string>>;
-  with<Rs extends ReadonlyArray<TypedEagerLoad<T>>>(relations: Rs): Builder<T, WithLoadedRelations<TResult, ExtractStringPaths<Rs[number]>>>;
-  with<Rs extends ReadonlyArray<TypedEagerLoad<T>>>(...relations: Rs): Builder<T, WithLoadedRelations<TResult, ExtractStringPaths<Rs[number]>>>;
   with(...relations: any[]): any {
     this.eagerLoads.push(...this.normalizeEagerLoads(relations as any));
     return this as any;

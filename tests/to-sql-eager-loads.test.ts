@@ -209,18 +209,55 @@ describe("model json type", () => {
     type Json = ReturnType<Result["json"]>;
     type AdviserJson = Json["adviser"];
     type SubjectsJson = Json["subjects"];
+    type IsAny<T> = 0 extends (1 & T) ? true : false;
 
     const _hasAdviserKey: "adviser" extends keyof Json ? true : false = true;
     const _hasSubjectsKey: "subjects" extends keyof Json ? true : false = true;
+    const _jsonIsNotAny: IsAny<Json> extends true ? false : true = true;
+    const _noAppends: "$appends" extends keyof Json ? false : true = true;
+    const _noMergedCasts: "$mergedCasts" extends keyof Json ? false : true = true;
+    const _noDirtyKeys: "$dirtyKeys" extends keyof Json ? false : true = true;
     const _adviserName: NonNullable<AdviserJson>["name"] extends string ? true : false = true;
     const _subjectsAreArray: SubjectsJson extends Array<any> ? true : false = true;
     const _subjectTitle: SubjectsJson[number]["title"] extends string ? true : false = true;
 
     expect(_hasAdviserKey).toBe(true);
     expect(_hasSubjectsKey).toBe(true);
+    expect(_jsonIsNotAny).toBe(true);
+    expect(_noAppends).toBe(true);
+    expect(_noMergedCasts).toBe(true);
+    expect(_noDirtyKeys).toBe(true);
     expect(_adviserName).toBe(true);
     expect(_subjectsAreArray).toBe(true);
     expect(_subjectTitle).toBe(true);
+  });
+
+  test("with() accepts array relation lists without losing eager-load typing", () => {
+    interface StudentAttrs {
+      id: number;
+      name: string;
+    }
+    interface AdmissionAttrs {
+      id: number;
+      student_id: number | null;
+    }
+
+    class Student extends Model.define<StudentAttrs>("typed_json_students") {}
+    class Admission extends Model.define<AdmissionAttrs>("typed_json_admissions") {
+      student() { return this.belongsTo(Student); }
+    }
+
+    const builder = Admission.with(["student"]);
+
+    type Result = NonNullable<Awaited<ReturnType<typeof builder.find>>>;
+    type StudentRelation = Result["student"];
+    type IsAny<T> = 0 extends (1 & T) ? true : false;
+
+    const _relationIsModel: StudentRelation extends Student | null ? true : false = true;
+    const _relationIsNotAny: IsAny<StudentRelation> extends true ? false : true = true;
+
+    expect(_relationIsModel).toBe(true);
+    expect(_relationIsNotAny).toBe(true);
   });
 
   test("json() keeps loaded relation shapes through chained array with()", () => {
@@ -264,6 +301,139 @@ describe("model json type", () => {
     expect(_hasBranchKey).toBe(true);
     expect(_adviserName).toBe(true);
     expect(_branchName).toBe(true);
+  });
+
+  test("json() keeps nested eager-loaded relation json shapes", () => {
+    interface SubjectAttrs {
+      id: number;
+      name: string;
+    }
+    interface DepartmentAttrs {
+      id: number;
+      name: string;
+    }
+    interface AdmissionSubjectAttrs {
+      id: number;
+      admission_id: number | null;
+      department_id: number | null;
+      subject_id: number | null;
+    }
+    interface AdmissionAttrs {
+      id: number;
+    }
+
+    class Department extends Model.define<DepartmentAttrs>("typed_json_nested_departments") {}
+    class Subject extends Model.define<SubjectAttrs>("typed_json_nested_subjects") {
+      department() { return this.belongsTo(Department); }
+    }
+    class AdmissionSubject extends Model.define<AdmissionSubjectAttrs>("typed_json_nested_admission_subjects") {
+      subject() { return this.belongsTo(Subject); }
+    }
+    class Admission extends Model.define<AdmissionAttrs>("typed_json_nested_admissions") {
+      subjects() { return this.hasMany(AdmissionSubject); }
+    }
+
+    const builder = Admission.with(["subjects", "subjects.subject"]);
+
+    type Result = NonNullable<Awaited<ReturnType<typeof builder.find>>>;
+    type Json = ReturnType<Result["json"]>;
+    type SubjectRow = Json["subjects"][number];
+    type NestedSubject = SubjectRow["subject"];
+    type IsAny<T> = 0 extends (1 & T) ? true : false;
+
+    const _subjectsAreArray: Json["subjects"] extends Array<any> ? true : false = true;
+    const _subjectRowHasSubject: "subject" extends keyof SubjectRow ? true : false = true;
+    const _nestedSubjectIsNotAny: IsAny<NestedSubject> extends true ? false : true = true;
+    const _nestedSubjectIsNotFunction: NestedSubject extends (...args: any[]) => any ? false : true = true;
+    const _nestedSubjectHasNoInternalKeys: "$appends" extends keyof NonNullable<NestedSubject> ? false : true = true;
+    const _nestedSubjectHasNoModelMethods: "save" extends keyof NonNullable<NestedSubject> ? false : true = true;
+    const _nestedSubjectHasNoRelationMethods: "department" extends keyof NonNullable<NestedSubject>
+      ? NonNullable<NestedSubject>["department"] extends (...args: any[]) => any ? false : true
+      : true = true;
+    const _nestedSubjectName: NonNullable<NestedSubject>["name"] extends string ? true : false = true;
+    // @ts-expect-error Serialized nested relations must not expose model internals.
+    type NestedSubjectAppends = NonNullable<NestedSubject>["$appends"];
+    // @ts-expect-error Serialized nested relations must not expose model methods.
+    type NestedSubjectSave = NonNullable<NestedSubject>["save"];
+    // @ts-expect-error Unloaded nested relation methods must not appear in JSON.
+    type NestedSubjectDepartment = NonNullable<NestedSubject>["department"];
+
+    expect(_subjectsAreArray).toBe(true);
+    expect(_subjectRowHasSubject).toBe(true);
+    expect(_nestedSubjectIsNotAny).toBe(true);
+    expect(_nestedSubjectIsNotFunction).toBe(true);
+    expect(_nestedSubjectHasNoInternalKeys).toBe(true);
+    expect(_nestedSubjectHasNoModelMethods).toBe(true);
+    expect(_nestedSubjectHasNoRelationMethods).toBe(true);
+    expect(_nestedSubjectName).toBe(true);
+  });
+
+  test("json() excludes relation methods and internal state keys on plain models", () => {
+    class Subject extends Model {
+      static table = "typed_json_plain_subjects";
+    }
+    class AdmissionSubject extends Model {
+      static table = "typed_json_plain_admission_subjects";
+      subject() { return this.belongsTo(Subject); }
+    }
+
+    type Json = ReturnType<AdmissionSubject["json"]>;
+    type IsAny<T> = 0 extends (1 & T) ? true : false;
+
+    const _isAny: IsAny<Json> extends true ? false : true = true;
+    const _noSubjectMethod: Json extends { subject: (...args: any[]) => any } ? false : true = true;
+    const _noInternalState: "$casts" extends keyof Json ? false : true = true;
+    const _noRelationKeys: "$relations" extends keyof Json ? false : true = true;
+
+    expect(_isAny).toBe(true);
+    expect(_noSubjectMethod).toBe(true);
+    expect(_noInternalState).toBe(true);
+    expect(_noRelationKeys).toBe(true);
+  });
+
+  test("json() excludes internals from nested eager-loaded plain models", () => {
+    class Department extends Model {
+      static table = "typed_json_plain_nested_departments";
+    }
+    class Subject extends Model {
+      static table = "typed_json_plain_nested_subjects";
+      department() { return this.belongsTo(Department); }
+    }
+    class AdmissionSubject extends Model {
+      static table = "typed_json_plain_nested_admission_subjects";
+      subject() { return this.belongsTo(Subject); }
+    }
+    class Admission extends Model {
+      static table = "typed_json_plain_nested_admissions";
+      subjects() { return this.hasMany(AdmissionSubject); }
+    }
+
+    const builder = Admission.with(["subjects", "subjects.subject"]);
+
+    type Result = NonNullable<Awaited<ReturnType<typeof builder.find>>>;
+    type Json = ReturnType<Result["json"]>;
+    type SubjectRow = Json["subjects"][number];
+    type NestedSubject = NonNullable<SubjectRow["subject"]>;
+    type IsAny<T> = 0 extends (1 & T) ? true : false;
+
+    const _nestedSubjectIsNotAny: IsAny<NestedSubject> extends true ? false : true = true;
+    const _nestedSubjectHasNoAppends: "$appends" extends keyof NestedSubject ? false : true = true;
+    const _nestedSubjectHasNoSave: "save" extends keyof NestedSubject ? false : true = true;
+    const _nestedSubjectHasNoDepartmentMethod: "department" extends keyof NestedSubject
+      ? NestedSubject["department"] extends (...args: any[]) => any ? false : true
+      : true = true;
+
+    // @ts-expect-error Serialized nested relations must not expose model internals.
+    type NestedSubjectAppends = NestedSubject["$appends"];
+    // @ts-expect-error Serialized nested relations must not expose model methods.
+    type NestedSubjectSave = NestedSubject["save"];
+    // @ts-expect-error Unloaded nested relation methods must not appear in JSON.
+    type NestedSubjectDepartment = NestedSubject["department"];
+
+    expect(_nestedSubjectIsNotAny).toBe(true);
+    expect(_nestedSubjectHasNoAppends).toBe(true);
+    expect(_nestedSubjectHasNoSave).toBe(true);
+    expect(_nestedSubjectHasNoDepartmentMethod).toBe(true);
   });
 
   test("json() includes withCount result keys", () => {

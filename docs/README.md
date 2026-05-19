@@ -39,10 +39,17 @@ If you are new here, start with [Installation](./installation.md), then walk thr
 | [TypeScript](./typescript.md) | `Model.define<T>()`, typed builders, scope typing, accessor typing. |
 | [Type Generation](./type-generation.md) | Generate attribute interfaces and IntelliSense for your models from the database schema. |
 
+## Background Processing
+
+| Topic | What you will learn |
+|---|---|
+| [Queue Jobs](./queue.md) | Dispatch jobs to named queues, run workers with `bunny queue`, retries, delays, failed-job tracking, database and Redis drivers. |
+
 ## Advanced
 
 | Topic | What you will learn |
 |---|---|
 | [Observers](./observers.md) | Lifecycle hooks for `creating`, `created`, `updating`, `deleting`, and more. |
+| [Events](./events.md) | Application-level events with function listeners, class handlers, and temporary subscriptions. |
 | [Library Usage](./library-usage.md) | Run migrations and seeders programmatically from app code using the `configureBunny()` facade. |
 | [Testing](./testing.md) | In-memory SQLite, transactional test isolation, integration patterns. |

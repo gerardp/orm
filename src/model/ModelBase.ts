@@ -81,7 +81,7 @@ interface ModelType<T extends Record<string, any> = any> {
 
 type BaseModelInstanceKey =
   | "$attributes" | "$original" | "$changes" | "$exists" | "$relations"
-  | "$casts" | "$castCache" | "$connection" | "$hidden" | "$visible"
+  | "$casts" | "$castCache" | "$mergedCasts" | "$dirtyKeys" | "$connection" | "$hidden" | "$visible" | "$appends"
   | "$wasRecentlyCreated" | "fill" | "setConnection" | "getConnection"
   | "isFillable" | "getAttribute" | "setAttribute" | "castAttribute"
   | "serializeCastAttribute" | "mergeCasts" | "getDirty" | "isDirty"
@@ -275,14 +275,29 @@ export type ExtractStringPaths<R> =
   : never;
 
 type WithJsonMethods<T> = Omit<T, "json" | "toJSON"> & {
-  toJSON(): any;
-  json(options?: { relations?: boolean }): any;
+  toJSON(): ModelJson<T>;
+  json(options?: { relations?: boolean }): ModelJson<T>;
 };
+
+type NestedRelationPaths<Paths extends string, Key extends string> =
+  Paths extends `${Key}.${infer Tail}` ? Tail : never;
+
+type LoadedRelationValueForPaths<F, Paths extends string> =
+  F extends (...args: any[]) => HasMany<infer R> ? Collection<WithLoadedRelations<R, Paths>>
+  : F extends (...args: any[]) => HasOne<infer R> ? WithLoadedRelations<R, Paths> | null
+  : F extends (...args: any[]) => BelongsTo<infer R> ? WithLoadedRelations<R, Paths> | null
+  : F extends (...args: any[]) => BelongsToMany<infer R, any, any> ? Collection<WithLoadedRelations<R, Paths>>
+  : F extends (...args: any[]) => MorphMany<infer R> ? Collection<WithLoadedRelations<R, Paths>>
+  : F extends (...args: any[]) => MorphOne<infer R> ? WithLoadedRelations<R, Paths> | null
+  : F extends (...args: any[]) => MorphToMany<infer R, any, any, any> ? Collection<WithLoadedRelations<R, Paths>>
+  : F extends (...args: any[]) => MorphTo<infer R> ? WithLoadedRelations<R, Paths> | null
+  : F extends (...args: any[]) => Relation<infer R> ? Collection<WithLoadedRelations<R, Paths>> | WithLoadedRelations<R, Paths>
+  : never;
 
 type WithLoadedRelationsShape<T, Paths extends string> =
   Omit<T, TopLevelKey<Paths> & keyof T> & {
     [K in TopLevelKey<Paths> & keyof T]: T[K] extends (...args: any[]) => ModelRelationValue
-      ? LoadedRelationType<T[K]>
+      ? LoadedRelationValueForPaths<T[K], NestedRelationPaths<Paths, Extract<K, string>>>
       : T[K];
   };
 
@@ -323,30 +338,29 @@ type WithLoadedRelationsFromConstraintMapShape<T, R extends object> =
 export type WithLoadedRelationsFromConstraintMap<T, R extends object> = WithJsonMethods<WithLoadedRelationsFromConstraintMapShape<T, R>>;
 
 type JsonRelationKeys<T> = Extract<{
-  [K in Exclude<keyof T, BaseModelInstanceKey | keyof ModelAttributes<T>>]-?:
+  [K in Exclude<keyof T, BaseModelInstanceKey>]-?:
     T[K] extends (...args: any[]) => any ? never
     : NonNullable<T[K]> extends Collection<any> ? K
     : NonNullable<T[K]> extends { $attributes: Record<string, any> } ? K
     : never;
-}[Exclude<keyof T, BaseModelInstanceKey | keyof ModelAttributes<T>>], string>;
+}[Exclude<keyof T, BaseModelInstanceKey>], string>;
 
 type JsonExtraKeys<T> = Extract<{
-  [K in Exclude<keyof T, BaseModelInstanceKey | keyof ModelAttributes<T>>]-?:
+  [K in Exclude<keyof T, BaseModelInstanceKey | keyof ModelAttributes<T> | JsonRelationKeys<T>>]-?:
     T[K] extends (...args: any[]) => any ? never
     : NonNullable<T[K]> extends Collection<any> ? never
     : NonNullable<T[K]> extends { $attributes: Record<string, any> } ? never
     : K;
-}[Exclude<keyof T, BaseModelInstanceKey | keyof ModelAttributes<T>>], string>;
+}[Exclude<keyof T, BaseModelInstanceKey | keyof ModelAttributes<T> | JsonRelationKeys<T>>], string>;
 
 export type LoadMorphRelationName<T> = MorphToRelationName<T> | JsonRelationKeys<T>;
 
 type JsonRelationValue<T> =
-  T extends Collection<infer R> ? any[]
-  : T extends { $attributes: Record<string, any> } ? any
+  T extends { toJSON(): infer R } ? R
   : T;
 
 export type ModelJson<T> =
-  ModelAttributes<T> &
+  Omit<ModelAttributes<T>, JsonRelationKeys<T>> &
   { [K in JsonRelationKeys<T>]: JsonRelationValue<T[K]>; } &
   { [K in JsonExtraKeys<T>]: T[K]; };
 

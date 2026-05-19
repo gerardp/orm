@@ -56,6 +56,13 @@ const config: BunnyConfig = {
   typeDeclarationImportPrefix: "$models",
   typeDeclarationSingularModels: true,
 
+  // Queue
+  queue: {
+    defaultQueue: "default",
+    workers: 2,
+    jobsPath: "./app/jobs",
+  },
+
   // Diagnostics
   logQueries: false,
 };
@@ -298,6 +305,34 @@ logQueries: true,
 
 Turns on SQL logging globally via `Connection.logQueries`. Useful in development; leave off in production unless you have query sampling in place.
 
+## `queue`
+
+Enables the background job queue. When present, `configureBunny()` automatically creates a `DatabaseQueueDriver` wired to the default connection.
+
+```ts
+queue: {
+  defaultQueue: "default",        // queue name used when a job does not specify one
+  workers: 2,                     // concurrent worker slots for `bunny queue`
+  jobsPath: "./app/jobs",         // directory the worker imports to register job classes
+  retryAfterSeconds: 90,          // re-queue jobs reserved but not finished within this time
+  table: "jobs",                  // override the jobs table name
+  failedTable: "failed_jobs",     // override the failed jobs table name
+},
+```
+
+All fields are optional. Omitting the entire `queue` key leaves the queue unconfigured; you can still call `Queue.configure()` manually.
+
+To use the Redis driver instead, configure the driver manually after `configureBunny()` (or before dispatching jobs):
+
+```ts
+import { redis } from "bun";
+import { Queue, RedisQueueDriver } from "@bunnykit/orm/queue";
+
+Queue.configure(new RedisQueueDriver(redis, { prefix: "myapp:queue:" }), "default");
+```
+
+See [Queue Jobs](./queue.md) for the full reference.
+
 ## Wiring it up at runtime
 
 The CLI loads `bunny.config.ts` automatically. Your application code activates the same config through `configureBunny()`:
@@ -313,14 +348,46 @@ const bunny = configureBunny(config);
 // bunny.migrate(), bunny.seed(), bunny.migrator(), bunny.seeder() — facade helpers
 ```
 
-`configureBunny()` does four things on call:
+`configureBunny()` does the following on call:
 
 1. Constructs a `Connection` from `config.connection` and registers it as the default.
 2. Sets the connection on `Model` and `Schema` so static helpers work.
 3. Wires up `tenancy.resolveTenant` if provided.
 4. Toggles `Connection.logQueries` if `logQueries` is true.
+5. Configures a `DatabaseQueueDriver` and calls `Queue.configure()` if `queue` is set.
 
 It returns a [facade](./library-usage.md) you can use to run migrations and seeders programmatically.
+
+### SvelteKit
+
+In SvelteKit, bootstrap Bunny in a server-only singleton module so hot reloads do not re-create it from multiple places:
+
+```ts
+// src/lib/server/bunny.ts
+import { configureBunny } from "@bunnykit/orm";
+import config from "../../../bunny.config";
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __bunny: ReturnType<typeof configureBunny> | undefined;
+}
+
+export const bunny = globalThis.__bunny ??= configureBunny(config);
+```
+
+Then import that module from server code:
+
+```ts
+import "$lib/server/bunny";
+```
+
+or:
+
+```ts
+import { bunny } from "$lib/server/bunny";
+```
+
+Do not call `configureBunny()` directly inside `hooks.server.ts`, route modules, or actions. Those files are re-evaluated during dev reloads, which is when you typically see `No connection set on model Tenant` if the bootstrap is not centralized.
 
 ## Environment variables (CLI only)
 

@@ -235,6 +235,32 @@ describe("Observers", () => {
     ObserverRegistry.unregister(Order);
   });
 
+  test("observer.observe accepts multiple model classes for union observers", async () => {
+    const events: string[] = [];
+
+    type AuditModel = Admission | Order;
+
+    class UnionAuditObserver extends Observer<AuditModel> {
+      created(model: AuditModel) {
+        if (model.isInstanceOf(Admission)) {
+          events.push(`admission:${model.getAttribute("name")}`);
+        }
+        if (model.isInstanceOf(Order)) {
+          events.push(`order:${model.getAttribute("number")}`);
+        }
+      }
+    }
+
+    UnionAuditObserver.observe([Admission, Order]);
+
+    await Admission.create({ name: "Union Admission" });
+    await Order.create({ number: "ORD-U" });
+
+    expect(events).toEqual(["admission:Union Admission", "order:ORD-U"]);
+
+    UnionAuditObserver.unobserve([Admission, Order]);
+  });
+
   test("observer.unobserve removes only the registrations owned by that observer", async () => {
     const events: string[] = [];
 

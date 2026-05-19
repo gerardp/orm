@@ -53,6 +53,15 @@ User.with("nonexistent");           // ✗ TS error
 // Typed eager-load results
 const users = await User.with("posts").get();
 users[0].posts;                     // Collection<Post>
+users[0].json().posts[0].title;     // JSON output stays typed too
+
+// Array eager-load lists work too
+const admissions = await Admission.with(["student", "program"]).get();
+admissions[0].student;              // Student | null
+
+// Nested eager-loaded JSON stays typed on child relations
+const admissionsWithSubjects = await Admission.with(["subjects", "subjects.subject"]).get();
+admissionsWithSubjects[0].json().subjects[0].subject; // Subject | null
 ```
 
 ### Irregular plurals

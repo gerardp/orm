@@ -691,4 +691,5 @@ Useful for cache invalidation patterns where the parent's timestamp drives view 
 - [Relationships](./relationships.md) — `hasMany`, `belongsTo`, polymorphic, pivot tables.
 - [Query Builder](./query-builder.md) — every chainable filter, join, and aggregate.
 - [Observers](./observers.md) — lifecycle hooks for creating, updating, and deleting.
+- [Events](./events.md) — explicit application events and class-based handlers.
 - [TypeScript](./typescript.md) — how the types flow through `Model.define<T>()`.

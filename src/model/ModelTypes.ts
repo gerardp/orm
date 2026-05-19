@@ -24,9 +24,12 @@ type BaseModelInstanceKey =
   | "$relations"
   | "$casts"
   | "$castCache"
+  | "$mergedCasts"
+  | "$dirtyKeys"
   | "$connection"
   | "$hidden"
   | "$visible"
+  | "$appends"
   | "$wasRecentlyCreated"
   | "fill"
   | "setConnection"
@@ -88,9 +91,13 @@ type BaseModelInstanceKey =
   | "morphedByMany";
 
 export type ModelInstanceAttributeKeys<T> = Extract<Exclude<keyof T, BaseModelInstanceKey>, string>;
+type ModelInstanceFunctionKeys<T> = {
+  [K in ModelInstanceAttributeKeys<T>]-?: T[K] extends (...args: any[]) => any ? K : never;
+}[ModelInstanceAttributeKeys<T>];
+type ModelInstanceSerializableKeys<T> = Exclude<ModelInstanceAttributeKeys<T>, ModelInstanceFunctionKeys<T>>;
 export type ModelAttributes<T> = T extends { $attributes: Record<string, any> }
   ? string extends keyof T["$attributes"]
-    ? Pick<T, ModelInstanceAttributeKeys<T>>
+    ? Pick<T, ModelInstanceSerializableKeys<T>>
     : T["$attributes"]
   : T;
 export type ModelColumn<T> = LiteralUnion<Extract<keyof ModelAttributes<T>, string>>;

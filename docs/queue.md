@@ -1,0 +1,192 @@
+# Queue Jobs
+
+Background job processing backed by your database. Jobs are dispatched to named queues and processed by a long-running worker started with `bunny queue`.
+
+## Concepts
+
+| Term | Meaning |
+|------|---------|
+| **Job** | A class with a `handle()` method. Constructor args are the job's payload. |
+| **Queue** | A named channel (e.g. `default`, `emails`, `critical`). Jobs route to one queue. |
+| **Worker** | The `bunny queue` process that polls the DB and runs jobs. |
+| **Driver** | The storage backend. `DatabaseQueueDriver` is the only built-in driver. |
+
+Queue jobs are for **background work** (sending email, generating reports, syncing data). They are distinct from [Events](./events.md), which are synchronous in-process notifications.
+
+## Configuration
+
+```ts
+// bunny.config.ts
+export default {
+  connection: { url: process.env.DATABASE_URL },
+  queue: {
+    defaultQueue: "default",   // queue name when none specified
+    workers: 2,                // concurrent worker slots
+    jobsPath: "./app/jobs",    // directory the worker auto-imports
+    retryAfterSeconds: 90,     // re-queue jobs stuck longer than this
+    table: "jobs",             // optional table name override
+    failedTable: "failed_jobs",
+  },
+};
+```
+
+`configureBunny()` sets up the queue driver automatically when `config.queue` is present.
+
+## Defining a Job
+
+```ts
+import { DispatchableJob } from "@bunnykit/orm/queue";
+
+export class SendWelcomeEmail extends DispatchableJob {
+  static queue = "emails";    // optional; defaults to config.queue.defaultQueue
+  static maxAttempts = 3;     // optional; default 3
+  static delay = 0;           // optional dispatch delay in seconds
+
+  constructor(private userId: number) {
+    super();
+  }
+
+  async handle(): Promise<void> {
+    const user = await User.find(this.userId);
+    await mailer.send({ to: user.email, subject: "Welcome!" });
+  }
+}
+```
+
+Constructor arguments must be JSON-serializable (strings, numbers, arrays, plain objects).
+
+## Dispatching Jobs
+
+### Class static method
+
+```ts
+await SendWelcomeEmail.dispatch(user.id);
+```
+
+### Queue facade
+
+```ts
+import { Queue } from "@bunnykit/orm/queue";
+
+await Queue.dispatch(SendWelcomeEmail, [user.id]);
+
+// With overrides
+await Queue.dispatch(SendWelcomeEmail, [user.id], {
+  queue: "critical",
+  delay: 30,        // seconds
+  maxAttempts: 5,
+});
+```
+
+## Running the Worker
+
+```sh
+bunny queue                          # use config defaults
+bunny queue --queue emails           # process one queue
+bunny queue --queue emails --workers 4  # 4 concurrent slots
+```
+
+The worker is a long-running process. It polls the database, reserves a job, runs `handle()`, then marks it complete or schedules a retry.
+
+### Graceful shutdown
+
+`SIGTERM` / `SIGINT` stop the polling loop. In-flight jobs finish before the process exits.
+
+## Retry & Failure
+
+- On `handle()` error, the job is released back to the queue. Attempt count increments.
+- When `attempts >= maxAttempts`, the job moves to `failed_jobs` and is not retried.
+- Jobs reserved but not completed within `retryAfterSeconds` are automatically re-queued on the next poll.
+
+## Database Tables
+
+`bunny queue` creates these tables on startup if they do not exist.
+
+### `jobs`
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | bigint | PK |
+| `queue` | varchar | Queue name |
+| `job_class` | varchar | Class name used to reconstruct the job |
+| `payload` | text/json | `{ "args": [...] }` |
+| `attempts` | int | Incremented on each reservation |
+| `max_attempts` | int | Moves to failed_jobs when `attempts >= max_attempts` |
+| `available_at` | int | Unix timestamp; future value = delayed job |
+| `reserved_at` | int | Set when a worker picks up the job; cleared on release |
+| `created_at` | int | Unix timestamp |
+
+### `failed_jobs`
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | bigint | PK |
+| `queue` | varchar | |
+| `job_class` | varchar | |
+| `payload` | text | Original payload |
+| `exception` | text | Error stack trace |
+| `failed_at` | int | Unix timestamp |
+
+## Redis Driver
+
+Use `RedisQueueDriver` for a Redis-backed queue. Requires Bun's built-in Redis client.
+
+```ts
+import { redis } from "bun";
+import { RedisQueueDriver, Queue } from "@bunnykit/orm/queue";
+
+const driver = new RedisQueueDriver(redis, { prefix: "myapp:queue:" });
+Queue.configure(driver, "default");
+```
+
+### Redis key layout
+
+| Key | Type | Contents |
+|-----|------|---------|
+| `{prefix}pending:{queue}` | List | Job IDs ready to be processed (FIFO) |
+| `{prefix}delayed:{queue}` | Sorted Set | Job IDs, score = `available_at` timestamp |
+| `{prefix}reserved:{queue}` | Sorted Set | Reserved job IDs, score = `reserved_at` timestamp |
+| `{prefix}job:{id}` | Hash | Job fields: class, payload, attempts, maxAttempts, etc. |
+| `{prefix}failed` | List | JSON records of failed jobs |
+| `{prefix}queues` | Set | All known queue names (used by `size()` with no arg) |
+| `{prefix}id` | String | Auto-increment counter for job IDs |
+
+### Options
+
+```ts
+new RedisQueueDriver(redisClient, {
+  prefix: "myapp:queue:",  // default: "bunny:queue:"
+})
+```
+
+`migrate()` is a no-op — no DDL needed for Redis.
+
+## Custom Driver
+
+Implement the `QueueDriver` interface to add another backend:
+
+```ts
+import type { QueueDriver, JobRecord } from "@bunnykit/orm/queue";
+
+class MyDriver implements QueueDriver {
+  async migrate() {}
+  async dispatch(queue, jobClass, payload, delay, maxAttempts) { /* ... */ }
+  async reserve(queue, retryAfter): Promise<JobRecord | null> { /* ... */ }
+  async complete(id) { /* ... */ }
+  async fail(id, exception) { /* ... */ }
+  async release(id, delay) { /* ... */ }
+  async size(queue?) { /* ... */ }
+}
+
+import { Queue } from "@bunnykit/orm/queue";
+Queue.configure(new MyDriver(), "default");
+```
+
+## Jobs vs Events
+
+| | Events | Queue Jobs |
+|---|--------|-----------|
+| Execution | Synchronous, in-process | Asynchronous, separate worker process |
+| Persistence | No | Yes (database) |
+| Retries | No | Yes |
+| Use case | React to something now | Do work later or in background |

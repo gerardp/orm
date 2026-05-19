@@ -23,6 +23,8 @@ An **Eloquent-inspired ORM** built specifically for [Bun](https://bun.sh)'s nati
 - 🏗️ **Schema Builder** — Programmatic table creation, indexes, foreign keys
 - 🔍 **Query Builder** — Chainable `where`, `join`, `orderBy`, `groupBy`, date filters, conditional building, etc.
 - 🧠 **Tagged Cache** — Redis-backed cache facade, query `remember()`, and exact tag invalidation
+- 📣 **Events** — Application-level event dispatcher with function listeners and class handlers
+- 🐇 **Queue Jobs** — Database- and Redis-backed background job queue with named queues, retries, delays, and a `bunny queue` worker
 - 🧬 **Eloquent-style Models** — Property attributes, defaults, casts, dirty tracking, soft deletes, scopes, find-or-fail, first-or-create
 - 🧺 **Collections** — Laravel-style helpers for multi-record query results
 - 🔗 **Relations** — Standard, many-to-many, polymorphic, through, one-of-many, and relation queries
@@ -142,11 +144,18 @@ See the [Quickstart guide](./docs/quickstart.md) for the full walkthrough.
 | [TypeScript](./docs/typescript.md) | `Model.define<T>()`, typed builders, scope and accessor typing. |
 | [Type Generation](./docs/type-generation.md) | Generate attribute interfaces from your database schema. |
 
+### Background Processing
+
+| Topic | Summary |
+|---|---|
+| [Queue Jobs](./docs/queue.md) | Dispatch jobs to named queues, run workers with `bunny queue`, retries, delays, failed-job tracking, database and Redis drivers. |
+
 ### Advanced
 
 | Topic | Summary |
 |---|---|
 | [Observers](./docs/observers.md) | Lifecycle hooks for `creating`, `updating`, `deleting`, and more. |
+| [Events](./docs/events.md) | Application-level events with function listeners, class handlers, and temporary subscriptions. |
 | [Library Usage](./docs/library-usage.md) | Programmatic API via `configureBunny()`. |
 | [Testing](./docs/testing.md) | In-memory SQLite and transactional test isolation. |
 

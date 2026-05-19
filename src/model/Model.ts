@@ -278,6 +278,8 @@ export class Model<T extends Record<string, any> = any> extends ModelAggregates<
     return (this as any).query().whereDoesntHaveMorph(relationName as any, types as any, callback as any);
   }
 
+  static with<M extends ModelConstructor, Rs extends ReadonlyArray<TypedEagerLoad<InstanceType<M>>>>(this: M, relations: Rs): Builder<InstanceType<M>, WithLoadedRelations<InstanceType<M>, ExtractStringPaths<Rs[number]>>>;
+  static with<M extends ModelConstructor, Rs extends ReadonlyArray<TypedEagerLoad<InstanceType<M>>>>(this: M, ...relations: Rs): Builder<InstanceType<M>, WithLoadedRelations<InstanceType<M>, ExtractStringPaths<Rs[number]>>>;
   static with<M extends ModelConstructor, K extends string & NestedRelationPath<InstanceType<M>>>(this: M, constraint: TypedConstraintSelection<InstanceType<M>, K>): Builder<InstanceType<M>, WithLoadedRelationsFromConstraintMap<InstanceType<M>, TypedConstraintSelection<InstanceType<M>, K>>>;
   static with<M extends ModelConstructor, R extends TypedConstraintMap<InstanceType<M>> & object>(this: M, constraint: R): Builder<InstanceType<M>, WithLoadedRelationsFromConstraintMap<InstanceType<M>, R>>;
   static with<M extends ModelConstructor, R extends string & NestedRelationPath<InstanceType<M>>>(this: M, relation: R): Builder<InstanceType<M>, WithLoadedRelations<InstanceType<M>, R>>;
@@ -285,8 +287,6 @@ export class Model<T extends Record<string, any> = any> extends ModelAggregates<
   static with<M extends ModelConstructor, R extends string & MorphToRelationName<InstanceType<M>>>(this: M, relation: R, callback: MorphToConstraintCallback): Builder<InstanceType<M>, WithLoadedRelations<InstanceType<M>, R>>;
   static with<M extends ModelConstructor, R extends string & NestedRelationPath<InstanceType<M>>>(this: M, relation: R, callback: TypedConstraintCallback<InstanceType<M>, R>): Builder<InstanceType<M>, WithLoadedRelations<InstanceType<M>, R>>;
   static with<M extends ModelConstructor>(this: M, relation: LiteralUnion<string & NestedRelationPath<InstanceType<M>>>, callback: EagerLoadConstraint): Builder<InstanceType<M>, WithLoadedRelations<InstanceType<M>, string>>;
-  static with<M extends ModelConstructor, Rs extends ReadonlyArray<TypedEagerLoad<InstanceType<M>>>>(this: M, relations: Rs): Builder<InstanceType<M>, WithLoadedRelations<InstanceType<M>, ExtractStringPaths<Rs[number]>>>;
-  static with<M extends ModelConstructor, Rs extends ReadonlyArray<TypedEagerLoad<InstanceType<M>>>>(this: M, ...relations: Rs): Builder<InstanceType<M>, WithLoadedRelations<InstanceType<M>, ExtractStringPaths<Rs[number]>>>;
   static with<M extends ModelConstructor>(this: M, ...relations: any[]): any {
     return (this as any).query().with(...relations) as any;
   }

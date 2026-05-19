@@ -19,6 +19,9 @@ const OBSERVER_EVENTS: (keyof ObserverContract)[] = [
   "restoring", "restored",
 ];
 
+type ObservedModel<TObserver> = TObserver extends ObserverContract<infer TModel> ? TModel : any;
+type ObservableModelConstructor<TModel> = ModelConstructor<any> & (new (...args: any[]) => TModel);
+
 export class Observer<T = any> implements ObserverContract<T> {
   creating(model: T) {}
   created(model: T) {}
@@ -31,17 +34,17 @@ export class Observer<T = any> implements ObserverContract<T> {
   restoring(model: T) {}
   restored(model: T) {}
 
-  static observe<TModel, TObserver extends ObserverContract<TModel>>(
+  static observe<TObserver extends ObserverContract<any>>(
     this: new () => TObserver,
-    modelClass: ModelConstructor<TModel>,
+    modelClass: ObservableModelConstructor<ObservedModel<TObserver>>,
   ): void;
-  static observe<TModel, TObserver extends ObserverContract<TModel>>(
+  static observe<TObserver extends ObserverContract<any>>(
     this: new () => TObserver,
-    modelClasses: readonly ModelConstructor<TModel>[],
+    modelClasses: readonly ObservableModelConstructor<ObservedModel<TObserver>>[],
   ): void;
-  static observe<TModel, TObserver extends ObserverContract<TModel>>(
+  static observe<TObserver extends ObserverContract<any>>(
     this: new () => TObserver,
-    modelClassOrClasses: ModelConstructor<TModel> | readonly ModelConstructor<TModel>[],
+    modelClassOrClasses: ObservableModelConstructor<ObservedModel<TObserver>> | readonly ObservableModelConstructor<ObservedModel<TObserver>>[],
   ): void {
     const observer = new this();
     const modelClasses = Array.isArray(modelClassOrClasses) ? modelClassOrClasses : [modelClassOrClasses];
@@ -50,17 +53,17 @@ export class Observer<T = any> implements ObserverContract<T> {
     }
   }
 
-  static unobserve<TModel>(
-    this: new () => ObserverContract<TModel>,
-    modelClass: ModelConstructor<TModel>,
+  static unobserve<TObserver extends ObserverContract<any>>(
+    this: new () => TObserver,
+    modelClass: ObservableModelConstructor<ObservedModel<TObserver>>,
   ): void;
-  static unobserve<TModel>(
-    this: new () => ObserverContract<TModel>,
-    modelClasses: readonly ModelConstructor<TModel>[],
+  static unobserve<TObserver extends ObserverContract<any>>(
+    this: new () => TObserver,
+    modelClasses: readonly ObservableModelConstructor<ObservedModel<TObserver>>[],
   ): void;
-  static unobserve<TModel>(
-    this: new () => ObserverContract<TModel>,
-    modelClassOrClasses: ModelConstructor<TModel> | readonly ModelConstructor<TModel>[],
+  static unobserve<TObserver extends ObserverContract<any>>(
+    this: new () => TObserver,
+    modelClassOrClasses: ObservableModelConstructor<ObservedModel<TObserver>> | readonly ObservableModelConstructor<ObservedModel<TObserver>>[],
   ): void {
     const modelClasses = Array.isArray(modelClassOrClasses) ? modelClassOrClasses : [modelClassOrClasses];
     for (const modelClass of modelClasses) {
