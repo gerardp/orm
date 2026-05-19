@@ -74,6 +74,8 @@ try {
 
 `beginTransaction`, `commit`, and `rollback` honor the same nested savepoint behavior as the callback form. `connection.inTransaction()` returns true while a transaction is open.
 
+> **Always pair `beginTransaction()` with a `commit()`/`rollback()` in `try/catch`.** `beginTransaction()` reserves a pooled connection; a path that throws before `commit()` without a `rollback()` would otherwise leak that connection. As a safety net, an abandoned manual transaction (no `commit`/`rollback`) is force-rolled-back and its connection released after `transactions.abandonedTimeoutMs` (default 60s — see [Configuration](./configuration.md#transactions)). The safety net is a backstop, not a substitute for correct `try/catch`; prefer the callback form, which releases automatically.
+
 ## Locking inside a transaction
 
 Pessimistic locks (`lockForUpdate`, `sharedLock`) release on commit or rollback, so they only make sense inside a transaction:

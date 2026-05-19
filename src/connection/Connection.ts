@@ -1,4 +1,4 @@
-import { SQL } from "bun";
+import { SQL, FileSink } from "bun";
 import type { ConnectionConfig } from "../types/index.js";
 import { Grammar } from "../query/grammars/Grammar.js";
 import { SQLiteGrammar } from "../query/grammars/SQLiteGrammar.js";
@@ -18,7 +18,14 @@ export class Connection {
   private savepointId = 0;
   private dedicated = false;
   private reservedDriver?: SQL & { release?: () => void };
+  private abandonedTimer?: ReturnType<typeof setTimeout>;
+  /** When set (ms), a manual beginTransaction() with no commit/rollback within this window is auto-rolled-back and its pooled connection released. Opt-in. */
+  static abandonedTransactionTimeoutMs?: number;
   static logQueries = false;
+  static queryLogFile?: string;
+  static logToConsole: boolean = true;
+  private static _logWriter?: FileSink;
+  private static _logWriterDate?: string;
   static defaultPostgresPoolMax = 10;
   logQueries?: boolean;
 
@@ -140,7 +147,21 @@ export class Connection {
   }
 
   private log(sqlString: string, bindings?: any[]): void {
-    if (this.logQueries ?? Connection.logQueries) {
+    if (!(this.logQueries ?? Connection.logQueries)) return;
+    if (Connection.queryLogFile) {
+      const date = new Date().toISOString().slice(0, 10);
+      if (Connection._logWriterDate !== date) {
+        Connection._logWriter?.flush();
+        Connection._logWriter?.end();
+        const path = `${Connection.queryLogFile}/query-${date}.log`;
+        Connection._logWriter = Bun.file(path).writer();
+        Connection._logWriterDate = date;
+      }
+      const line = `[QUERY] ${sqlString}${bindings?.length ? " " + JSON.stringify(bindings) : ""}\n`;
+      Connection._logWriter!.write(line);
+      Connection._logWriter!.flush();
+    }
+    if (Connection.logToConsole) {
       console.log("[QUERY]", sqlString, bindings?.length ? bindings : "");
     }
   }
@@ -181,6 +202,7 @@ export class Connection {
       this.transactionActive = true;
       this.transactionRoot = true;
       this.transactionDepth = 1;
+      this.armAbandonedTimer();
       return;
     }
 
@@ -189,8 +211,37 @@ export class Connection {
   }
 
   private releaseReservedDriver(): void {
+    this.clearAbandonedTimer();
     this.reservedDriver?.release?.();
     this.reservedDriver = undefined;
+  }
+
+  private armAbandonedTimer(): void {
+    const ms = Connection.abandonedTransactionTimeoutMs;
+    if (!ms || !this.reservedDriver) return;
+    const timer = setTimeout(() => {
+      // Still in the same root transaction with a reserved driver: caller
+      // never committed or rolled back. Force-rollback and release the slot.
+      if (!this.transactionActive || !this.reservedDriver) return;
+      void Promise.resolve()
+        .then(() => this.getDriver().unsafe("ROLLBACK"))
+        .catch(() => null)
+        .finally(() => {
+          this.transactionDepth = 0;
+          this.transactionActive = false;
+          this.transactionRoot = false;
+          this.releaseReservedDriver();
+        });
+    }, ms);
+    (timer as any).unref?.();
+    this.abandonedTimer = timer;
+  }
+
+  private clearAbandonedTimer(): void {
+    if (this.abandonedTimer) {
+      clearTimeout(this.abandonedTimer);
+      this.abandonedTimer = undefined;
+    }
   }
 
   async commit(): Promise<void> {
@@ -335,9 +386,13 @@ export class Connection {
     // transaction (lock hold / idle-in-transaction). The connection is still
     // dedicated for the callback's duration, then reset and released.
     const reserved = (await (this.driver as any).reserve()) as SQL & { release?: () => void };
+    // Set the connection schema to the target so introspection
+    // (information_schema / pg_catalog queries that filter by schema name)
+    // resolves the tenant schema, not the base one. SET search_path below
+    // remains as a fallback for any raw SQL the ORM does not qualify.
     const connection = new Connection(this.config, {
       driver: reserved as unknown as SQL,
-      schema: this.schema,
+      schema,
       ownsDriver: false,
     });
     connection.logQueries = this.logQueries;

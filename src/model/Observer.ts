@@ -140,7 +140,7 @@ export class ObserverRegistry {
     for (const entry of observers) {
       const handler = entry.observer[event];
       if (handler) {
-        await handler(model);
+        await handler.call(entry.observer, model);
       }
     }
   }

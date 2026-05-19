@@ -44,6 +44,8 @@ const config: BunnyConfig = {
       mode: "qualify",
     }),
     listTenants: async () => ["acme", "globex", "initech"],
+    idleTimeoutMs: 300_000,
+    sweep: true,
   },
 
   // Models (used by type generation and the REPL)
@@ -63,8 +65,13 @@ const config: BunnyConfig = {
     jobsPath: "./app/jobs",
   },
 
+  // Transactions
+  transactions: {
+    abandonedTimeoutMs: 60_000,
+  },
+
   // Diagnostics
-  logQueries: false,
+  log: false,
 };
 
 export default config;
@@ -138,21 +145,26 @@ Strategy implications:
 
 - **`qualify`** (recommended for high concurrency): all tenants share the base connection's pool — table names are schema-prefixed (`tenant_x.users`). One pool total. No connection pinned per request. Best scalability.
 - **`search_path`**: correctness-isolated via a per-request transaction. **One pool connection is pinned for the entire request duration** (including any external I/O inside the handler). Concurrent requests must stay below `max`. Keep handlers fast; prefer `qualify` unless you need raw-SQL/`search_path` isolation.
-- **`database`**: each distinct tenant database gets its **own pool**. `T` tenants ⇒ `T × max` sockets — this exhausts `max_connections` fast. Mitigate with TTL + the eviction sweep:
+- **`database`**: each distinct tenant database gets its **own pool**. `T` tenants ⇒ `T × max` sockets — this exhausts `max_connections` fast. This is mitigated by default: when `tenancy.resolveTenant` is set, `configureBunny()` applies a 5-minute idle TTL and a 60s background eviction sweep automatically. Tune or disable via [`tenancy.idleTimeoutMs`](#idletimeoutms) and [`tenancy.sweep`](#sweep):
+
+```ts
+tenancy: {
+  resolveTenant: ...,
+  idleTimeoutMs: 5 * 60_000,   // default; idle database-strategy pools expire
+  sweep: 60_000,               // default true@60s; false/0 to disable
+}
+```
+
+The equivalent low-level handles are still available if you wire the runtime manually instead of through `configureBunny()`:
 
 ```ts
 import { ConnectionManager } from "@bunnykit/orm";
 
-// Idle per-tenant pools expire after 5 min (applies to database-strategy
-// contexts that own their pool; a resolution-level `ttl` always wins).
-ConnectionManager.defaultTenantTtl = 5 * 60_000;
-
-// Opt-in background sweep that closes expired tenant pools. The timer is
-// unref'd (never keeps the process alive). Call once at startup.
-ConnectionManager.enableTenantSweep(60_000);
+ConnectionManager.defaultTenantTtl = 5 * 60_000;   // a resolution-level `ttl` always wins
+ConnectionManager.enableTenantSweep(60_000);        // unref'd; call once at startup
 ```
 
-Without the sweep, expired `database`-strategy pools are only reclaimed lazily the next time that same tenant is resolved — idle tenants in between keep their sockets open until `ConnectionManager.closeAll()`.
+With the sweep disabled, expired `database`-strategy pools are only reclaimed lazily the next time that same tenant is resolved — idle tenants in between keep their sockets open until `ConnectionManager.closeAll()`.
 
 ## `migrationsPath` vs `migrations`
 
@@ -264,6 +276,30 @@ tenancy: {
 
 Application code never calls this — it is purely for batch operations.
 
+### `idleTimeoutMs`
+
+```ts
+tenancy: { idleTimeoutMs: 300_000 }
+```
+
+Idle TTL (milliseconds) for tenant contexts that own their own connection pool (the `database` strategy, and any resolution that builds a new connection from `config`). After this window with no use, the context expires and its pool can be closed by the sweep — preventing per-tenant pools from accumulating until the database hits its connection limit.
+
+A resolution-level `ttl` always overrides this. Applies only to connection-owning contexts; shared schema/RLS connections (which do not own a pool) are unaffected.
+
+**Default:** `300_000` (5 minutes) when `tenancy.resolveTenant` is set. Set to a different value to tune, or pair with `sweep: false` to opt out of reclamation entirely.
+
+### `sweep`
+
+```ts
+tenancy: { sweep: true }      // background sweep every 60s
+tenancy: { sweep: 30_000 }    // custom interval (ms)
+tenancy: { sweep: false }     // disable
+```
+
+Enables a background timer that closes expired tenant contexts (per `idleTimeoutMs` / resolution `ttl`), reclaiming idle pools. The timer is `unref`'d so it never keeps the process alive.
+
+**Default:** enabled at a 60s interval when `tenancy.resolveTenant` is set. `false` or `0` disables it (idle pools then only reclaim when a tenant is re-resolved after expiry).
+
 See [Library Usage](./library-usage.md) and the [Query Builder's `DB.tenant()`](./query-builder.md#multi-tenant-scope) section for runtime use.
 
 ## `modelsPath`
@@ -297,13 +333,37 @@ typeStubs: false,                                  // emit stubs instead of decl
 
 See [Type Generation](./type-generation.md) for the full feature reference.
 
-## `logQueries`
+## `transactions`
 
 ```ts
-logQueries: true,
+transactions: {
+  abandonedTimeoutMs: 60_000,   // default; set 0 to disable
+}
 ```
 
-Turns on SQL logging globally via `Connection.logQueries`. Useful in development; leave off in production unless you have query sampling in place.
+Safety net for the **manual** transaction API (`connection.beginTransaction()` paired with `commit()` / `rollback()`). `beginTransaction()` reserves a pooled connection; if neither `commit()` nor `rollback()` is called within `abandonedTimeoutMs`, the transaction is force-rolled-back and the pooled slot released — so a code path that throws between `begin` and `commit` cannot leak a connection permanently.
+
+The timer is `unref`'d and is cleared automatically on a normal `commit()` / `rollback()`, so well-behaved transactions never trigger it. The callback form (`DB.transaction(cb)` / `connection.transaction(cb)`) already releases on its own and is unaffected.
+
+**Default:** `60_000` (60s) globally. Set `abandonedTimeoutMs: 0` to disable. Raise it if you legitimately run long manual transactions; prefer the callback form where possible.
+
+## `log`
+
+```ts
+log: true                                  // SQL to console
+log: { file: "./logs" }                    // SQL to ./logs/query-YYYY-MM-DD.log only
+log: { file: "./logs", console: true }     // both file and console
+log: false                                 // off (default)
+```
+
+Controls SQL query logging.
+
+- `true` — log every query to the console.
+- `{ file }` — append queries to a dated file `query-YYYY-MM-DD.log` inside the given directory (rolls over daily; rotate/prune old files with your OS, e.g. `logrotate`). Console output is **off** unless `console: true` is also set.
+- `{ file, console: true }` — write to both.
+- `false` / omitted — no logging.
+
+Useful in development; in production prefer the file form (or leave off) and ensure query sampling if volume is high.
 
 ## `queue`
 
@@ -352,9 +412,10 @@ const bunny = configureBunny(config);
 
 1. Constructs a `Connection` from `config.connection` and registers it as the default.
 2. Sets the connection on `Model` and `Schema` so static helpers work.
-3. Wires up `tenancy.resolveTenant` if provided.
-4. Toggles `Connection.logQueries` if `logQueries` is true.
-5. Configures a `DatabaseQueueDriver` and calls `Queue.configure()` if `queue` is set.
+3. Wires up `tenancy.resolveTenant` if provided, and applies the tenant pool defaults (`idleTimeoutMs`, `sweep`).
+4. Applies the abandoned-transaction safety net (`transactions.abandonedTimeoutMs`, default 60s).
+5. Configures query logging from `log`.
+6. Configures a `DatabaseQueueDriver` and calls `Queue.configure()` if `queue` is set.
 
 It returns a [facade](./library-usage.md) you can use to run migrations and seeders programmatically.
 

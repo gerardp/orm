@@ -59,6 +59,20 @@ The timestamp prefix dictates run order, so always create new migrations via the
 
 Each command honors `migrationsPath` (single path) or `migrations.landlord` / `migrations.tenant` (grouped) from `bunny.config.ts`. See [Configuration](./configuration.md#migrationspath-vs-migrations).
 
+### `--types`
+
+Type generation does **not** run after migrations by default. Pass `--types` to regenerate model type declarations once the migration finishes:
+
+```bash
+bunny migrate --types
+bunny migrate:fresh --types
+bunny migrate:rollback --types
+bunny migrate:refresh --types
+bunny migrate:reset --types
+```
+
+Without the flag the schema changes apply but no types are emitted — keeping plain `migrate` fast and side-effect-free. Use `--types` in development (or a post-migrate step) when you want declarations refreshed. See [Type Generation](./type-generation.md).
+
 ## Batches and `migrations` table
 
 Bunny records every applied migration in a `migrations` table (auto-created on first run). The table tracks:

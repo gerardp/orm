@@ -142,13 +142,35 @@ export class Schema {
       } else if (command.name === "renameColumn") {
         const sql = grammar.compileColumnRename(qualifiedTable, command.parameters!.from, command.parameters!.to);
         await this.getConnection().run(sql);
-      } else if (command.name === "dropIndex") {
-        await this.getConnection().run(`DROP INDEX ${grammar.wrap(command.parameters!.name)}`);
-      } else if (command.name === "dropUnique") {
-        await this.getConnection().run(`DROP INDEX ${grammar.wrap(command.parameters!.name)}`);
+      } else if (command.name === "dropIndex" || command.name === "dropUnique") {
+        const indexName = command.parameters!.name as string;
+        const driver = connection.getDriverName();
+        if (driver === "mysql") {
+          await this.getConnection().run(
+            `DROP INDEX ${grammar.wrap(indexName)} ON ${grammar.wrap(qualifiedTable)}`
+          );
+        } else if (driver === "postgres") {
+          await this.getConnection().run(
+            `DROP INDEX IF EXISTS ${grammar.wrap(connection.qualifyTable(indexName))}`
+          );
+        } else {
+          await this.getConnection().run(`DROP INDEX ${grammar.wrap(indexName)}`);
+        }
       } else if (command.name === "dropForeign") {
+        const given = command.parameters!.name as string;
+        let constraintName = given;
+        if (connection.getDriverName() !== "sqlite") {
+          const existing = await this.getForeignKeys(table, connection);
+          const exact = existing.find((fk) => fk.name === given);
+          if (!exact) {
+            const byColumn = existing.find(
+              (fk) => fk.columns.length === 1 && fk.columns[0] === given
+            );
+            if (byColumn?.name) constraintName = byColumn.name;
+          }
+        }
         await this.getConnection().run(
-          `ALTER TABLE ${grammar.wrap(table)} DROP CONSTRAINT ${grammar.wrap(command.parameters!.name)}`
+          `ALTER TABLE ${grammar.wrap(qualifiedTable)} DROP CONSTRAINT ${grammar.wrap(constraintName)}`
         );
       } else if (command.name === "change") {
         const sql = grammar.compileChange(qualifiedTable, command.parameters!.column);
@@ -191,7 +213,9 @@ export class Schema {
   static async rename(from: string, to: string): Promise<void> {
     const grammar = this.getGrammar();
     const connection = this.getConnection();
-    await connection.run(grammar.compileRename(connection.qualifyTable(from), connection.qualifyTable(to)));
+    // RENAME TO requires a bare target across postgres/sqlite — the table
+    // stays in the source schema. Only the source side may be qualified.
+    await connection.run(grammar.compileRename(connection.qualifyTable(from), to));
   }
 
   static async hasTable(table: string): Promise<boolean> {

@@ -83,12 +83,13 @@ export function buildMigrator(
   path: string | string[],
   scope: "landlord" | "tenant",
   extraOptions: Partial<MigratorOptions> = {},
+  generateTypes: boolean = false,
 ): Migrator {
   return new Migrator(
     connection,
     path,
-    config.typesOutDir,
-    createTypeGeneratorOptions(config, getModelPaths(config)[scope]),
+    generateTypes ? config.typesOutDir : undefined,
+    generateTypes ? createTypeGeneratorOptions(config, getModelPaths(config)[scope]) : {},
     { ...createMigrationOptions(config), ...extraOptions },
   );
 }
@@ -120,19 +121,13 @@ export async function runTenantMigrator(
   config: BunnyConfig,
   connectionPath: string | string[],
   tenantId: string,
-  typesOutDir?: string,
+  generateTypes: boolean = false,
 ): Promise<void> {
   await TenantContext.run(tenantId, async () => {
     const context = TenantContext.current();
     if (!context) throw new Error(`Tenant "${tenantId}" did not resolve to an active context.`);
     console.log(`Tenant: ${tenantId}`);
-    const migrator = buildMigrator(
-      typesOutDir ? { ...config, typesOutDir } : config,
-      context.connection,
-      connectionPath,
-      "tenant",
-      { tenantId },
-    );
+    const migrator = buildMigrator(config, context.connection, connectionPath, "tenant", { tenantId }, generateTypes);
     await runMigratorCommand(command, migrator);
   });
 }
@@ -142,12 +137,16 @@ export async function runTenantMigrationCommand(
   config: BunnyConfig,
   tenantPath: string | string[],
   tenantId: string,
-  typesOutDir?: string,
+  generateTypes: boolean = false,
 ): Promise<void> {
   try {
-    await runTenantMigrator(command, config, tenantPath, tenantId, typesOutDir);
+    await runTenantMigrator(command, config, tenantPath, tenantId, generateTypes);
   } finally {
-    await ConnectionManager.closeTenant(tenantId);
+    const context = ConnectionManager.getResolvedTenant(tenantId);
+    ConnectionManager.purgeTenant(tenantId);
+    if (context?.ownsConnection) {
+      await context.connection.close();
+    }
   }
 }
 
@@ -156,6 +155,7 @@ export async function runConfiguredMigrationCommand(
   config: BunnyConfig,
   connection: Connection,
   target: MigrationTarget,
+  generateTypes: boolean = false,
 ): Promise<void> {
   if (!config.migrations) {
     const defaultPath = getDefaultMigrationsPath(config);
@@ -165,15 +165,15 @@ export async function runConfiguredMigrationCommand(
       }
       ConnectionManager.setTenantResolver(config.tenancy.resolveTenant);
       if (target.scope === "tenant") {
-        await runTenantMigrationCommand(command, config, defaultPath, target.tenantId, config.typesOutDir);
+        await runTenantMigrationCommand(command, config, defaultPath, target.tenantId, generateTypes);
         return;
       }
       for (const tenantId of await getTenantIds(config)) {
-        await runTenantMigrationCommand(command, config, defaultPath, tenantId, config.typesOutDir);
+        await runTenantMigrationCommand(command, config, defaultPath, tenantId, generateTypes);
       }
       return;
     }
-    await runMigratorCommand(command, buildMigrator(config, connection, defaultPath, "landlord"));
+    await runMigratorCommand(command, buildMigrator(config, connection, defaultPath, "landlord", {}, generateTypes));
     return;
   }
 
@@ -183,7 +183,7 @@ export async function runConfiguredMigrationCommand(
   const runLandlord = async () => {
     if (!landlordPath) return;
     console.log("Landlord migrations");
-    await runMigratorCommand(command, buildMigrator(config, connection, landlordPath, "landlord"));
+    await runMigratorCommand(command, buildMigrator(config, connection, landlordPath, "landlord", {}, generateTypes));
   };
 
   const runAllTenants = async () => {
@@ -193,7 +193,7 @@ export async function runConfiguredMigrationCommand(
     }
     ConnectionManager.setTenantResolver(config.tenancy.resolveTenant);
     for (const tenantId of await getTenantIds(config)) {
-      await runTenantMigrationCommand(command, config, tenantPath, tenantId);
+      await runTenantMigrationCommand(command, config, tenantPath, tenantId, generateTypes);
     }
   };
 
@@ -205,7 +205,7 @@ export async function runConfiguredMigrationCommand(
       throw new Error("Tenant migrations require tenancy.resolveTenant() in bunny.config.ts.");
     }
     ConnectionManager.setTenantResolver(config.tenancy.resolveTenant);
-    await runTenantMigrationCommand(command, config, tenantPath, target.tenantId);
+    await runTenantMigrationCommand(command, config, tenantPath, target.tenantId, generateTypes);
     return;
   }
 

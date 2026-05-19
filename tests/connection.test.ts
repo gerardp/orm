@@ -183,4 +183,68 @@ describe("Connection", () => {
       conn.withTenant("tenant-1", async () => {}, "app.tenant_id; RESET search_path; --")
     ).rejects.toThrow("Invalid PostgreSQL setting name");
   });
+
+  test("auto-rolls-back and releases an abandoned manual transaction", async () => {
+    const calls: string[] = [];
+    const reserved = {
+      unsafe(sql: string) { calls.push(sql); return []; },
+      release() { calls.push("RELEASE"); },
+    };
+    const driver = {
+      async reserve() { calls.push("RESERVE"); return reserved; },
+      unsafe(sql: string) { calls.push(sql); return []; },
+    };
+    const conn = new Connection(
+      { url: "postgres://user:pass@localhost:5432/db" },
+      { driver: driver as any }
+    );
+
+    const previous = Connection.abandonedTransactionTimeoutMs;
+    Connection.abandonedTransactionTimeoutMs = 50;
+    try {
+      await conn.beginTransaction();
+      expect(conn.isInTransaction()).toBe(true);
+      // Never commit/rollback. Wait past the safety window.
+      await new Promise((r) => setTimeout(r, 120));
+
+      expect(conn.isInTransaction()).toBe(false);
+      expect(calls).toContain("ROLLBACK");
+      expect(calls).toContain("RELEASE");
+
+      // Slot reclaimed: a fresh transaction works.
+      await conn.beginTransaction();
+      expect(conn.isInTransaction()).toBe(true);
+      await conn.commit();
+    } finally {
+      Connection.abandonedTransactionTimeoutMs = previous;
+    }
+  });
+
+  test("does not fire the abandoned-transaction timer when committed in time", async () => {
+    const calls: string[] = [];
+    const reserved = {
+      unsafe(sql: string) { calls.push(sql); return []; },
+      release() { calls.push("RELEASE"); },
+    };
+    const driver = {
+      async reserve() { calls.push("RESERVE"); return reserved; },
+      unsafe(sql: string) { calls.push(sql); return []; },
+    };
+    const conn = new Connection(
+      { url: "postgres://user:pass@localhost:5432/db" },
+      { driver: driver as any }
+    );
+
+    const previous = Connection.abandonedTransactionTimeoutMs;
+    Connection.abandonedTransactionTimeoutMs = 50;
+    try {
+      await conn.beginTransaction();
+      await conn.commit();
+      await new Promise((r) => setTimeout(r, 120));
+      // Exactly one ROLLBACK-free lifecycle, single RELEASE, no spurious rollback.
+      expect(calls).toEqual(["RESERVE", "BEGIN", "COMMIT", "RELEASE"]);
+    } finally {
+      Connection.abandonedTransactionTimeoutMs = previous;
+    }
+  });
 });

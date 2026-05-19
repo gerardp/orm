@@ -35,6 +35,10 @@ export interface BunnyConfig {
   tenancy?: {
     resolveTenant?: TenantResolver;
     listTenants?: () => string[] | Promise<string[]>;
+    /** Default idle TTL (ms) for tenant contexts that own a connection pool. Reclaims idle per-tenant pools. */
+    idleTimeoutMs?: number;
+    /** Enable the background sweep that closes expired tenant pools. Interval in ms (default 60000 when true). */
+    sweep?: boolean | number;
   };
   modelsPath?: string | string[] | ModelsPath;
   typesOutDir?: string;
@@ -43,7 +47,11 @@ export interface BunnyConfig {
   typeDeclarationImportPrefix?: string;
   typeDeclarationSingularModels?: boolean;
   typeStubs?: boolean;
-  logQueries?: boolean;
+  log?: boolean | { file?: string; console?: boolean };
+  transactions?: {
+    /** Safety net (ms): a manual beginTransaction() with no commit/rollback within this window is auto-rolled-back and its pooled connection released. Opt-in. */
+    abandonedTimeoutMs?: number;
+  };
   cache?: {
     store?: CacheStore;
     prefix?: string;
@@ -90,10 +98,31 @@ export function configureBunny(config: BunnyConfig): ConfiguredBunny {
 
   if (config.tenancy?.resolveTenant) {
     ConnectionManager.setTenantResolver(config.tenancy.resolveTenant);
+
+    // Defaults applied only when tenancy is in use: idle per-tenant pools
+    // are reclaimed unless the app explicitly opts out.
+    ConnectionManager.defaultTenantTtl =
+      config.tenancy.idleTimeoutMs ?? 300_000;
+
+    const sweep = config.tenancy.sweep ?? true;
+    if (sweep !== false && sweep !== 0) {
+      ConnectionManager.enableTenantSweep(typeof sweep === "number" ? sweep : 60_000);
+    }
   }
 
-  if (config.logQueries) {
+  // Global safety net for abandoned manual transactions. Default 60s;
+  // set transactions.abandonedTimeoutMs = 0 to disable.
+  Connection.abandonedTransactionTimeoutMs =
+    config.transactions?.abandonedTimeoutMs ?? 60_000;
+
+  const logConfig = config.log;
+  if (logConfig === true) {
     Connection.logQueries = true;
+    Connection.logToConsole = true;
+  } else if (logConfig && typeof logConfig === 'object') {
+    Connection.logQueries = true;
+    Connection.queryLogFile = logConfig.file;
+    Connection.logToConsole = logConfig.console ?? false;
   }
 
   if (config.cache) {

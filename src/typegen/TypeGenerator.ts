@@ -240,6 +240,7 @@ export class TypeGenerator {
   private async getTables(): Promise<string[]> {
     const driver = this.connection.getDriverName();
     let sql: string;
+    let bindings: any[] = [];
 
     if (driver === "sqlite") {
       sql = `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_inner_sequence' AND name != 'migrations'`;
@@ -247,10 +248,11 @@ export class TypeGenerator {
       sql = "SHOW TABLES";
     } else {
       const schema = this.connection.getSchema() || "public";
-      sql = `SELECT table_name FROM information_schema.tables WHERE table_schema = '${schema}' AND table_type = 'BASE TABLE'`;
+      sql = `SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE'`;
+      bindings = [schema];
     }
 
-    const rows = await this.connection.query(sql);
+    const rows = await this.connection.query(sql, bindings);
 
     if (driver === "sqlite") {
       return rows.map((r: any) => r.name);
@@ -312,7 +314,8 @@ export class TypeGenerator {
     // postgres
     const schema = this.connection.getSchema() || "public";
     const rows = await this.connection.query(
-      `SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = '${table}' AND table_schema = '${schema}' ORDER BY ordinal_position`
+      `SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = $1 AND table_schema = $2 ORDER BY ordinal_position`,
+      [table, schema]
     );
     return rows.map((r: any) => ({
       name: r.column_name,
