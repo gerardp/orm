@@ -1,7 +1,7 @@
 import { expect, test, describe, beforeAll, afterAll } from "bun:test";
 import { mkdir, readdir, unlink, rm } from "fs/promises";
 import { join } from "path";
-import { Connection, Schema, Migration, Migrator, MigrationCreator } from "../src/index.js";
+import { Connection, Schema, Migration, Migrator, MigrationCreator, ConnectionManager, Model } from "../src/index.js";
 import { setupTestDb } from "./helpers.js";
 
 const TEST_MIGRATIONS_DIR = join(process.cwd(), "tests", "temp_migrations");
@@ -12,6 +12,7 @@ const TEST_MIGRATIONS_DIR_D = join(process.cwd(), "tests", "temp_migrations_d");
 const TEST_MIGRATIONS_DIR_TENANT = join(process.cwd(), "tests", "temp_migrations_tenant");
 const TEST_MIGRATIONS_DIR_LOCKS = join(process.cwd(), "tests", "temp_migrations_locks");
 const TEST_MIGRATIONS_DIR_COMMANDS = join(process.cwd(), "tests", "temp_migrations_commands");
+const TEST_MIGRATIONS_DIR_RESTORE = join(process.cwd(), "tests", "temp_migrations_restore");
 
 describe("MigrationCreator", () => {
   test("creates migration file with class", async () => {
@@ -43,6 +44,62 @@ describe("Migrator", () => {
     const migrator = new Migrator(connection, TEST_MIGRATIONS_DIR);
     await migrator.run();
     expect(await Schema.hasTable("migrations")).toBe(true);
+  });
+
+  test("Migrator restores global bindings when no default existed", async () => {
+    const previousSchemaConnection = (Schema as any).connection as Connection | undefined;
+    const previousModelConnection = (Model as any).connection as Connection | undefined;
+    const previousDefaultConnection = ConnectionManager.getDefault();
+
+    delete (Schema as any).connection;
+    delete (Model as any).connection;
+    ConnectionManager.clearDefault();
+
+    await mkdir(TEST_MIGRATIONS_DIR_RESTORE, { recursive: true });
+    const filePath = join(TEST_MIGRATIONS_DIR_RESTORE, "20260408000000_create_restore_check_table.ts");
+    await Bun.write(
+      filePath,
+      `
+import { Migration, Schema } from "../../src/index.js";
+export default class CreateRestoreCheckTable extends Migration {
+  async up(): Promise<void> {
+    await Schema.create("restore_check_table", (table) => {
+      table.increments("id");
+    });
+  }
+  async down(): Promise<void> {
+    await Schema.dropIfExists("restore_check_table");
+  }
+}`
+    );
+
+    const isolated = new Connection({ url: "sqlite://:memory:" });
+
+    try {
+      const migrator = new Migrator(isolated, TEST_MIGRATIONS_DIR_RESTORE);
+      await migrator.run();
+
+      expect(ConnectionManager.getDefault()).toBeUndefined();
+      expect((Model as any).connection).toBeUndefined();
+    } finally {
+      await isolated.close();
+      await rm(TEST_MIGRATIONS_DIR_RESTORE, { recursive: true, force: true });
+      if (previousSchemaConnection) {
+        Schema.setConnection(previousSchemaConnection);
+      } else {
+        delete (Schema as any).connection;
+      }
+      if (previousModelConnection) {
+        Model.setConnection(previousModelConnection);
+      } else {
+        delete (Model as any).connection;
+      }
+      if (previousDefaultConnection) {
+        ConnectionManager.setDefault(previousDefaultConnection);
+      } else {
+        ConnectionManager.clearDefault();
+      }
+    }
   });
 
   test("runs pending migrations", async () => {

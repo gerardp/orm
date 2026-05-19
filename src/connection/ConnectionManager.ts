@@ -62,6 +62,10 @@ export class ConnectionManager {
     return this.defaultConnection;
   }
 
+  static clearDefault(): void {
+    this.defaultConnection = undefined;
+  }
+
   static add(name: string, connection: Connection | ConnectionConfig): Connection {
     const resolved = connection instanceof Connection ? connection : new Connection(connection);
     this.connections.set(name, resolved);

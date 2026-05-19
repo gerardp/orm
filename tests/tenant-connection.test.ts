@@ -240,15 +240,6 @@ describe("tenant connection switching", () => {
   });
 
   test("resolves tenants from a landlord database and routes to multiple sqlite tenants", async () => {
-    const landlord = new Connection({ url: "sqlite://:memory:" });
-    await landlord.run("CREATE TABLE tenants (slug TEXT PRIMARY KEY, connection_name TEXT NOT NULL)");
-    await landlord.run("INSERT INTO tenants (slug, connection_name) VALUES ('acme', 'tenant:acme'), ('beta', 'tenant:beta')");
-
-    const acme = await createTenantDb("Acme");
-    const beta = await createTenantDb("Beta");
-
-    LandlordTenant.setConnection(landlord);
-    ConnectionManager.add("landlord", landlord);
     configureBunny({
       connection: { url: "sqlite://:memory:" },
       tenancy: {
@@ -265,6 +256,16 @@ describe("tenant connection switching", () => {
         },
       },
     });
+
+    const landlord = new Connection({ url: "sqlite://:memory:" });
+    await landlord.run("CREATE TABLE tenants (slug TEXT PRIMARY KEY, connection_name TEXT NOT NULL)");
+    await landlord.run("INSERT INTO tenants (slug, connection_name) VALUES ('acme', 'tenant:acme'), ('beta', 'tenant:beta')");
+
+    const acme = await createTenantDb("Acme");
+    const beta = await createTenantDb("Beta");
+
+    LandlordTenant.setConnection(landlord);
+    ConnectionManager.add("landlord", landlord);
 
     ConnectionManager.add("tenant:acme", acme);
     ConnectionManager.add("tenant:beta", beta);

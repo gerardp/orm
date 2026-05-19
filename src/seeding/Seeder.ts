@@ -62,6 +62,8 @@ export class SeederRunner {
     // session-scoped SET) — the seeder opens its own real transaction on the
     // dedicated connection for atomicity.
     const usesTenantTransaction = context?.strategy === "rls";
+    const previousSchemaConnection = (Schema as any).connection as Connection | undefined;
+    const previousModelConnection = (Model as any).connection as Connection | undefined;
     const previousDefaultConnection = ConnectionManager.getDefault();
 
     const bind = async (boundConnection: Connection, runner: () => T | Promise<T>): Promise<T> => {
@@ -70,9 +72,20 @@ export class SeederRunner {
       try {
         return await TenantContext.withConnection(boundConnection, runner);
       } finally {
+        if (previousSchemaConnection) {
+          Schema.setConnection(previousSchemaConnection);
+        } else {
+          delete (Schema as any).connection;
+        }
+        if (previousModelConnection) {
+          Model.setConnection(previousModelConnection);
+        } else {
+          delete (Model as any).connection;
+        }
         if (previousDefaultConnection) {
-          Schema.setConnection(previousDefaultConnection);
-          Model.setConnection(previousDefaultConnection);
+          ConnectionManager.setDefault(previousDefaultConnection);
+        } else {
+          ConnectionManager.clearDefault();
         }
       }
     };

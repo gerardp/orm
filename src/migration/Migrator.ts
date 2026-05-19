@@ -5,6 +5,7 @@ import { basename, join, relative, resolve } from "path";
 import { Connection } from "../connection/Connection.js";
 import { ConnectionManager } from "../connection/ConnectionManager.js";
 import { TenantContext } from "../connection/TenantContext.js";
+import { Model } from "../model/Model.js";
 import { Schema } from "../schema/Schema.js";
 import { Blueprint } from "../schema/Blueprint.js";
 import { Builder } from "../query/Builder.js";
@@ -67,7 +68,7 @@ export class Migrator {
     private typeGeneratorOptions: Omit<TypeGeneratorOptions, "outDir"> = {},
     private options: MigratorOptions = {}
   ) {
-    Schema.setConnection(connection);
+    (Schema as any).connection = connection;
   }
 
   private getPaths(): string[] {
@@ -300,10 +301,12 @@ export class Migrator {
 
   private async withRuntimeConnection<T>(connection: Connection, callback: () => T | Promise<T>): Promise<T> {
     const previousSchemaConnection = (Schema as any).connection as Connection | undefined;
+    const previousModelConnection = (Model as any).connection as Connection | undefined;
     const previousDefaultConnection = ConnectionManager.getDefault();
     const previousLogQueries = connection.logQueries;
 
     Schema.setConnection(connection);
+    Model.setConnection(connection);
     connection.logQueries = false;
     try {
       return await TenantContext.withConnection(connection, callback);
@@ -314,8 +317,15 @@ export class Migrator {
       } else {
         delete (Schema as any).connection;
       }
+      if (previousModelConnection) {
+        Model.setConnection(previousModelConnection);
+      } else {
+        delete (Model as any).connection;
+      }
       if (previousDefaultConnection) {
         ConnectionManager.setDefault(previousDefaultConnection);
+      } else {
+        ConnectionManager.clearDefault();
       }
     }
   }

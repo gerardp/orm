@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "path";
 import { mkdir, rm } from "fs/promises";
-import { ConnectionManager, Model, Schema, Seeder, SeederRunner, TenantContext, factory } from "../src/index.js";
+import { Connection, ConnectionManager, Model, Schema, Seeder, SeederRunner, TenantContext, factory } from "../src/index.js";
 import { setupTestDb } from "./helpers.js";
 
 class SeedUser extends Model {
@@ -260,6 +260,51 @@ export default class SecondSeeder extends Seeder {
       expect(calls).toEqual(["transaction", "run"]);
     } finally {
       TenantContext.current = originalCurrent;
+    }
+  });
+
+  test("SeederRunner restores global bindings when no default existed", async () => {
+    const previousSchemaConnection = (Schema as any).connection as Connection | undefined;
+    const previousModelConnection = (Model as any).connection as Connection | undefined;
+    const previousDefaultConnection = ConnectionManager.getDefault();
+
+    delete (Schema as any).connection;
+    delete (Model as any).connection;
+    ConnectionManager.clearDefault();
+
+    const connection = new Connection({ url: "sqlite://:memory:" });
+    await connection.run("CREATE TABLE seed_users (id INTEGER PRIMARY KEY, name TEXT)");
+
+    class RestoreSeeder extends Seeder {
+      async run(): Promise<void> {
+        await SeedUser.create({ name: "Restore" });
+      }
+    }
+
+    try {
+      const runner = new SeederRunner(connection);
+      await runner.run([RestoreSeeder]);
+
+      expect(ConnectionManager.getDefault()).toBeUndefined();
+      expect((Schema as any).connection).toBeUndefined();
+      expect((Model as any).connection).toBeUndefined();
+    } finally {
+      await connection.close();
+      if (previousSchemaConnection) {
+        Schema.setConnection(previousSchemaConnection);
+      } else {
+        delete (Schema as any).connection;
+      }
+      if (previousModelConnection) {
+        Model.setConnection(previousModelConnection);
+      } else {
+        delete (Model as any).connection;
+      }
+      if (previousDefaultConnection) {
+        ConnectionManager.setDefault(previousDefaultConnection);
+      } else {
+        ConnectionManager.clearDefault();
+      }
     }
   });
 });
