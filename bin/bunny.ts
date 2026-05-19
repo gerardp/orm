@@ -21,6 +21,7 @@ import { registerJob } from "../src/queue/Job.js";
 import { registerCommand, resolveCommand, listCommands, isCommandConstructor } from "../src/commands/Command.js";
 import { CommandRunner } from "../src/commands/CommandRunner.js";
 import { parseSignatureName } from "../src/commands/SignatureParser.js";
+import { registerOrmCommands } from "../src/cli/index.js";
 import {
   BelongsTo,
   BelongsToMany,
@@ -795,7 +796,8 @@ async function main() {
     throw err;
   }
 
-  const { connection } = configureBunny(config); // registers ORM commands via registerOrmCommands()
+  const { connection } = configureBunny(config);
+  registerOrmCommands(config, connection);
 
   // Walk user commandsPath and register user-defined commands
   for (const commandsPath of normalizePathList(config.commands?.commandsPath)) {
