@@ -44,6 +44,7 @@ If you are new here, start with [Installation](./installation.md), then walk thr
 | Topic | What you will learn |
 |---|---|
 | [Queue Jobs](./queue.md) | Dispatch jobs to named queues, run workers with `bunny queue`, retries, delays, failed-job tracking, database and Redis drivers. |
+| [Commands](./commands.md) | Define and run CLI commands with `bunny run`, signature DSL, argument/option parsing, output helpers. |
 
 ## Advanced
 

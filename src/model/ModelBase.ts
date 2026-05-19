@@ -276,7 +276,9 @@ export type ExtractStringPaths<R> =
 
 type WithJsonMethods<T> = Omit<T, "json" | "toJSON"> & {
   toJSON(): ModelJson<T>;
-  json(options?: { relations?: boolean }): ModelJson<T>;
+  json(): ModelJson<T>;
+  json(options: { relations?: boolean }): ModelJson<T>;
+  json<P extends DotPaths<ModelJson<T>>>(...paths: P[]): DeepPick<ModelJson<T>, P>;
 };
 
 type NestedRelationPaths<Paths extends string, Key extends string> =
@@ -363,6 +365,39 @@ export type ModelJson<T> =
   Omit<ModelAttributes<T>, JsonRelationKeys<T>> &
   { [K in JsonRelationKeys<T>]: JsonRelationValue<T[K]>; } &
   { [K in JsonExtraKeys<T>]: T[K]; };
+
+// ─── Dot-path type utilities ──────────────────────────────────────────────────
+
+type Prev<N extends number> = [never, 0, 1, 2, 3][N];
+
+type RootKey<P extends string> = P extends `${infer R}.${string}` ? R : P;
+type TailPath<P extends string> = P extends `${string}.${infer T}` ? T : never;
+
+/** All valid dot-paths into T up to depth D */
+export type DotPaths<T, D extends number = 3> =
+  [D] extends [never] ? never :
+  keyof T & string | (D extends 0 ? never : {
+    [K in keyof T & string]-?:
+      NonNullable<T[K]> extends (infer I extends object)[]
+        ? `${K}.${DotPaths<I, Prev<D>>}`
+        : NonNullable<T[K]> extends object
+          ? `${K}.${DotPaths<NonNullable<T[K]>, Prev<D>>}`
+          : never
+  }[keyof T & string]);
+
+/** Pick a nested subset of T using dot-path strings */
+export type DeepPick<T, Paths extends string> = {
+  [K in RootKey<Paths> & keyof T]:
+    Extract<Paths, `${K}.${string}`> extends never
+      ? T[K]
+      : NonNullable<T[K]> extends (infer I)[]
+        ? DeepPick<I & object, TailPath<Extract<Paths, `${K}.${string}`>>>[]
+          | Extract<T[K], null | undefined>
+        : NonNullable<T[K]> extends object
+          ? DeepPick<NonNullable<T[K]>, TailPath<Extract<Paths, `${K}.${string}`>>>
+            | Extract<T[K], null | undefined>
+          : T[K]
+};
 
 // ============================================================
 // Helper functions

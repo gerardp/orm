@@ -44,6 +44,10 @@
     "./queue": {
       "types": "./dist/src/queue/index.d.ts",
       "import": "./dist/src/queue/index.js"
+    },
+    "./commands": {
+      "types": "./dist/src/commands/index.d.ts",
+      "import": "./dist/src/commands/index.js"
     }
   },
   "typesVersions": {
@@ -59,6 +63,9 @@
       ],
       "queue": [
         "dist/src/queue/index.d.ts"
+      ],
+      "commands": [
+        "dist/src/commands/index.d.ts"
       ]
     }
   },

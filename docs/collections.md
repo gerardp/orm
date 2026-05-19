@@ -38,12 +38,22 @@ numbers.avg();    // 2.5
 |---|---|
 | `all()` | Plain `T[]` snapshot |
 | `toArray()` | Alias for `all()` |
-| `toJSON()` | Array of plain objects — calls `toJSON()` on each item (good for API responses) |
+| `toJSON()` | Array of plain objects — calls `toJSON()` on each item |
 | `json()` | Alias for `toJSON()` |
+| `json(...keys)` | Pick top-level keys from each item |
+| `json(...paths)` | Pick nested fields using dot notation |
 
 ```ts
 const payload = users.toJSON();
 return Response.json(payload);
+
+// pick specific fields — keys autocomplete and are type-checked
+users.json("id", "name", "email")
+
+// dot notation for eager-loaded relations
+const users = await User.with("posts").get();
+users.json("id", "name", "posts.title")
+// [{ id: 1, name: "Alice", posts: [{ title: "Hello" }] }, ...]
 ```
 
 ## State

@@ -207,26 +207,26 @@ describe("Eager Loading", () => {
     expect(json.profile).toBeNull();
   });
 
-  test("json with relations false excludes eager loaded relations", async () => {
+  test("json excludes relations hidden via makeHidden", async () => {
     const author = await EAuthor.create({ name: "Mia" });
     await EBook.create({ author_id: author.getAttribute("id"), title: "Book M" });
 
     const found = await EAuthor.with("books").where("name", "Mia").first();
     expect(found).not.toBeNull();
 
-    const json = found!.json({ relations: false });
+    const json = found!.makeHidden("books").json();
     expect(json.name).toBe("Mia");
     expect(json).not.toHaveProperty("books");
   });
 
-  test("json with relations true includes eager loaded relations", async () => {
+  test("json includes eager loaded relations by default", async () => {
     const author = await EAuthor.create({ name: "Noah" });
     await EBook.create({ author_id: author.getAttribute("id"), title: "Book N" });
 
     const found = await EAuthor.with("books").where("name", "Noah").first();
     expect(found).not.toBeNull();
 
-    const json = found!.json({ relations: true });
+    const json = found!.json();
     expect(json.name).toBe("Noah");
     expect(json.books).toBeInstanceOf(Array);
     expect(json.books).toHaveLength(1);

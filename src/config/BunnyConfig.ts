@@ -56,6 +56,9 @@ export interface BunnyConfig {
     table?: string;
     failedTable?: string;
   };
+  commands?: {
+    commandsPath?: string | string[];
+  };
 }
 
 export interface ConfiguredBunny {

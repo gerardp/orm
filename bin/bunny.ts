@@ -18,6 +18,9 @@ import type { ModelsPath } from "../src/config/BunnyConfig.js";
 import { DatabaseQueueDriver } from "../src/queue/DatabaseQueueDriver.js";
 import { Worker } from "../src/queue/Worker.js";
 import { registerJob } from "../src/queue/Job.js";
+import { registerCommand, resolveCommand, listCommands, isCommandConstructor } from "../src/commands/Command.js";
+import { CommandRunner } from "../src/commands/CommandRunner.js";
+import { parseSignatureName } from "../src/commands/SignatureParser.js";
 import {
   BelongsTo,
   BelongsToMany,
@@ -885,6 +888,72 @@ async function main() {
     } else if (command === "db:seed") {
       const { target, scope } = parseSeederInvocation(args.slice(1));
       await runSeederCommand(config, connection, scope, target);
+    } else if (command === "run") {
+      const name = args[1];
+
+      // Auto-import from commandsPath
+      const commandsPaths = normalizePathList(config.commands?.commandsPath);
+      for (const commandsPath of commandsPaths) {
+        const resolvedPath = resolve(process.cwd(), commandsPath);
+        if (!existsSync(resolvedPath)) {
+          console.warn(`[Commands] commandsPath not found: ${resolvedPath}`);
+          continue;
+        }
+        const files = await walkJobFiles(resolvedPath);
+        for (const file of files) {
+          const mod = await import(pathToFileURL(file).href);
+          for (const exported of Object.values(mod)) {
+            if (
+              typeof exported === "function" &&
+              typeof (exported as any).signature === "string" &&
+              typeof (exported as any).prototype?.handle === "function"
+            ) {
+              registerCommand(exported as any);
+              continue;
+            }
+            if (
+              typeof exported === "object" && exported !== null &&
+              typeof (exported as any).signature === "string" &&
+              typeof (exported as any).handle === "function"
+            ) {
+              registerCommand(exported as any);
+            }
+          }
+        }
+      }
+
+      if (!name || name === "--help" || name === "-h") {
+        const commands = listCommands();
+        if (commands.length === 0) {
+          console.log("No commands registered. Set commands.commandsPath in bunny.config.ts.");
+        } else {
+          console.log("\nAvailable commands:\n");
+          for (const entry of commands) {
+            const sig = isCommandConstructor(entry) ? entry.signature : entry.signature;
+            const desc = isCommandConstructor(entry) ? entry.description : entry.description;
+            const cmdName = parseSignatureName(sig);
+            console.log(`  ${cmdName.padEnd(30)}${desc ?? ""}`);
+          }
+          console.log("");
+        }
+        return;
+      }
+
+      const entry = resolveCommand(name);
+      if (!entry) {
+        console.error(`Unknown command: ${name}`);
+        process.exit(1);
+      }
+
+      const runner = new CommandRunner();
+      try {
+        await runner.run(entry, args.slice(2));
+      } catch (err) {
+        console.error(`\x1b[31mError:\x1b[0m ${err instanceof Error ? err.message : String(err)}`);
+        console.error(`\nRun \x1b[33mbunny run ${name} --help\x1b[0m for usage.`);
+        process.exit(1);
+      }
+      return;
     } else if (command === "queue") {
       const restArgs = args.slice(1);
       const queueName = getFlagValue(restArgs, "--queue") ?? config.queue?.defaultQueue ?? "default";
@@ -957,6 +1026,9 @@ async function main() {
       console.log("  bun run bunny queue                Start queue worker (uses config defaults)");
       console.log("  bun run bunny queue --queue <name> Start worker for a specific queue");
       console.log("  bun run bunny queue --workers <n>  Start worker with N concurrent slots");
+      console.log("  bun run bunny run                  List all registered commands");
+      console.log("  bun run bunny run <name> [args]    Run a command by name");
+      console.log("  bun run bunny run <name> --help    Show help for a command");
     }
   } finally {
     await ConnectionManager.closeAll();

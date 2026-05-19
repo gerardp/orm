@@ -551,11 +551,41 @@ const user = await User.with("posts").first();
 user.toJSON();
 // { id: 1, name: "Alice", posts: [{ id: 1, title: "Hello" }, ...] }
 
-user.json();                       // same
-user.json({ relations: false });   // attributes only
+user.json();                       // same as toJSON()
+user.json({ relations: false });   // attributes only, no relations
 ```
 
 `JSON.stringify(user)` calls `toJSON()`, so it picks up relations and accessor-defined virtual fields automatically.
+
+### Picking fields
+
+Pass field names to return only a subset. Keys autocomplete and are type-checked:
+
+```ts
+user.json("id", "name", "email")
+// { id: 1, name: "Alice", email: "alice@example.com" }
+```
+
+Use dot notation to pick fields from eager-loaded relations:
+
+```ts
+const user = await User.with("posts", "social").first();
+
+user.json("id", "name", "posts.title")
+// { id: 1, name: "Alice", posts: [{ title: "Hello" }] }
+
+user.json("id", "social.provider", "social.provider_id")
+// { id: 1, social: { provider: "github", provider_id: "gh-123" } }
+```
+
+This works on collections too — the same signature, applied to every item:
+
+```ts
+const users = await User.with("posts").get();
+
+users.json("id", "name", "posts.title")
+// [{ id: 1, name: "Alice", posts: [{ title: "Hello" }] }, ...]
+```
 
 ### Appended attributes
 

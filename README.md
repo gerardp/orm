@@ -25,6 +25,7 @@ An **Eloquent-inspired ORM** built specifically for [Bun](https://bun.sh)'s nati
 - 🧠 **Tagged Cache** — Redis-backed cache facade, query `remember()`, and exact tag invalidation
 - 📣 **Events** — Application-level event dispatcher with function listeners and class handlers
 - 🐇 **Queue Jobs** — Database- and Redis-backed background job queue with named queues, retries, delays, and a `bunny queue` worker
+- 🛠️ **Commands** — Artisan-style CLI commands with a signature DSL, argument/option parsing, and `bunny run`
 - 🧬 **Eloquent-style Models** — Property attributes, defaults, casts, dirty tracking, soft deletes, scopes, find-or-fail, first-or-create
 - 🧺 **Collections** — Laravel-style helpers for multi-record query results
 - 🔗 **Relations** — Standard, many-to-many, polymorphic, through, one-of-many, and relation queries
@@ -149,6 +150,7 @@ See the [Quickstart guide](./docs/quickstart.md) for the full walkthrough.
 | Topic | Summary |
 |---|---|
 | [Queue Jobs](./docs/queue.md) | Dispatch jobs to named queues, run workers with `bunny queue`, retries, delays, failed-job tracking, database and Redis drivers. |
+| [Commands](./docs/commands.md) | Artisan-style CLI commands with signature DSL, argument/option parsing, output helpers, and `bunny run`. |
 
 ### Advanced
 

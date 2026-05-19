@@ -1,3 +1,4 @@
+import type { DotPaths, DeepPick } from "../model/ModelBase.js";
 import type {
   AggregateAlias,
   AggregateColumn,
@@ -15,6 +16,38 @@ type CollectionKey = string | number | symbol;
 
 type CollectionPredicate<T> = (item: T, index: number) => boolean;
 export type CollectionJson<T> = T extends { toJSON(): infer R } ? R[] : T[];
+type ItemJson<T> = T extends { toJSON(): infer R } ? R : T;
+
+function deepPickCollection(obj: Record<string, any>, paths: string[]): Record<string, any> {
+  const groups = new Map<string, string[]>();
+  for (const path of paths) {
+    const dot = path.indexOf(".");
+    if (dot === -1) {
+      if (!groups.has(path)) groups.set(path, []);
+    } else {
+      const root = path.slice(0, dot);
+      const tail = path.slice(dot + 1);
+      if (!groups.has(root)) groups.set(root, []);
+      groups.get(root)!.push(tail);
+    }
+  }
+  const result: Record<string, any> = {};
+  for (const [root, tails] of groups) {
+    const val = obj[root];
+    if (tails.length === 0) {
+      result[root] = val;
+    } else if (val === null || val === undefined) {
+      result[root] = val;
+    } else if (Array.isArray(val)) {
+      result[root] = val.map(item => deepPickCollection(item, tails));
+    } else if (typeof val === "object") {
+      result[root] = deepPickCollection(val, tails);
+    } else {
+      result[root] = val;
+    }
+  }
+  return result;
+}
 
 function valueFor(item: any, key: CollectionKey): any {
   if (typeof key === "symbol") return item?.[key];
@@ -72,8 +105,14 @@ export class Collection<T = any> extends Array<T> {
     return this.map((item: any) => typeof item?.toJSON === "function" ? item.toJSON() : item) as CollectionJson<T>;
   }
 
-  json(): CollectionJson<T> {
-    return this.toJSON();
+  json(): CollectionJson<T>;
+  json<P extends DotPaths<ItemJson<T>>>(...paths: P[]): DeepPick<ItemJson<T>, P>[];
+  json<P extends DotPaths<ItemJson<T>>>(...paths: P[]): any {
+    if (paths.length === 0) return this.toJSON();
+    return this.map((item: any) => {
+      const full = typeof item?.toJSON === "function" ? item.toJSON() : item;
+      return deepPickCollection(full, paths as string[]);
+    });
   }
 
   isEmpty(): boolean {

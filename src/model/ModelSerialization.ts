@@ -1,5 +1,36 @@
 import { ModelPersistence } from "./ModelPersistence.js";
-import type { ModelJson } from "./ModelBase.js";
+import type { ModelJson, DotPaths, DeepPick } from "./ModelBase.js";
+
+function deepPick(obj: Record<string, any>, paths: string[]): Record<string, any> {
+  const groups = new Map<string, string[]>();
+  for (const path of paths) {
+    const dot = path.indexOf(".");
+    if (dot === -1) {
+      if (!groups.has(path)) groups.set(path, []);
+    } else {
+      const root = path.slice(0, dot);
+      const tail = path.slice(dot + 1);
+      if (!groups.has(root)) groups.set(root, []);
+      groups.get(root)!.push(tail);
+    }
+  }
+  const result: Record<string, any> = {};
+  for (const [root, tails] of groups) {
+    const val = obj[root];
+    if (tails.length === 0) {
+      result[root] = val;
+    } else if (val === null || val === undefined) {
+      result[root] = val;
+    } else if (Array.isArray(val)) {
+      result[root] = val.map(item => deepPick(item, tails));
+    } else if (typeof val === "object") {
+      result[root] = deepPick(val, tails);
+    } else {
+      result[root] = val;
+    }
+  }
+  return result;
+}
 
 export class ModelSerialization<T extends Record<string, any> = any> extends ModelPersistence<T> {
   makeHidden(...keys: (string | string[])[]): this {
@@ -70,8 +101,17 @@ export class ModelSerialization<T extends Record<string, any> = any> extends Mod
     return this.serialize(true) as ModelJson<this>;
   }
 
-  json(options?: { relations?: boolean }): ModelJson<this> {
-    return this.serialize(options?.relations !== false) as ModelJson<this>;
+  json(): ModelJson<this>;
+  json(options: { relations?: boolean }): ModelJson<this>;
+  json<P extends DotPaths<ModelJson<this>>>(...paths: P[]): DeepPick<ModelJson<this>, P>;
+  json<P extends DotPaths<ModelJson<this>>>(first?: { relations?: boolean } | P, ...rest: P[]): any {
+    if (first !== undefined && typeof first === "object" && !Array.isArray(first)) {
+      return this.serialize((first as { relations?: boolean }).relations !== false);
+    }
+    const paths = (first !== undefined ? [first as P, ...rest] : []) as string[];
+    const full = this.serialize(true) as Record<string, any>;
+    if (paths.length === 0) return full;
+    return deepPick(full, paths);
   }
 
   toString(): string {
