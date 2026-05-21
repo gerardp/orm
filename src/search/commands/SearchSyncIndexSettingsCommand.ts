@@ -1,0 +1,30 @@
+import { Command } from "../../commands/Command.js";
+import type { BunnyConfig } from "../../config/BunnyConfig.js";
+import { Search } from "../SearchManager.js";
+import { loadSearchableModels, resolveSearchableModel } from "./resolveSearchableModel.js";
+import { runWithTenant } from "./runWithTenant.js";
+
+export function makeSearchSyncIndexSettingsCommand(config: BunnyConfig) {
+  return class extends Command.define("search:sync-index-settings {model? : Model class name (all if omitted)} {--tenant= : Run under a tenant context}") {
+    static description = "Push per-model search index settings to the engine.";
+
+    async handle() {
+      const name = this.argumentOptional("model");
+      const tenantId = this.option("tenant") as string | undefined;
+      const targets = name
+        ? [await resolveSearchableModel(config, name)]
+        : await loadSearchableModels(config);
+
+      await runWithTenant(tenantId, async () => {
+        for (const ctor of targets) {
+          if (!ctor) continue;
+          const settings = (ctor as any).searchIndexSettings;
+          if (!settings) { this.warn(`${ctor.name}: no searchIndexSettings defined, skipping.`); continue; }
+          const index = (ctor as any).searchableAs();
+          await Search.engine().updateIndexSettings(index, settings);
+          this.info(`Synced settings for "${index}" (${ctor.name})${tenantId ? ` (tenant=${tenantId})` : ""}.`);
+        }
+      });
+    }
+  };
+}

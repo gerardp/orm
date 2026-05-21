@@ -13,6 +13,12 @@ export interface ValidationContext {
   has(path: string): boolean;
   /** Connection to use for DB-aware rules (unique/exists). Tenant-resolved. */
   connection: Connection;
+  /**
+   * Record a sub-error against an absolute field path. Used by nested rules
+   * (object/record) to surface child issues with composed paths like
+   * `meta.email`. Wired by Validator; absent for direct rule invocation.
+   */
+  addError?(field: string, message: string): void;
 }
 
 export interface RuleContract {

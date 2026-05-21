@@ -136,9 +136,21 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
   static async insert<M extends ModelConstructor>(
     this: M,
     records: ModelAttributeInput<InstanceType<M>> | ModelAttributeInput<InstanceType<M>>[],
-    options: Omit<BulkModelOptions, "events"> = {}
+    options: BulkModelOptions = {}
   ): Promise<any> {
-    const prepared = await (this as any).prepareBulkRecords(Array.isArray(records) ? records : [records]);
+    const list = Array.isArray(records) ? records : [records];
+
+    // Route through saveMany() when observers are attached so they fire
+    // (creating/created/saving/saved per row). Slower — one INSERT per row —
+    // but only when an observer is actually registered for this model.
+    const wantsEvents = options.events !== false;
+    if (wantsEvents && ObserverRegistry.hasAny(this as any)) {
+      const models = list.map((attrs) => new (this as any)(attrs) as InstanceType<M>);
+      await (this as any).saveMany(models, { chunkSize: options.chunkSize });
+      return models;
+    }
+
+    const prepared = await (this as any).prepareBulkRecords(list);
     const chunkSize = options.chunkSize || prepared.length || 1;
     let result: any;
     for (let i = 0; i < prepared.length; i += chunkSize) {

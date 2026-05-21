@@ -547,6 +547,9 @@ Higher-level rules:
 | `custom(name, callback, message?)` | Inline custom validation rule with a named message key. |
 | `use(ruleObject)` | Reusable custom rule object implementing `RuleContract`. |
 | `password(...)` | Password builder with `min`, `letters`, `mixedCase`, `numbers`, and `symbols`. |
+| `object(shape, mode?)` | Validate a fixed-shape nested object — each key gets its own RuleBuilder. Unknown keys are stripped (`"strip"` default); pass `"passthrough"` to keep them. See [object / record / unknown](#object--record--unknown). |
+| `record(value)` / `record(key, value)` | Validate a dictionary — arbitrary keys, single value schema. Optional first arg constrains keys (valibot-style). |
+| `unknown()` | Accept any value when present. Useful for intentionally-open JSON fields. |
 
 Use `custom()` for one-off checks that stay close to the schema. Use `use()` when you want a reusable rule object, usually because the logic needs a class or will be shared across schemas.
 
@@ -691,6 +694,69 @@ await Validator.make(input, {
   "items.*.sku": rule().required().distinct(),
 }).validate();
 ```
+
+### `object` / `record` / `unknown`
+
+Three native shape rules for nested data. All compose; all surface child errors with composed paths (`meta.email`, `tags.primary`, `order.customer.email`).
+
+| Rule | Use when |
+|---|---|
+| `object(shape, mode?)` | Keys are **fixed and known** — each gets its own builder. Unknown keys are stripped by default; pass `"passthrough"` to keep them. |
+| `record(value)` / `record(key, value)` | Keys are **arbitrary** at runtime, all values share one schema. One-arg form (zod-style) takes the value rule; two-arg form (valibot-style) takes `(keyRule, valueRule)`. |
+| `unknown()` | Field shape is intentionally open. Accepts anything (subject to `required`/`nullable`/`sometimes`). |
+
+```ts
+// fixed-shape object — typed per key, unknown keys stripped
+const order = Validator.schema({
+  id: rule().integer(),
+  customer: rule().object({
+    name: rule().string(),
+    email: rule().string().email(),
+  }),
+});
+// inferred output: { id: number; customer: { name: string; email: string } }
+
+// keep extra keys
+rule().object({ name: rule().string() }, "passthrough");
+
+// record of arbitrary keys, values are integers
+rule().record(rule().integer());                  // Record<string, number>
+
+// record with constrained keys (valibot-style: key first, value second)
+const Theme = { Light: "light", Dark: "dark" } as const;
+rule().record(rule().enum(Theme), rule().string()); // Record<"light"|"dark", string>
+
+// truly arbitrary JSON blob
+rule().unknown();                                  // unknown
+rule().record();                                   // Record<string, unknown>
+```
+
+Errors compose naturally:
+
+```ts
+const v = Validator.make(
+  { order: { id: "bad", customer: { name: "x", email: "nope" } } },
+  {
+    order: rule().object({
+      id: rule().integer(),
+      customer: rule().object({
+        name: rule().string(),
+        email: rule().string().email(),
+      }),
+    }),
+  },
+);
+
+await v.errors();
+// {
+//   "order.id":              ["The order.id field must be an integer."],
+//   "order.customer.email":  ["The order.customer.email field must be a valid email address."],
+// }
+```
+
+When sub-errors are recorded, the parent rule's own "must be an object/record" message is **suppressed** — only the most specific paths surface. The top-level "must be an object/record" still fires when the value is the wrong shape (array, string, etc.).
+
+`null` follows the framework convention: treated as missing unless `.required()`. Use `rule().required().record()` if `null` should be rejected.
 
 ## Type Inference
 

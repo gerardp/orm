@@ -322,6 +322,362 @@ const distinct = await active.union(admin).get();    // dedupes
 const all = await active.unionAll(admin).get();      // keeps duplicates
 ```
 
+## Recursive CTEs
+
+Use recursive tree helpers for adjacency-list data such as folders, categories, threaded comments, and org charts.
+
+```ts
+class Folder extends Model.define<FolderAttrs>("folders") {
+  items() {
+    return this.hasMany(Folder, "parent_id");
+  }
+}
+
+const tree = await Folder.descendants(1).getTree();
+```
+
+That is the shortest path. Bunny infers the tree column from the self-referencing `hasMany`, builds a recursive CTE, adds a `depth` attribute, hydrates `Folder` models, and nests children using the matching relation name.
+
+Because `items()` points `Folder -> Folder` through `parent_id`, Bunny knows the tree column is `parent_id` and can infer the nested relation name as `items`.
+
+If you already know the parent pointer column, the lower-level API is still available:
+
+```ts
+const tree = await Folder.recursive("parent_id").getTree();
+```
+
+## Descendants
+
+`descendants()` starts from a model id or ids and walks down the tree.
+
+```ts
+const folders = await Folder
+  .descendants(1)
+  .orderByDepth()
+  .orderBy("name")
+  .get();
+```
+
+Expected flat result:
+
+```ts
+folders.json();
+// [
+//   { id: 1, parent_id: null, name: "Root", depth: 0 },
+//   { id: 2, parent_id: 1, name: "Admissions", depth: 1 },
+//   { id: 3, parent_id: 1, name: "Billing", depth: 1 },
+//   { id: 4, parent_id: 2, name: "Forms", depth: 2 },
+// ]
+```
+
+`includeRoot()` keeps the starting record in the result. `excludeRoot()` drops it and promotes its children:
+
+```ts
+const folders = await Folder
+  .descendants(1)
+  .excludeRoot()
+  .orderByDepth()
+  .orderBy("name")
+  .get();
+```
+
+Expected output:
+
+```ts
+folders.json();
+// [
+//   { id: 2, parent_id: 1, name: "Admissions", depth: 1 },
+//   { id: 3, parent_id: 1, name: "Billing", depth: 1 },
+//   { id: 4, parent_id: 2, name: "Forms", depth: 2 },
+// ]
+```
+
+If `excludeRoot()` promotes more than one top-level node, `getTree()` returns a collection instead of a single model.
+
+`getTree()` materializes nested models. See [Tree Results](#tree-results) for return shapes and examples.
+
+## Ancestors
+
+```ts
+const folders = await Folder
+  .ancestors(4)
+  .orderByDepth("desc")
+  .orderBy("name")
+  .get();
+
+folders.json();
+// [
+//   { id: 1, parent_id: null, name: "Root", depth: 2 },
+//   { id: 2, parent_id: 1, name: "Admissions", depth: 1 },
+//   { id: 4, parent_id: 2, name: "Forms", depth: 0 },
+// ]
+```
+
+`ancestors()` walks up the tree toward the root. It is most useful for breadcrumbs, audit trails, and “show me where this item lives” UI.
+
+With one starting id, `ancestors(...).getTree()` returns a single tree root or `null`:
+
+```ts
+const root = await Folder
+  .ancestors(4)
+  .orderByDepth("desc")
+  .getTree();
+
+root; // Folder | null
+```
+
+Expected tree shape:
+
+```ts
+root?.json();
+// {
+//   id: 1,
+//   parent_id: null,
+//   name: "Root",
+//   depth: 2,
+//   items: [
+//     {
+//       id: 2,
+//       parent_id: 1,
+//       name: "Admissions",
+//       depth: 1,
+//       items: [
+//         { id: 4, parent_id: 2, name: "Forms", depth: 0, items: [] },
+//       ],
+//     },
+//   ],
+// }
+```
+
+## Ordering And Depth
+
+`orderByDepth()` is a convenience wrapper for ordering recursive rows by the synthetic `depth` column.
+
+```ts
+await Folder.descendants(1).orderByDepth().get();      // breadth-first
+await Folder.descendants(1).breadthFirst().get();      // same as orderByDepth("asc")
+await Folder.descendants(1).depthFirst().get();        // same as orderByDepth("desc")
+```
+
+`maxDepth()` caps recursion depth. Depth starts at `0` for the starting row or root row.
+
+```ts
+const folders = await Folder
+  .descendants(1)
+  .maxDepth(1)
+  .orderBy("depth")
+  .orderBy("name")
+  .get();
+```
+
+That returns the starting row plus one level of descendants. `cycleGuard()` is a convenience alias that applies a default depth cap.
+
+## Paths And Flags
+
+`path()` adds a breadcrumb-style string to every row. The default path column is `name` and the default alias is `path`.
+
+Concrete example:
+
+```ts
+const folders = await Folder
+  .descendants(1)
+  .path("name")
+  .hasChildren()
+  .leaf()
+  .orderByDepth()
+  .orderBy("name")
+  .get();
+```
+
+Expected result:
+
+```ts
+folders.json();
+// [
+//   {
+//     id: 1,
+//     parent_id: null,
+//     name: "Root",
+//     depth: 0,
+//     path: "Root",
+//     has_children: true,
+//     leaf: false,
+//   },
+//   {
+//     id: 2,
+//     parent_id: 1,
+//     name: "Admissions",
+//     depth: 1,
+//     path: "Root > Admissions",
+//     has_children: true,
+//     leaf: false,
+//   },
+//   {
+//     id: 3,
+//     parent_id: 1,
+//     name: "Billing",
+//     depth: 1,
+//     path: "Root > Billing",
+//     has_children: false,
+//     leaf: true,
+//   },
+// ]
+```
+
+## Tree Results
+
+`getTree()` nests the recursive rows into model relations. The relation name is inferred from the matching self-referencing `hasMany`.
+
+```ts
+const tree = await Folder
+  .descendants(1)
+  .orderBy("depth")
+  .orderBy("name")
+  .getTree();
+```
+
+Expected `json()` output:
+
+```ts
+tree.json();
+// {
+//   id: 1,
+//   parent_id: null,
+//   name: "Root",
+//   depth: 0,
+//   items: [
+//     {
+//       id: 2,
+//       parent_id: 1,
+//       name: "Admissions",
+//       depth: 1,
+//       items: [
+//         { id: 4, parent_id: 2, name: "Forms", depth: 2, items: [] },
+//       ],
+//     },
+//     { id: 3, parent_id: 1, name: "Billing", depth: 1, items: [] },
+//   ],
+// }
+```
+
+If you pass one starting id and keep the root included, `getTree()` returns `Folder | null`:
+
+```ts
+const root = await Folder.descendants(1).getTree();
+
+root; // Folder | null
+
+root?.json();
+// {
+//   id: 1,
+//   parent_id: null,
+//   name: "Root",
+//   depth: 0,
+//   items: [
+//     {
+//       id: 2,
+//       parent_id: 1,
+//       name: "Admissions",
+//       depth: 1,
+//       items: [
+//         { id: 4, parent_id: 2, name: "Forms", depth: 2, items: [] },
+//       ],
+//     },
+//     { id: 3, parent_id: 1, name: "Billing", depth: 1, items: [] },
+//   ],
+// }
+```
+
+If you exclude the starting record, `getTree()` returns a collection of the promoted roots:
+
+```ts
+const roots = await Folder
+  .descendants(1)
+  .excludeRoot()
+  .getTree();
+
+roots; // Collection<Folder>
+```
+
+`getTree("items")` is still supported when you want to force the relation name explicitly:
+
+```ts
+await Folder.descendants(1).getTree("items");
+```
+
+### Real-world examples
+
+Threaded comments:
+
+```ts
+class Comment extends Model.define<CommentAttrs>("comments") {
+  replies() {
+    return this.hasMany(Comment, "parent_id");
+  }
+}
+
+const thread = await Comment
+  .descendants(rootCommentId)
+  .orderBy("depth")
+  .getTree();
+```
+
+Category navigation:
+
+```ts
+const categories = await Category
+  .descendants(rootCategoryId)
+  .path("slug")
+  .maxDepth(3)
+  .breadthFirst()
+  .get();
+```
+
+Use `recursive("parent_id")` when you need the lower-level API against a known parent column. Use `descendants()` and `ancestors()` when the model can infer the tree relation itself.
+
+### Custom CTEs
+
+Use `withRecursive()` when you need to customize the CTE manually:
+
+```ts
+const folders = await Folder
+  .withRecursive(
+    "folder_tree",
+
+    Folder.query()
+      .select("folders.*")
+      .selectRaw("0 as depth")
+      .where("id", folderId),
+
+    Folder.query()
+      .from("folders as child")
+      .select("child.*")
+      .selectRaw("folder_tree.depth + 1 as depth")
+      .join("folder_tree", "child.parent_id", "=", "folder_tree.id"),
+  )
+  .from("folder_tree")
+  .orderBy("depth")
+  .orderBy("name")
+  .get();
+
+folders[0] instanceof Folder; // true
+folders[0].getAttribute("depth"); // 0, 1, 2, ...
+```
+
+For recursive trees, index the parent pointer:
+
+```ts
+table.uuid("id").primary(); // already indexed by the primary key
+table.integer("parent_id").nullable().index();
+```
+
+If your tree uses UUID keys, index the UUID parent pointer:
+
+```ts
+table.uuid("id").primary(); // already indexed by the primary key
+table.foreignUuid("parent_id").nullable().index();
+```
+
 ## Aggregates
 
 ```ts

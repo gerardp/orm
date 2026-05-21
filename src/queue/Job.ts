@@ -14,19 +14,37 @@ export interface DispatchOptions {
   queue?: string;
   delay?: number;
   maxAttempts?: number;
+  /**
+   * Name of a previously-registered driver to dispatch to. Omit to use the
+   * default driver. Register additional drivers via `Queue.registerDriver()`.
+   */
+  connection?: string;
 }
 
 let driver: QueueDriver | null = null;
 let defaultQueue = "default";
+const drivers = new Map<string, QueueDriver>();
 
 export function setJobDriver(d: QueueDriver, queue: string): void {
   driver = d;
   defaultQueue = queue;
+  drivers.set("default", d);
+}
+
+export function registerJobDriver(name: string, d: QueueDriver): void {
+  drivers.set(name, d);
 }
 
 export function getJobDriver(): QueueDriver {
   if (!driver) throw new Error("Queue not configured. Call configureBunny() with a queue config first.");
   return driver;
+}
+
+export function getJobDriverByConnection(name?: string): QueueDriver {
+  if (!name) return getJobDriver();
+  const d = drivers.get(name);
+  if (!d) throw new Error(`Queue connection "${name}" not registered. Call Queue.registerDriver("${name}", driver) first.`);
+  return d;
 }
 
 export function getDefaultQueue(): string {
@@ -66,3 +84,5 @@ export abstract class DispatchableJob {
     await TenantContext.asLandlord(() => d.dispatch(queue, this.name, payload, delay, maxAttempts));
   }
 }
+
+export { drivers as _registeredDrivers };

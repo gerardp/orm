@@ -19,6 +19,8 @@ export class Connection {
   private dedicated = false;
   private reservedDriver?: SQL & { release?: () => void };
   private abandonedTimer?: ReturnType<typeof setTimeout>;
+  private sqliteDefaultsApplied = false;
+  private sqliteDefaultsPromise?: Promise<void>;
   /** When set (ms), a manual beginTransaction() with no commit/rollback within this window is auto-rolled-back and its pooled connection released. Opt-in. */
   static abandonedTransactionTimeoutMs?: number;
   static logQueries = false;
@@ -29,7 +31,7 @@ export class Connection {
   static defaultPostgresPoolMax = 10;
   logQueries?: boolean;
 
-  constructor(config: ConnectionConfig, options: { driver?: SQL; schema?: string; ownsDriver?: boolean } = {}) {
+  constructor(config: ConnectionConfig, options: { driver?: SQL; schema?: string; ownsDriver?: boolean; sqliteDefaultsApplied?: boolean } = {}) {
     this.config = config;
     this.schema = options.schema || ("schema" in config ? config.schema : undefined);
     this.ownsDriver = options.ownsDriver ?? !options.driver;
@@ -78,6 +80,9 @@ export class Connection {
         this.grammar = new PostgresGrammar();
         break;
     }
+    this.sqliteDefaultsApplied =
+      this.driverName !== "sqlite" ||
+      options.sqliteDefaultsApplied === true;
   }
 
   getDriverName(): "sqlite" | "mysql" | "postgres" {
@@ -116,14 +121,14 @@ export class Connection {
   withSchema(schema: string): Connection {
     Connection.assertSafeIdentifier(schema, "schema name");
     if (this.schema === schema) return this;
-    const conn = new Connection(this.config, { driver: this.driver, schema, ownsDriver: false });
+    const conn = new Connection(this.config, { driver: this.driver, schema, ownsDriver: false, sqliteDefaultsApplied: this.sqliteDefaultsApplied });
     conn.logQueries = this.logQueries;
     return conn;
   }
 
   withoutSchema(): Connection {
     if (!this.schema) return this;
-    const conn = new Connection(this.config, { driver: this.driver, ownsDriver: false });
+    const conn = new Connection(this.config, { driver: this.driver, ownsDriver: false, sqliteDefaultsApplied: this.sqliteDefaultsApplied });
     conn.logQueries = this.logQueries;
     return conn;
   }
@@ -177,18 +182,61 @@ export class Connection {
   }
 
   async query(sqlString: string, bindings?: any[]): Promise<any[]> {
+    await this.ensureSqliteDefaults();
     const normalizedBindings = this.normalizeBindings(bindings);
     this.log(sqlString, normalizedBindings);
     return (await this.getDriver().unsafe(sqlString, normalizedBindings)) as any[];
   }
 
   async run(sqlString: string, bindings?: any[]): Promise<any> {
+    await this.ensureSqliteDefaults();
     const normalizedBindings = this.normalizeBindings(bindings);
     this.log(sqlString, normalizedBindings);
     return await this.getDriver().unsafe(sqlString, normalizedBindings);
   }
 
+  private async ensureSqliteDefaults(): Promise<void> {
+    if (this.sqliteDefaultsApplied || this.driverName !== "sqlite") return;
+    if (!this.sqliteDefaultsPromise) {
+      this.sqliteDefaultsPromise = this.applySqliteDefaults();
+    }
+    await this.sqliteDefaultsPromise;
+  }
+
+  private async applySqliteDefaults(): Promise<void> {
+    const pragmas = this.config.sqlitePragmas;
+    if (pragmas === false) {
+      this.sqliteDefaultsApplied = true;
+      return;
+    }
+
+    const journalMode = pragmas?.journalMode ?? "WAL";
+    const synchronous = pragmas?.synchronous ?? "NORMAL";
+
+    if (journalMode !== false) {
+      const sql = `PRAGMA journal_mode=${this.sanitizeSqlitePragmaValue(journalMode, "journal_mode")}`;
+      this.log(sql);
+      await this.getDriver().unsafe(sql);
+    }
+
+    if (synchronous !== false) {
+      const sql = `PRAGMA synchronous=${this.sanitizeSqlitePragmaValue(synchronous, "synchronous")}`;
+      this.log(sql);
+      await this.getDriver().unsafe(sql);
+    }
+
+    this.sqliteDefaultsApplied = true;
+  }
+
+  private sanitizeSqlitePragmaValue(value: string, pragma: string): string {
+    if (!/^[A-Za-z0-9_]+$/.test(value)) {
+      throw new Error(`Invalid SQLite ${pragma} value: ${value}`);
+    }
+    return value;
+  }
+
   async beginTransaction(): Promise<void> {
+    await this.ensureSqliteDefaults();
     if (this.transactionDepth === 0 && !this.transactionActive) {
       if (this.driverName === "postgres" && !this.dedicated) {
         this.reservedDriver = await (this.driver as any).reserve();
@@ -287,6 +335,7 @@ export class Connection {
   }
 
   async transaction<T>(callback: (connection: Connection) => T | Promise<T>): Promise<T> {
+    await this.ensureSqliteDefaults();
     if (!this.ownsDriver) {
       // A borrowed connection can be either transaction-rooted already or
       // still outside any transaction. Track that separately from nesting
@@ -340,6 +389,7 @@ export class Connection {
         driver: sql as unknown as SQL,
         schema: this.schema,
         ownsDriver: false,
+        sqliteDefaultsApplied: true,
       });
       connection.logQueries = this.logQueries;
       connection.transactionActive = true;

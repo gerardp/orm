@@ -471,6 +471,13 @@ async function createReplBootstrap(config: BunnyConfig): Promise<string> {
     const bunny = configureBunny(replConfig);
     const connection = bunny.connection;
 
+    // The REPL is a single long-lived interactive session: idle gaps between
+    // commands are expected and the user pins a tenant explicitly via
+    // useTenant()/clearTenant(). The default idle-TTL + background sweep would
+    // otherwise close the active tenant's pool out from under the prompt.
+    ConnectionManager.disableTenantSweep();
+    ConnectionManager.defaultTenantTtl = undefined;
+
     const modelRoots = ${JSON.stringify(modelRoots)};
 
     async function walkFiles(dir) {
@@ -536,7 +543,11 @@ async function createReplBootstrap(config: BunnyConfig): Promise<string> {
     }
 
     async function useTenant(tenantId) {
-      const context = await ConnectionManager.resolveTenant(tenantId);
+      const resolved = await ConnectionManager.resolveTenant(tenantId);
+      // Work on a shallow copy so we never mutate the object cached in
+      // ConnectionManager.tenantCache (mutating schemaMode/connection there
+      // would corrupt later TenantContext.run() resolutions for this tenant).
+      const context = { ...resolved };
       let tenantConnection = context.connection;
       if (context.strategy === "schema" && context.schemaMode === "search_path" && context.schema) {
         // REPL doesn't wrap each query in a transaction, so search_path won't apply.
@@ -545,6 +556,9 @@ async function createReplBootstrap(config: BunnyConfig): Promise<string> {
         context.connection = tenantConnection;
         context.schemaMode = "qualify";
       }
+      // Pin the active REPL tenant so it cannot be expired/swept between
+      // interactive commands even if a sweep is somehow re-enabled.
+      context.expiresAt = undefined;
       activeTenantContext = context;
       // Set as default so Model.getConnection() picks up the tenant connection
       // even if TenantContext.current override doesn't propagate (e.g. module scope mismatch).

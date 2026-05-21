@@ -103,6 +103,18 @@ export class ObserverRegistry {
     return (this.observers.get(modelClass) || []).map((entry) => entry.observer);
   }
 
+  static hasAny<T>(modelClass: ModelConstructor<T>): boolean {
+    const list = this.observers.get(modelClass);
+    return !!list && list.length > 0;
+  }
+
+  static hasFor<T>(event: keyof ObserverContract, modelClass: ModelConstructor<T>): boolean {
+    const map = this.byEvent.get(event);
+    if (!map) return false;
+    const list = map.get(modelClass);
+    return !!list && list.length > 0;
+  }
+
   static unregister<T>(modelClass: ModelConstructor<T>): void {
     this.observers.delete(modelClass);
     for (const map of this.byEvent.values()) {

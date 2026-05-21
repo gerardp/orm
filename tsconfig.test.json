@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "rootDir": "."
+  },
+  "include": [
+    "src/**/*",
+    "bin/**/*",
+    "tests/factory-types.test.ts",
+    "tests/validation-types.test.ts",
+    "tests/search-types.test.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

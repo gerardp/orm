@@ -123,48 +123,99 @@ See [Library Usage](./library-usage.md).
 
 Factories produce attribute objects, unsaved model instances, or persisted records — driven by a `sequence` counter so each generated record is unique.
 
+Define a factory class per model (Laravel-style): subclass `Factory<Model>`, implement `definition()`, add state methods, then `Factory.register(Model, FactoryClass)` once — typically in a `factories/` file imported at startup. `register` wires the model onto the factory (no `model =` field needed) and binds `Model.factory()`. Every model gets `factory()` built in; the model class itself stays free of factory code.
+
 ```ts
-import { factory } from "@bunnykit/orm";
+// factories/UserFactory.ts
+import { Factory } from "@bunnykit/orm";
 import User from "../models/User";
 
-const users = factory(User, (sequence) => ({
-  name: `User ${sequence}`,
-  email: `user${sequence}@example.test`,
-  role: "member",
-}));
+export class UserFactory extends Factory<User> {
+  definition(sequence: number) {
+    return {
+      name: `User ${sequence}`,
+      email: `user${sequence}@example.test`,
+      role: "member",
+    };
+  }
 
-const raw = users.raw();                          // attribute object
-const model = users.make();                       // unsaved User
-const created = await users.create();             // saved User
+  // State methods — chainable, each returns a new factory.
+  admin() {
+    return this.state({ role: "admin" });
+  }
+}
+
+Factory.register(User, UserFactory);
+```
+
+```ts
+const raw = User.factory().raw();                 // attribute object
+const model = User.factory().make();              // unsaved User
+const created = await User.factory().create();    // saved User
 ```
 
 ### Counts and state overrides
 
 ```ts
 // Five users
-const many = await users.count(5).create();
+const many = await User.factory().count(5).create();
 
-// Override the role for this batch
-const admins = await users
-  .count(3)
-  .state({ role: "admin" })
-  .create();
+// State method
+const admins = await User.factory().admin().count(3).create();
 
-// Stateful by sequence
-const mixed = await users
+// Ad-hoc state by sequence
+const mixed = await User.factory()
   .count(10)
   .state((attrs, seq) => ({
     role: seq % 2 === 0 ? "admin" : "member",
   }))
   .create();
+
+// Per-call override (highest precedence)
+const owner = await User.factory().create({ role: "owner" });
 ```
 
-`raw()`, `make()`, and `create()` each respect the count and state, so you can also use a factory to seed an unsaved fixture for a test:
+Precedence: `definition()` → states (in order) → per-call override.
+
+`raw()`, `make()`, and `create()` each respect the count and state, so a factory also seeds unsaved fixtures for a test:
 
 ```ts
-const fixtures = factory(User, (s) => ({ name: `Test ${s}` }))
-  .count(3)
-  .make();   // User[] — unsaved
+const fixtures = User.factory().count(3).make();   // User[] — unsaved
+```
+
+### Typing / intellisense
+
+`Model.factory()` has two overloads:
+
+```ts
+User.factory()                  // Factory<User> — built-ins typed to the model
+User.factory<UserFactory>()     // UserFactory  — also surfaces custom state methods
+```
+
+The default returns `Factory<User>`, so `make()`/`create()` are typed to the model and `definition(seq: number)` gets a typed sequence. To get autocomplete for your own state methods (`.admin()`, etc.) in a chain, pass the factory class as the type argument: `User.factory<UserFactory>().admin()`. Chaining preserves the concrete type.
+
+### Relationships, sequences, hooks
+
+```ts
+import { Sequence } from "@bunnykit/orm";
+
+// belongsTo: .for(parentOrFactory, relationName)
+await Post.factory().for(User.factory(), "author").create();
+
+// hasMany/hasOne children: .has(childFactory, relationName)
+await User.factory().has(Post.factory().count(3), "posts").create();
+
+// Cycle values across a batch
+await User.factory()
+  .count(4)
+  .state(new Sequence({ role: "admin" }, { role: "member" }))
+  .create();
+
+// Lifecycle hooks
+await User.factory()
+  .afterMaking((u) => { /* mutate before save */ })
+  .afterCreating(async (u) => { /* related side-effects */ })
+  .create();
 ```
 
 ## Test data idempotency

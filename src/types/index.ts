@@ -83,8 +83,13 @@ export interface UnionClause {
   all: boolean;
 }
 
+export type SQLitePragmaConfig = {
+  journalMode?: string | false;
+  synchronous?: string | false;
+};
+
 export type ConnectionConfig =
-  | { url: string; schema?: string; max?: number; prepare?: boolean }
+  | { url: string; schema?: string; max?: number; prepare?: boolean; sqlitePragmas?: false | SQLitePragmaConfig }
   | {
       driver: "sqlite" | "mysql" | "postgres";
       host?: string;
@@ -96,4 +101,5 @@ export type ConnectionConfig =
       schema?: string;
       max?: number;
       prepare?: boolean;
+      sqlitePragmas?: false | SQLitePragmaConfig;
     };

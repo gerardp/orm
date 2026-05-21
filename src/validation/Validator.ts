@@ -585,6 +585,9 @@ export class Validator<S extends ValidationSchema> {
       const attributes = wildcardValues(data, pattern);
       for (const field of attributes) {
         const ctx = makeContext(field, pattern, data, this.explicitConnection);
+        ctx.addError = (target: string, message: string) => {
+          (this.bag[target] ??= []).push(message);
+        };
 
         let value = getPath(data, field);
         let excluded = false;

@@ -1,9 +1,15 @@
 import { expect, test, describe, beforeAll, afterAll } from "bun:test";
-import { Connection, Schema, Builder } from "../src/index.js";
+import { Connection, Schema, Builder, Model } from "../src/index.js";
 import { setupTestDb } from "./helpers.js";
 
 describe("Advanced Query Builder Features", () => {
   let db: Connection;
+
+  class Folder extends Model.define<{ id: number; parent_id: number | null; name: string; depth?: number }>("folders") {
+    items() {
+      return this.hasMany(Folder, "parent_id");
+    }
+  }
 
   beforeAll(async () => {
     db = setupTestDb();
@@ -21,6 +27,13 @@ describe("Advanced Query Builder Features", () => {
       table.string("name");
     });
 
+    await Schema.create("folders", (table) => {
+      table.increments("id");
+      table.integer("parent_id").nullable().index();
+      table.string("name");
+      table.timestamps();
+    });
+
     const builder = new Builder(db, "products");
     await builder.insert([
       { name: "A", price: 10, category: "foo", tags: '["red","small"]' },
@@ -34,11 +47,19 @@ describe("Advanced Query Builder Features", () => {
       { name: "foo" },
       { name: "bar" },
     ]);
+
+    await Folder.insert([
+      { id: 1, parent_id: null, name: "Root" },
+      { id: 2, parent_id: 1, name: "Admissions" },
+      { id: 3, parent_id: 1, name: "Billing" },
+      { id: 4, parent_id: 2, name: "Forms" },
+    ] as any);
   });
 
   afterAll(async () => {
     await Schema.dropIfExists("products");
     await Schema.dropIfExists("categories");
+    await Schema.dropIfExists("folders");
   });
 
   describe("or* where variants", () => {
@@ -355,6 +376,285 @@ describe("Advanced Query Builder Features", () => {
       const sql = new Builder(db, "products").fromSub(sub, "expensive").toSql();
       expect(sql).toContain("(SELECT");
       expect(sql).toContain("AS");
+    });
+  });
+
+  describe("withRecursive", () => {
+    test("compiles a recursive CTE", () => {
+      const sql = Folder.query()
+        .withRecursive(
+          "folder_tree",
+          Folder.query().select("folders.*").selectRaw("0 as depth").where("id", 1),
+          Folder.query()
+            .from("folders as child")
+            .select("child.*")
+            .selectRaw("folder_tree.depth + 1 as depth")
+            .join("folder_tree", "child.parent_id", "=", "folder_tree.id"),
+        )
+        .from("folder_tree")
+        .toSql();
+
+      expect(sql).toStartWith('WITH RECURSIVE "folder_tree" AS');
+      expect(sql).toContain("UNION ALL");
+      expect(sql).toContain('FROM "folder_tree"');
+    });
+
+    test("hydrates recursive CTE results as model instances", async () => {
+      const folders = await Folder
+        .withRecursive(
+          "folder_tree",
+          Folder.query().select("folders.*").selectRaw("0 as depth").where("id", 1),
+          Folder.query()
+            .from("folders as child")
+            .select("child.*")
+            .selectRaw("folder_tree.depth + 1 as depth")
+            .join("folder_tree", "child.parent_id", "=", "folder_tree.id"),
+        )
+        .from("folder_tree")
+        .orderBy("depth")
+        .orderBy("name")
+        .get();
+
+      expect(folders.map((folder) => folder.getAttribute("name"))).toEqual([
+        "Root",
+        "Admissions",
+        "Billing",
+        "Forms",
+      ]);
+      expect(folders.map((folder) => folder.getAttribute("depth"))).toEqual([0, 1, 1, 2]);
+      expect(folders[0]).toBeInstanceOf(Folder);
+    });
+
+    test("recursive convenience starts at null parents by default", async () => {
+      const folders = await Folder
+        .recursive("parent_id")
+        .orderBy("depth")
+        .orderBy("name")
+        .get();
+
+      expect(folders.map((folder) => folder.getAttribute("name"))).toEqual([
+        "Root",
+        "Admissions",
+        "Billing",
+        "Forms",
+      ]);
+      expect(folders.map((folder) => folder.getAttribute("depth"))).toEqual([0, 1, 1, 2]);
+      expect(folders[0]).toBeInstanceOf(Folder);
+    });
+
+    test("recursive convenience can start at one model id", async () => {
+      const folders = await Folder
+        .recursive("parent_id", 1)
+        .orderBy("depth")
+        .orderBy("name")
+        .get();
+
+      expect(folders.map((folder) => folder.getAttribute("name"))).toEqual([
+        "Root",
+        "Admissions",
+        "Billing",
+        "Forms",
+      ]);
+      expect(folders.map((folder) => folder.getAttribute("depth"))).toEqual([0, 1, 1, 2]);
+      expect(folders[0]).toBeInstanceOf(Folder);
+    });
+
+    test("recursive convenience can start at multiple model ids", async () => {
+      const folders = await Folder
+        .recursive("parent_id", [2, 3])
+        .orderBy("depth")
+        .orderBy("name")
+        .get();
+
+      expect(folders.map((folder) => folder.getAttribute("name"))).toEqual([
+        "Admissions",
+        "Billing",
+        "Forms",
+      ]);
+      expect(folders.map((folder) => folder.getAttribute("depth"))).toEqual([0, 0, 1]);
+      expect(folders[0]).toBeInstanceOf(Folder);
+    });
+
+    test("descendants helper infers the tree relation and can exclude the root", async () => {
+      const folders = await Folder
+        .descendants(1)
+        .excludeRoot()
+        .orderByDepth()
+        .orderBy("name")
+        .get();
+
+      expect(folders.map((folder) => folder.getAttribute("name"))).toEqual([
+        "Admissions",
+        "Billing",
+        "Forms",
+      ]);
+      expect(folders.map((folder) => folder.getAttribute("depth"))).toEqual([1, 1, 2]);
+    });
+
+    test("recursive convenience supports a max depth", async () => {
+      const folders = await Folder
+        .recursive("parent_id")
+        .maxDepth(1)
+        .orderBy("depth")
+        .orderBy("name")
+        .get();
+
+      expect(folders.map((folder) => folder.getAttribute("name"))).toEqual([
+        "Root",
+        "Admissions",
+        "Billing",
+      ]);
+      expect(folders.map((folder) => folder.getAttribute("depth"))).toEqual([0, 1, 1]);
+    });
+
+    test("ancestors helper returns the chain back to the root", async () => {
+      const folders = await Folder
+        .ancestors(4)
+        .orderByDepth("desc")
+        .get();
+
+      expect(folders.map((folder) => folder.getAttribute("name"))).toEqual([
+        "Root",
+        "Admissions",
+        "Forms",
+      ]);
+      expect(folders.map((folder) => folder.getAttribute("depth"))).toEqual([2, 1, 0]);
+    });
+
+    test("recursive helpers can add path and tree metadata", async () => {
+      const folders = await Folder
+        .descendants(1)
+        .path("name")
+        .hasChildren()
+        .leaf()
+        .orderByDepth()
+        .orderBy("name")
+        .get();
+
+      expect(folders.map((folder) => folder.getAttribute("path"))).toEqual([
+        "Root",
+        "Root > Admissions",
+        "Root > Billing",
+        "Root > Admissions > Forms",
+      ]);
+      expect(folders.map((folder) => folder.getAttribute("has_children"))).toEqual([true, true, false, false]);
+      expect(folders.map((folder) => folder.getAttribute("leaf"))).toEqual([false, false, true, true]);
+    });
+
+    test("getTree materializes recursive results into the matching hasMany relation", async () => {
+      const tree = await Folder
+        .recursive("parent_id")
+        .orderBy("depth")
+        .orderBy("name")
+        .getTree();
+
+      expect(tree).toHaveLength(1);
+      expect(tree[0]).toBeInstanceOf(Folder);
+      expect(tree[0].getAttribute("name")).toBe("Root");
+
+      const rootChildren = tree[0].getRelation("items");
+      expect(rootChildren.map((folder: Folder) => folder.getAttribute("name"))).toEqual([
+        "Admissions",
+        "Billing",
+      ]);
+
+      const admissionsChildren = rootChildren[0].getRelation("items");
+      expect(admissionsChildren.map((folder: Folder) => folder.getAttribute("name"))).toEqual(["Forms"]);
+
+      expect(tree.json()[0]).toMatchObject({
+        name: "Root",
+        items: [
+          {
+            name: "Admissions",
+            items: [{ name: "Forms", items: [] }],
+          },
+          {
+            name: "Billing",
+            items: [],
+          },
+        ],
+      });
+    });
+
+    test("getTree returns one model or null for one starting point", async () => {
+      const root = await Folder
+        .recursive("parent_id", 1)
+        .orderBy("depth")
+        .orderBy("name")
+        .getTree();
+
+      expect(root).toBeInstanceOf(Folder);
+      expect(root?.getAttribute("name")).toBe("Root");
+      expect(root?.getRelation("items").map((folder: Folder) => folder.getAttribute("name"))).toEqual([
+        "Admissions",
+        "Billing",
+      ]);
+
+      const missing = await Folder.recursive("parent_id", 999).getTree();
+      expect(missing).toBeNull();
+    });
+
+    test("getTree returns a collection for multiple starting points", async () => {
+      const tree = await Folder
+        .recursive("parent_id", [2, 3])
+        .orderBy("depth")
+        .orderBy("name")
+        .getTree();
+
+      expect(tree.map((folder) => folder.getAttribute("name"))).toEqual([
+        "Admissions",
+        "Billing",
+      ]);
+      expect(tree[0].getRelation("items").map((folder: Folder) => folder.getAttribute("name"))).toEqual(["Forms"]);
+    });
+
+    test("getTree can override the inferred relation name", async () => {
+      const tree = await Folder
+        .recursive("parent_id")
+        .orderBy("depth")
+        .orderBy("name")
+        .getTree("children");
+
+      expect(tree[0].getRelation("children").map((folder: Folder) => folder.getAttribute("name"))).toEqual([
+        "Admissions",
+        "Billing",
+      ]);
+    });
+
+    test("getTree supports a max depth", async () => {
+      const tree = await Folder
+        .recursive("parent_id")
+        .maxDepth(1)
+        .orderBy("depth")
+        .orderBy("name")
+        .getTree();
+
+      expect(tree).toHaveLength(1);
+      expect(tree[0].getRelation("items").map((folder: Folder) => folder.getAttribute("name"))).toEqual([
+        "Admissions",
+        "Billing",
+      ]);
+      expect(tree[0].getRelation("items")[0].getRelation("items")).toHaveLength(0);
+    });
+
+    test("getTree can exclude the root and promote its children", async () => {
+      const tree = await Folder
+        .descendants(1)
+        .excludeRoot()
+        .orderByDepth()
+        .orderBy("name")
+        .getTree();
+
+      expect(tree).toHaveLength(2);
+      expect(tree.map((folder) => folder.getAttribute("name"))).toEqual([
+        "Admissions",
+        "Billing",
+      ]);
+      expect(tree[0].getRelation("items").map((folder: Folder) => folder.getAttribute("name"))).toEqual(["Forms"]);
+    });
+
+    test("getTree requires recursive to be called first", async () => {
+      await expect(Folder.query().getTree()).rejects.toThrow("getTree() requires recursive");
     });
   });
 

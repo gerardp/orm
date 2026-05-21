@@ -179,6 +179,8 @@ const bunny = configureBunny(config);
 // You can now use models, the DB facade, and the facade helpers.
 ```
 
+Using SvelteKit / Vite dev? Wrap this in a `globalThis` singleton with an HMR-safe guard — see [SvelteKit](./configuration.md#sveltekit).
+
 The returned `bunny` object lets you run migrations and seeders programmatically too:
 
 ```ts

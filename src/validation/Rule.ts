@@ -98,6 +98,9 @@ import {
   AnyOfRule,
   CanRule,
   CustomRule,
+  UnknownRule,
+  ObjectRule,
+  RecordRule,
   PasswordRule,
   UniqueRule,
   ExistsRule,
@@ -1054,6 +1057,43 @@ export class RuleBuilder<TValue = unknown, TPresence extends Presence = "require
   ): this {
     return this.push(new CustomRule(name, validate, message));
   }
+
+  /**
+   * Accept any value (subject to required/nullable/sometimes). Use when a
+   * field's shape is intentionally open — e.g. arbitrary JSON metadata.
+   */
+  unknown(): RuleBuilder<unknown, TPresence> {
+    return this.push(new UnknownRule()) as any;
+  }
+
+  /**
+   * Validate a fixed-shape object. Each key is validated by its own
+   * RuleBuilder; child errors are surfaced with composed paths (e.g.
+   * `meta.email`). Unknown keys are stripped by default.
+   */
+  object<S extends Record<string, RuleBuilder<any, any>>>(
+    shape: S,
+    mode?: "strip" | "passthrough",
+  ): RuleBuilder<{ [K in keyof S]: InferRuleValue<S[K]> }, TPresence> {
+    return this.push(new ObjectRule(shape, mode)) as any;
+  }
+
+  /**
+   * Validate a record (dictionary). Keys are arbitrary, values share one
+   * schema. One-arg form (zod-style) takes the value rule. Two-arg form
+   * (valibot-style) takes `(keyRule, valueRule)`.
+   */
+  record(): RuleBuilder<Record<string, unknown>, TPresence>;
+  record<V>(value: RuleBuilder<V, any>): RuleBuilder<Record<string, V>, TPresence>;
+  record<V, K extends string>(
+    key: RuleBuilder<K, any>,
+    value: RuleBuilder<V, any>,
+  ): RuleBuilder<Record<K, V>, TPresence>;
+  record(a?: any, b?: any): any {
+    const keyRule = b ? a : undefined;
+    const valueRule = b ? b : a;
+    return this.push(new RecordRule(valueRule, keyRule)) as any;
+  }
   /**
    * Validate a password using the built-in password rule set.
    * Example: `rule().password((r) => r.min(12).letters().numbers())`
@@ -1256,3 +1296,6 @@ export type InferOutput<T> =
     : T extends ValidationSchema
       ? InferOutputFromEntries<T>
       : never;
+
+/** Extract the validated value type from a RuleBuilder, e.g. for object/record inference. */
+export type InferRuleValue<R> = R extends RuleBuilder<infer V, any> ? V : never;

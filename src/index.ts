@@ -64,18 +64,9 @@ export { discoverModelTables, discoverModelDeclarations } from "./typegen/discov
 export type { ModelDeclarationInfo } from "./typegen/discoverModelTables.js";
 
 export { Seeder, SeederRunner } from "./seeding/Seeder.js";
-export { Factory, factory } from "./seeding/Factory.js";
-export type { FactoryDefinition, FactoryState } from "./seeding/Factory.js";
+export { Factory, Sequence } from "./seeding/Factory.js";
+export type { FactoryState, FactoryStateValue, AfterHook } from "./seeding/Factory.js";
 
-export { rule, RuleBuilder, Validator, ValidationError } from "./validation/index.js";
-export type {
-  ValidationFile,
-  ValidationSchema,
-  InferOutput,
-  InferOutputFromSchema,
-  ValidationObjectSchema,
-  RuleContract,
-  ValidationContext,
-  ErrorBag,
-  RuleResult,
-} from "./validation/index.js";
+// Validation lives at the `@bunnykit/orm/validation` subpath import only —
+// keeping it out of the main entry trims the surface and makes the dependency
+// boundary explicit.

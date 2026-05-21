@@ -48,6 +48,10 @@
     "./commands": {
       "types": "./dist/src/commands/index.d.ts",
       "import": "./dist/src/commands/index.js"
+    },
+    "./search": {
+      "types": "./dist/src/search/index.d.ts",
+      "import": "./dist/src/search/index.js"
     }
   },
   "typesVersions": {
@@ -66,6 +70,9 @@
       ],
       "commands": [
         "dist/src/commands/index.d.ts"
+      ],
+      "search": [
+        "dist/src/search/index.d.ts"
       ]
     }
   },

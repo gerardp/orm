@@ -125,7 +125,16 @@ Use `jsonb` on Postgres for indexable / queryable JSON. See [`whereJsonContains`
 
 ```ts
 table.uuid("public_id").unique();
+table.uuid("id").primary(); // primary keys are indexed automatically
 table.enum("status", ["draft", "published", "archived"]).default("draft");
+```
+
+Do not add `.index()` or `.unique()` to the same column when it is already the primary key. The database creates the primary-key index for:
+
+```ts
+table.uuid("id").primary();
+table.increments("id");
+table.bigIncrements("id");
 ```
 
 ### Foreign-key shortcuts

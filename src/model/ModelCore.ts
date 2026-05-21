@@ -189,6 +189,13 @@ export class ModelCore<T extends Record<string, any> = any> {
   }
 
   // Instance methods
+  trashed(): boolean {
+    const ctor = Object.getPrototypeOf(this).constructor as typeof ModelCore;
+    if (!ctor.softDeletes) return false;
+    const v = (this as any).getAttribute(ctor.deletedAtColumn);
+    return v != null;
+  }
+
   fill(attributes: Partial<T> | ModelAttributeInput<this>): this {
     for (const [key, value] of Object.entries(attributes)) {
       if (this.isFillable(key)) {

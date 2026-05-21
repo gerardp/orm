@@ -100,16 +100,18 @@ Each test file then starts with the production schema. Pair with [`bunny.fresh()
 Use [factories](./seeders.md#factories) to produce realistic fixtures inline without writing seeder files:
 
 ```ts
-import { factory } from "@bunnykit/orm";
+import { Factory } from "@bunnykit/orm";
 import User from "../src/models/User";
 
-const userFactory = factory(User, (seq) => ({
-  name: `User ${seq}`,
-  email: `user${seq}@example.test`,
-}));
+class UserFactory extends Factory<User> {
+  definition(seq: number) {
+    return { name: `User ${seq}`, email: `user${seq}@example.test` };
+  }
+}
+Factory.register(User, UserFactory);
 
 test("paginates users", async () => {
-  await userFactory.count(50).create();
+  await User.factory().count(50).create();
   const page = await User.orderBy("id").paginate(15, 1);
   expect(page.total).toBe(50);
   expect(page.data.length).toBe(15);

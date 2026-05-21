@@ -625,6 +625,8 @@ export abstract class Relation<T extends ModelType = ModelType> {
   }
 
   getQuery(): Builder<T> { return this.builder; }
+  getForeignKeyName(): string { return this.foreignKey; }
+  getLocalKeyName(): string { return this.localKey; }
   first(): Promise<T | null> { return this.builder.first(); }
   find(id: any): Promise<T | null> { return this.builder.find(id); }
   whereIn(column: string, values: any[]): this {
@@ -786,6 +788,8 @@ export class HasMany<T extends ModelType = ModelType> extends Relation<T> {
   async getResults(): Promise<Collection<T>> {
     return this.builder.get();
   }
+
+  get(): Promise<Collection<T>> { return this.getResults(); }
 
   latestOfMany(column: string = (this.related as any).primaryKey): HasOne<T> {
     return this.ofMany(column, "max");
@@ -963,6 +967,8 @@ export class HasManyThrough<T extends ModelType = ModelType> extends Relation<T>
   async getResults(): Promise<Collection<T> | T | null> {
     return this.builder.get();
   }
+
+  get(): Promise<Collection<T>> { return this.getResults() as Promise<Collection<T>>; }
 
   protected newExistenceQuery(parentQuery: Builder<any>, aggregate: string, callback?: (query: Builder<any>) => void | Builder<any>): Builder<any> {
     const throughTable = this.through.getTable();

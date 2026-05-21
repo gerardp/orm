@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "path";
 import { mkdir, rm } from "fs/promises";
-import { Connection, ConnectionManager, Model, Schema, Seeder, SeederRunner, TenantContext, factory } from "../src/index.js";
+import { Connection, ConnectionManager, Model, Schema, Seeder, SeederRunner, TenantContext, Factory } from "../src/index.js";
 import { setupTestDb } from "./helpers.js";
 
 class SeedUser extends Model {
@@ -9,6 +9,13 @@ class SeedUser extends Model {
   static timestamps = false;
   static fillable = ["name", "email", "role"];
 }
+
+class SeedUserFactory extends Factory<SeedUser> {
+  definition(sequence: number) {
+    return { name: `User ${sequence}`, email: `user${sequence}@example.test` };
+  }
+}
+Factory.register(SeedUser, SeedUserFactory);
 
 describe("Seeders and factories", () => {
   test("factory makes raw attributes, unsaved models, and created records", async () => {
@@ -20,10 +27,7 @@ describe("Seeders and factories", () => {
       table.string("role").nullable();
     });
 
-    const users = factory(SeedUser, (sequence) => ({
-      name: `User ${sequence}`,
-      email: `user${sequence}@example.test`,
-    })).state({ role: "member" });
+    const users = SeedUser.factory().state({ role: "member" });
 
     const raw = users.raw();
     const made = users.count(2).make();

@@ -98,8 +98,73 @@ export class ModelQuerying<T extends Record<string, any> = any> extends ModelRel
     return (this as any).query().selectRaw(sql);
   }
 
+  static from<M extends ModelConstructor>(this: M, table: string): Builder<InstanceType<M>> {
+    return (this as any).query().from(table);
+  }
+
   static fromSub<M extends ModelConstructor>(this: M, query: Builder<any>, alias: string): Builder<InstanceType<M>> {
     return (this as any).query().fromSub(query, alias);
+  }
+
+  static withRecursive<M extends ModelConstructor>(this: M, name: string, anchor: Builder<any> | string, recursive: Builder<any> | string): Builder<InstanceType<M>> {
+    return (this as any).query().withRecursive(name, anchor, recursive);
+  }
+
+  static recursive<M extends ModelConstructor>(this: M, parentColumn: string): Builder<InstanceType<M>>;
+  static recursive<M extends ModelConstructor>(this: M, parentColumn: string, startingId: any): Builder<InstanceType<M>>;
+  static recursive<M extends ModelConstructor>(this: M, parentColumn: string, startingIds: any[]): Builder<InstanceType<M>>;
+  static recursive<M extends ModelConstructor>(this: M, parentColumn: string, startingPoint?: any | any[]): Builder<InstanceType<M>> {
+    return (this as any).query().recursive(parentColumn, startingPoint);
+  }
+
+  static descendants<M extends ModelConstructor>(this: M): Builder<InstanceType<M>>;
+  static descendants<M extends ModelConstructor>(this: M, startingId: any): Builder<InstanceType<M>>;
+  static descendants<M extends ModelConstructor>(this: M, startingIds: any[]): Builder<InstanceType<M>>;
+  static descendants<M extends ModelConstructor>(this: M, startingPoint?: any | any[]): Builder<InstanceType<M>> {
+    return (this as any).query().descendants(startingPoint);
+  }
+
+  static ancestors<M extends ModelConstructor>(this: M): Builder<InstanceType<M>>;
+  static ancestors<M extends ModelConstructor>(this: M, startingId: any): Builder<InstanceType<M>>;
+  static ancestors<M extends ModelConstructor>(this: M, startingIds: any[]): Builder<InstanceType<M>>;
+  static ancestors<M extends ModelConstructor>(this: M, startingPoint?: any | any[]): Builder<InstanceType<M>> {
+    return (this as any).query().ancestors(startingPoint);
+  }
+
+  static includeRoot<M extends ModelConstructor>(this: M): Builder<InstanceType<M>> {
+    return (this as any).query().includeRoot();
+  }
+
+  static excludeRoot<M extends ModelConstructor>(this: M): Builder<InstanceType<M>> {
+    return (this as any).query().excludeRoot();
+  }
+
+  static orderByDepth<M extends ModelConstructor>(this: M, direction?: "asc" | "desc"): Builder<InstanceType<M>> {
+    return (this as any).query().orderByDepth(direction);
+  }
+
+  static breadthFirst<M extends ModelConstructor>(this: M): Builder<InstanceType<M>> {
+    return (this as any).query().breadthFirst();
+  }
+
+  static depthFirst<M extends ModelConstructor>(this: M): Builder<InstanceType<M>> {
+    return (this as any).query().depthFirst();
+  }
+
+  static path<M extends ModelConstructor>(this: M, column?: string, alias?: string, delimiter?: string): Builder<InstanceType<M>> {
+    return (this as any).query().path(column, alias, delimiter);
+  }
+
+  static hasChildren<M extends ModelConstructor>(this: M, alias?: string): Builder<InstanceType<M>> {
+    return (this as any).query().hasChildren(alias);
+  }
+
+  static leaf<M extends ModelConstructor>(this: M, alias?: string): Builder<InstanceType<M>> {
+    return (this as any).query().leaf(alias);
+  }
+
+  static cycleGuard<M extends ModelConstructor>(this: M, maxDepth?: number): Builder<InstanceType<M>> {
+    return (this as any).query().cycleGuard(maxDepth);
   }
 
   static distinct<M extends ModelConstructor>(this: M): Builder<InstanceType<M>> {

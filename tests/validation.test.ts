@@ -1,5 +1,14 @@
 import { expect, test, describe, beforeAll } from "bun:test";
-import { rule, Validator, ValidationError, DB, Schema, ConnectionManager, type RuleContract, type ValidationContext, type ValidationFile, type InferOutputFromSchema } from "../src/index.js";
+import { DB, Schema, ConnectionManager } from "../src/index.js";
+import {
+  rule,
+  Validator,
+  ValidationError,
+  type RuleContract,
+  type ValidationContext,
+  type ValidationFile,
+  type InferOutputFromSchema,
+} from "../src/validation/index.js";
 import { setupTestDb } from "./helpers.js";
 
 function expectType<T>(_value: T): void {}
@@ -982,5 +991,110 @@ describe("Validator — tenant-scoped unique", () => {
       ).passes();
       expect(passed).toBe(true);
     });
+  });
+});
+
+describe("Validator — object / record / unknown", () => {
+  test("unknown() accepts any value when present", async () => {
+    expect(await Validator.make({ x: 1 }, { x: rule().unknown() }).passes()).toBe(true);
+    expect(await Validator.make({ x: "s" }, { x: rule().unknown() }).passes()).toBe(true);
+    expect(await Validator.make({ x: { a: 1 } }, { x: rule().unknown() }).passes()).toBe(true);
+    expect(await Validator.make({ x: null }, { x: rule().nullable().unknown() }).passes()).toBe(true);
+  });
+
+  test("object() rejects non-objects", async () => {
+    const schema = { meta: rule().object({ name: rule().string() }) };
+    expect(await Validator.make({ meta: "no" }, schema).fails()).toBe(true);
+    expect(await Validator.make({ meta: [] }, schema).fails()).toBe(true);
+  });
+
+  test("object() validates nested fields and composes error paths", async () => {
+    const v = Validator.make(
+      { meta: { name: 123, email: "not-an-email" } },
+      { meta: rule().object({ name: rule().string(), email: rule().string().email() }) },
+    );
+    expect(await v.fails()).toBe(true);
+    const errs = await v.errors();
+    expect(errs["meta.name"]?.length).toBeGreaterThan(0);
+    expect(errs["meta.email"]?.length).toBeGreaterThan(0);
+    expect(errs["meta"]).toBeUndefined();
+  });
+
+  test("object() strips unknown keys by default", async () => {
+    const out = await Validator.make(
+      { meta: { name: "Alice", junk: "x", more: { y: 1 } } },
+      { meta: rule().object({ name: rule().string() }) },
+    ).validate();
+    expect(out).toEqual({ meta: { name: "Alice" } });
+  });
+
+  test("object() passthrough mode keeps extra keys", async () => {
+    const out = await Validator.make(
+      { meta: { name: "Alice", junk: "x" } },
+      { meta: rule().object({ name: rule().string() }, "passthrough") },
+    ).validate();
+    expect(out).toEqual({ meta: { name: "Alice", junk: "x" } });
+  });
+
+  test("record() (no args) accepts any plain object", async () => {
+    expect(await Validator.make({ meta: { a: 1, b: "x" } }, { meta: rule().record() }).passes()).toBe(true);
+    expect(await Validator.make({ meta: [] }, { meta: rule().record() }).fails()).toBe(true);
+    // null is treated as missing unless required(); with required() + non-record value it fails.
+    expect(await Validator.make({ meta: null }, { meta: rule().required().record() }).fails()).toBe(true);
+  });
+
+  test("record(value) validates every value against the schema", async () => {
+    const schema = { counts: rule().record(rule().integer()) };
+    expect(await Validator.make({ counts: { a: 1, b: 2 } }, schema).passes()).toBe(true);
+    const v = Validator.make({ counts: { a: 1, b: "nope" } }, schema);
+    expect(await v.fails()).toBe(true);
+    const errs = await v.errors();
+    expect(errs["counts.b"]?.length).toBeGreaterThan(0);
+    expect(errs["counts.a"]).toBeUndefined();
+  });
+
+  test("record(key, value) validates keys too (valibot order)", async () => {
+    const schema = {
+      themes: rule().record(rule().in(["light", "dark"] as const), rule().string()),
+    };
+    expect(await Validator.make({ themes: { light: "ok", dark: "ok" } }, schema).passes()).toBe(true);
+    const v = Validator.make({ themes: { light: "ok", neon: "ok" } }, schema);
+    expect(await v.fails()).toBe(true);
+    const errs = await v.errors();
+    expect(errs["themes.neon"]?.length).toBeGreaterThan(0);
+  });
+
+  test("object() nested inside object() composes deeply", async () => {
+    const schema = {
+      order: rule().object({
+        id: rule().integer(),
+        customer: rule().object({
+          name: rule().string(),
+          email: rule().string().email(),
+        }),
+      }),
+    };
+    const v = Validator.make(
+      { order: { id: "bad", customer: { name: "x", email: "nope" } } },
+      schema,
+    );
+    expect(await v.fails()).toBe(true);
+    const errs = await v.errors();
+    expect(errs["order.id"]).toBeDefined();
+    expect(errs["order.customer.email"]).toBeDefined();
+  });
+
+  test("Validator.schema infers types from object/record", async () => {
+    const schema = Validator.schema({
+      meta: rule().object({ name: rule().string(), age: rule().integer() }),
+      tags: rule().record(rule().string()),
+    });
+    const out = await schema.parse({
+      meta: { name: "Alice", age: 30 },
+      tags: { primary: "blue", secondary: "red" },
+    });
+    expectType<{ meta: { name: string; age: number }; tags: Record<string, string> }>(out);
+    expect(out.meta.name).toBe("Alice");
+    expect(out.tags.primary).toBe("blue");
   });
 });

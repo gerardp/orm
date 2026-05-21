@@ -90,6 +90,27 @@ connection: { url: "sqlite://./app.db" }
 connection: { url: "sqlite://:memory:" }
 ```
 
+SQLite connections apply production-friendly defaults before the first query:
+
+```sql
+PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
+```
+
+Override or disable them only when your deployment needs a different SQLite mode:
+
+```ts
+connection: {
+  url: "sqlite://./app.db",
+  sqlitePragmas: { journalMode: "DELETE", synchronous: "FULL" },
+}
+
+connection: {
+  url: "sqlite://./app.db",
+  sqlitePragmas: false,
+}
+```
+
 You can also pin a Postgres schema and tune the connection pool from the URL form:
 
 ```ts
@@ -421,22 +442,35 @@ It returns a [facade](./library-usage.md) you can use to run migrations and seed
 
 ### SvelteKit
 
-In SvelteKit, bootstrap Bunny in a server-only singleton module so hot reloads do not re-create it from multiple places:
+Bootstrap Bunny in a server-only singleton module so hot reloads do not re-create it from multiple places. Guard the singleton against Vite HMR invalidating the framework's own internal modules (`Model`, `ConnectionManager`) — when that happens the cached `__bunny` survives on `globalThis` but `Model.connection` / `ConnectionManager.defaultConnection` are wiped on the new class instances, which is exactly when you see `No connection set on model Tenant`:
 
 ```ts
 // src/lib/server/bunny.ts
-import { configureBunny } from "@bunnykit/orm";
+import { configureBunny, ConnectionManager, type ConfiguredBunny } from "@bunnykit/orm";
 import config from "../../../bunny.config";
 
 declare global {
   // eslint-disable-next-line no-var
-  var __bunny: ReturnType<typeof configureBunny> | undefined;
+  var __bunny: ConfiguredBunny | undefined;
 }
 
-export const bunny = globalThis.__bunny ??= configureBunny(config);
+// First load OR HMR invalidated Model/ConnectionManager (their static state
+// was reset). Re-running configureBunny is race-free — new defaults install
+// before the previous pool is torn down in the background.
+if (!globalThis.__bunny || !ConnectionManager.getDefault()) {
+  globalThis.__bunny = configureBunny(config);
+}
+
+const bunny = globalThis.__bunny;
+export default bunny;
 ```
 
-Then import that module from server code:
+The double check matters:
+
+- `!globalThis.__bunny` — cold start.
+- `!ConnectionManager.getDefault()` — Vite re-evaluated `connection/ConnectionManager.ts` (or `model/Model.ts`); the cached singleton points at a stale module's pool. Re-running `configureBunny` writes the connection onto the live classes AND refreshes the cached singleton.
+
+Then import the module from server code:
 
 ```ts
 import "$lib/server/bunny";
@@ -445,10 +479,10 @@ import "$lib/server/bunny";
 or:
 
 ```ts
-import { bunny } from "$lib/server/bunny";
+import bunny from "$lib/server/bunny";
 ```
 
-Do not call `configureBunny()` directly inside `hooks.server.ts`, route modules, or actions. Those files are re-evaluated during dev reloads, which is when you typically see `No connection set on model Tenant` if the bootstrap is not centralized.
+Do not call `configureBunny()` directly inside `hooks.server.ts`, route modules, or actions. Those files are re-evaluated during dev reloads; centralize the bootstrap in `src/lib/server/bunny.ts` with the guard above.
 
 ## Environment variables (CLI only)
 

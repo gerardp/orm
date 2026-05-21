@@ -1488,3 +1488,92 @@ export class LowercaseRule implements RuleContract {
     return `The ${c.attribute} field is invalid.`;
   }
 }
+
+export class UnknownRule implements RuleContract {
+  name = "unknown";
+  validate() {
+    return true;
+  }
+  message(c: ValidationContext) {
+    return `The ${c.attribute} field is invalid.`;
+  }
+}
+
+/**
+ * Validate a value with a fixed shape — each key validated by its own
+ * RuleBuilder. Default behavior strips unknown keys (zod-default-style).
+ */
+export class ObjectRule implements RuleContract {
+  name = "object";
+  constructor(
+    private shape: Record<string, any>,
+    private mode: "strip" | "passthrough" = "strip",
+  ) {}
+
+  async validate(value: unknown, ctx: ValidationContext): Promise<boolean> {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+    // Dynamic import avoids a rules<->Validator import cycle.
+    const { Validator } = await import("./Validator.js");
+    const bag = await Validator.make(value as any, this.shape, ctx.connection).errors();
+    if (Object.keys(bag).length === 0) return true;
+    for (const sub of Object.keys(bag)) {
+      const target = `${ctx.attribute}.${sub}`;
+      for (const msg of bag[sub]) ctx.addError?.(target, msg);
+    }
+    // Sub-errors already recorded with composed paths — suppress the
+    // parent-level "must be an object" message by reporting pass.
+    return true;
+  }
+
+  coerce(value: unknown): unknown {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+    if (this.mode === "passthrough") return value;
+    const v = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(this.shape)) if (k in v) out[k] = v[k];
+    return out;
+  }
+
+  message(c: ValidationContext) {
+    return `The ${c.attribute} field must be an object.`;
+  }
+}
+
+/**
+ * Validate a value where every entry shares one schema. Optional key schema
+ * lets callers constrain key shape (e.g. picklist of locale codes).
+ */
+export class RecordRule implements RuleContract {
+  name = "record";
+  constructor(
+    private valueRule?: any,
+    private keyRule?: any,
+  ) {}
+
+  async validate(value: unknown, ctx: ValidationContext): Promise<boolean> {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+    if (!this.valueRule && !this.keyRule) return true;
+    const { Validator } = await import("./Validator.js");
+    for (const k of Object.keys(value as object)) {
+      const target = `${ctx.attribute}.${k}`;
+      if (this.keyRule) {
+        const keyBag = await Validator.make({ [k]: k }, { [k]: this.keyRule }, ctx.connection).errors();
+        if (keyBag[k]) {
+          for (const msg of keyBag[k]) ctx.addError?.(target, msg);
+        }
+      }
+      if (this.valueRule) {
+        const valBag = await Validator.make({ [k]: (value as any)[k] }, { [k]: this.valueRule }, ctx.connection).errors();
+        if (valBag[k]) {
+          for (const msg of valBag[k]) ctx.addError?.(target, msg);
+        }
+      }
+    }
+    // Sub-errors are recorded with composed paths — suppress parent message.
+    return true;
+  }
+
+  message(c: ValidationContext) {
+    return `The ${c.attribute} field must be a record.`;
+  }
+}

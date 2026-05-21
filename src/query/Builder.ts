@@ -4,7 +4,8 @@ import { Cache } from "../cache/index.js";
 import { MorphTo } from "../model/MorphRelations.js";
 import type { WhereClause, OrderClause, HavingClause, UnionClause } from "../types/index.js";
 import type { AttachedToRelationName, BelongsToRelationName, EagerLoadDefinition, EagerLoadInput, Model, ModelAttributeInput, ModelColumn, ModelColumnValue, ModelConstructor, ModelRelationName, MorphToRelationName, TypedEagerLoad, TypedConstraintMap, TypedConstraintSelection, TypedExistsConstraintMap, ExtractStringPaths, WithLoadedRelations, WithLoadedRelationsFromConstraintMap, WithRelationCount, WithRelationExists, WithRelationExistsMap, Relation, RelationConstraintQuery, NestedRelationPath, LiteralUnion, RelationRelatedModel, MorphToConstraintCallback } from "../model/Model.js";
-import { findRelationMethod, Model as BaseModel } from "../model/Model.js";
+import { findRelationMethod, HasMany, Model as BaseModel } from "../model/Model.js";
+import { ObserverRegistry } from "../model/Observer.js";
 import { ModelNotFoundError } from "../model/ModelNotFoundError.js";
 import { IdentityMap } from "../model/IdentityMap.js";
 import { Collection, type CollectionJson } from "../support/Collection.js";
@@ -13,6 +14,30 @@ type RelationConstraint<TModel = any, TRelation extends string = string> = (quer
 type ExistsConstraintMap<TResult> = Record<string, RelationConstraint<TResult, any> | undefined>;
 type RelatedColumn<TResult, R extends string> = ModelColumn<RelationRelatedModel<TResult, R>>;
 type RelationShortcutInput = Model | Model[] | Collection<Model>;
+type RecursiveCteDefinition = {
+  name: string;
+  anchor: Builder<any> | string;
+  recursive: Builder<any> | string;
+};
+type RecursiveTreeConfig = {
+  parentColumn: string;
+  primaryKey: string;
+  mode: "roots" | "single" | "multiple";
+  direction: "descendants" | "ancestors";
+  startKeys: any[];
+  cteName: string;
+  includeRoot: boolean;
+  depthOrder: "asc" | "desc";
+  maxDepth?: number;
+  depthFilterApplied?: number;
+  path?: {
+    column: string;
+    alias: string;
+    delimiter: string;
+  };
+  hasChildrenAlias?: string;
+  leafAlias?: string;
+};
 
 type CachedRelationValue =
   | { type: "collection"; models: CachedModelGraph[] }
@@ -198,6 +223,8 @@ export class Builder<T = Record<string, any>, TResult = T> {
   randomOrderFlag = false;
   lockMode?: string;
   unions: UnionClause[] = [];
+  recursiveCtes: RecursiveCteDefinition[] = [];
+  recursiveTreeConfig?: RecursiveTreeConfig;
   fromRaw?: string;
   updateJoins: string[] = [];
   bindings: any[] = [];
@@ -335,6 +362,10 @@ export class Builder<T = Record<string, any>, TResult = T> {
     this.invalidateSqlCache();
     this.tableName = table;
     return this;
+  }
+
+  from(table: string): this {
+    return this.table(table);
   }
 
   select(...columns: ModelColumn<T>[]): this {
@@ -730,6 +761,183 @@ export class Builder<T = Record<string, any>, TResult = T> {
     return this.union(query, true);
   }
 
+  withRecursive(name: string, anchor: Builder<any> | string, recursive: Builder<any> | string): this {
+    Connection.assertSafeIdentifier(name, "recursive CTE name");
+    this.invalidateSqlCache();
+    this.recursiveCtes.push({ name, anchor, recursive });
+    return this;
+  }
+
+  recursive(parentColumn: string): this;
+  recursive(parentColumn: string, startingId: any): this;
+  recursive(parentColumn: string, startingIds: any[]): this;
+  recursive(parentColumn: string, startingPoint?: any | any[]): this {
+    return this.configureRecursiveTree("descendants", parentColumn, startingPoint);
+  }
+
+  descendants(): this;
+  descendants(startingId: any): this;
+  descendants(startingIds: any[]): this;
+  descendants(startingPoint?: any | any[]): this {
+    const relation = this.inferRecursiveRelationMetadata();
+    if (!relation) {
+      throw new Error("descendants() requires a self-referencing hasMany relation to infer the parent column.");
+    }
+    return this.configureRecursiveTree("descendants", relation.parentColumn, startingPoint);
+  }
+
+  ancestors(): this;
+  ancestors(startingId: any): this;
+  ancestors(startingIds: any[]): this;
+  ancestors(startingPoint?: any | any[]): this {
+    const relation = this.inferRecursiveRelationMetadata();
+    if (!relation) {
+      throw new Error("ancestors() requires a self-referencing hasMany relation to infer the parent column.");
+    }
+    return this.configureRecursiveTree("ancestors", relation.parentColumn, startingPoint);
+  }
+
+  includeRoot(): this {
+    if (!this.recursiveTreeConfig) {
+      throw new Error("includeRoot() requires recursive(parentColumn) to be called first.");
+    }
+    this.recursiveTreeConfig.includeRoot = true;
+    this.invalidateSqlCache();
+    return this;
+  }
+
+  excludeRoot(): this {
+    if (!this.recursiveTreeConfig) {
+      throw new Error("excludeRoot() requires recursive(parentColumn) to be called first.");
+    }
+    this.recursiveTreeConfig.includeRoot = false;
+    this.invalidateSqlCache();
+    return this;
+  }
+
+  orderByDepth(direction: "asc" | "desc" = "asc"): this {
+    if (!this.recursiveTreeConfig) {
+      throw new Error("orderByDepth() requires recursive(parentColumn) to be called first.");
+    }
+    this.recursiveTreeConfig.depthOrder = direction;
+    return this.orderBy("depth" as any, direction);
+  }
+
+  breadthFirst(): this {
+    return this.orderByDepth("asc");
+  }
+
+  depthFirst(): this {
+    return this.orderByDepth("desc");
+  }
+
+  path(column: string = "name", alias: string = "path", delimiter: string = " > "): this {
+    if (!this.recursiveTreeConfig) {
+      throw new Error("path() requires recursive(parentColumn) to be called first.");
+    }
+    Connection.assertSafeIdentifier(column, "recursive path column");
+    Connection.assertSafeIdentifier(alias, "recursive path alias");
+    this.recursiveTreeConfig.path = { column, alias, delimiter };
+    this.invalidateSqlCache();
+    return this;
+  }
+
+  hasChildren(alias: string = "has_children"): this {
+    if (!this.recursiveTreeConfig) {
+      throw new Error("hasChildren() requires recursive(parentColumn) to be called first.");
+    }
+    Connection.assertSafeIdentifier(alias, "recursive hasChildren alias");
+    this.recursiveTreeConfig.hasChildrenAlias = alias;
+    this.invalidateSqlCache();
+    return this;
+  }
+
+  leaf(alias: string = "leaf"): this {
+    if (!this.recursiveTreeConfig) {
+      throw new Error("leaf() requires recursive(parentColumn) to be called first.");
+    }
+    Connection.assertSafeIdentifier(alias, "recursive leaf alias");
+    this.recursiveTreeConfig.leafAlias = alias;
+    this.invalidateSqlCache();
+    return this;
+  }
+
+  cycleGuard(maxDepth: number = 1000): this {
+    return this.maxDepth(maxDepth);
+  }
+
+  maxDepth(depth: number): this {
+    if (!Number.isInteger(depth) || depth < 0) {
+      throw new Error(`Invalid recursive max depth: ${depth}`);
+    }
+    if (!this.recursiveTreeConfig) {
+      throw new Error("maxDepth() requires recursive(parentColumn) to be called first.");
+    }
+    if (this.recursiveTreeConfig.depthFilterApplied !== undefined) {
+      throw new Error("maxDepth() can only be set once on a recursive query.");
+    }
+
+    this.recursiveTreeConfig.maxDepth = depth;
+    this.recursiveTreeConfig.depthFilterApplied = depth;
+    this.invalidateSqlCache();
+    return this;
+  }
+
+  private configureRecursiveTree(direction: "descendants" | "ancestors", parentColumn: string, startingPoint?: any | any[]): this {
+    Connection.assertSafeIdentifier(parentColumn, "recursive parent column");
+    const primaryKey = String((this.model as any)?.primaryKey || "id");
+    Connection.assertSafeIdentifier(primaryKey, "recursive primary key");
+
+    const cteName = "recursive_tree";
+    const depthColumn = "depth";
+    const baseTable = this.tableName;
+    const relationAlias = direction === "ancestors" ? "recursive_parent" : "recursive_child";
+
+    const anchor = new Builder<any>(this.connection, baseTable)
+      .select(`${baseTable}.*`)
+      .selectRaw(`0 as ${depthColumn}`);
+
+    const hasStartingPoint = startingPoint !== undefined && startingPoint !== null;
+    const startKeys = hasStartingPoint
+      ? Array.isArray(startingPoint) ? startingPoint : [startingPoint]
+      : [];
+
+    if (!hasStartingPoint) {
+      anchor.whereNull(parentColumn as any);
+    } else if (startKeys.length === 0) {
+      anchor.whereRaw("0 = 1");
+    } else if (startKeys.length === 1) {
+      anchor.where(primaryKey as any, startKeys[0]);
+    } else {
+      anchor.whereIn(primaryKey as any, startKeys);
+    }
+
+    const recursive = direction === "descendants"
+      ? new Builder<any>(this.connection, `${baseTable} as ${relationAlias}`)
+          .select(`${relationAlias}.*`)
+          .selectRaw(`${cteName}.${depthColumn} + 1 as ${depthColumn}`)
+          .join(cteName, `${relationAlias}.${parentColumn}`, "=", `${cteName}.${primaryKey}`)
+      : new Builder<any>(this.connection, `${baseTable} as ${relationAlias}`)
+          .select(`${relationAlias}.*`)
+          .selectRaw(`${cteName}.${depthColumn} + 1 as ${depthColumn}`)
+          .join(cteName, `${relationAlias}.${primaryKey}`, "=", `${cteName}.${parentColumn}`);
+
+    this.recursiveTreeConfig = {
+      parentColumn,
+      primaryKey,
+      mode: !hasStartingPoint ? "roots" : startKeys.length === 1 ? "single" : "multiple",
+      direction,
+      startKeys,
+      cteName,
+      includeRoot: true,
+      depthOrder: "asc",
+    };
+
+    this.withRecursive(cteName, anchor, recursive);
+    this.from(cteName);
+    return this;
+  }
+
   with<K extends string & NestedRelationPath<T>>(constraint: TypedConstraintSelection<T, K>): Builder<T, WithLoadedRelationsFromConstraintMap<TResult, TypedConstraintSelection<T, K>>>;
   with<R extends TypedConstraintMap<T> & object>(constraint: R): Builder<T, WithLoadedRelationsFromConstraintMap<TResult, R>>;
   with<Rs extends ReadonlyArray<TypedEagerLoad<T>>>(relations: Rs): Builder<T, WithLoadedRelations<TResult, ExtractStringPaths<Rs[number]>>>;
@@ -1096,6 +1304,8 @@ export class Builder<T = Record<string, any>, TResult = T> {
     cloned.randomOrderFlag = this.randomOrderFlag;
     cloned.lockMode = this.lockMode;
     cloned.unions = [...this.unions];
+    cloned.recursiveCtes = [...this.recursiveCtes];
+    cloned.recursiveTreeConfig = this.recursiveTreeConfig ? { ...this.recursiveTreeConfig } : undefined;
     cloned.fromRaw = this.fromRaw;
     cloned.updateJoins = [...this.updateJoins];
     cloned.bindings = [...this.bindings];
@@ -1242,7 +1452,24 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   private isRawColumn(column: string): boolean {
-    return column.includes("(") || /\s+as\s+/i.test(column) || /^[0-9]+$/.test(column);
+    return column.includes("(") || /\s+as\s+/i.test(column) || /^[0-9]+$/.test(column) || column.endsWith(".*");
+  }
+
+  private compileRecursiveCtes(): string {
+    if (this.recursiveCtes.length === 0) return "";
+    const ctes = this.recursiveCtes.map((cte) => {
+      const anchorSql = typeof cte.anchor === "string" ? cte.anchor : cte.anchor.toSql();
+      let recursiveSql = typeof cte.recursive === "string" ? cte.recursive : cte.recursive.toSql();
+      if (this.recursiveTreeConfig && cte.name === this.recursiveTreeConfig.cteName && this.recursiveTreeConfig.maxDepth !== undefined) {
+        const recursiveBuilder = typeof cte.recursive === "string" ? null : cte.recursive.clone();
+        if (recursiveBuilder) {
+          recursiveBuilder.whereRaw(`${cte.name}.depth < ${this.recursiveTreeConfig.maxDepth}`);
+          recursiveSql = recursiveBuilder.toSql();
+        }
+      }
+      return `${this.grammar.wrap(cte.name)} AS (${anchorSql} UNION ALL ${recursiveSql})`;
+    });
+    return `WITH RECURSIVE ${ctes.join(", ")}`;
   }
 
   toSql(): string {
@@ -1261,6 +1488,8 @@ export class Builder<T = Record<string, any>, TResult = T> {
     for (const union of this.unions) {
       sql += ` UNION${union.all ? " ALL" : ""} ${union.query}`;
     }
+    const cteSql = this.compileRecursiveCtes();
+    if (cteSql) sql = `${cteSql} ${sql}`;
     const compiled = sql.replace(/\s+/g, " ").trim();
     if (!this.parameterize) this.sqlCache = compiled;
     return compiled;
@@ -1309,7 +1538,9 @@ export class Builder<T = Record<string, any>, TResult = T> {
     }
 
     const cachedRows = cacheable && !cachesEagerGraph ? await Cache.get<any[]>(this.cacheKey!) : null;
-    const rows = cachedRows ?? Array.from(await this.connection.query(sql, bindings)).map((row: any) => this.coerceBooleanResultColumns(row));
+    const rows = this.decorateRecursiveRows(
+      cachedRows ?? Array.from(await this.connection.query(sql, bindings)).map((row: any) => this.coerceBooleanResultColumns(row))
+    );
 
     if (cacheable && !cachesEagerGraph && cachedRows === null) {
       await Cache.set(this.cacheKey!, rows, {
@@ -1366,6 +1597,172 @@ export class Builder<T = Record<string, any>, TResult = T> {
     }
 
     return new Collection(rows as T[]) as unknown as Collection<TResult>;
+  }
+
+  async getTree(childrenRelation?: string): Promise<Collection<TResult> | TResult | null> {
+    if (!this.recursiveTreeConfig) {
+      throw new Error("getTree() requires recursive(parentColumn) to be called first.");
+    }
+    childrenRelation ||= this.inferRecursiveChildrenRelation() || "children";
+    Connection.assertSafeIdentifier(childrenRelation, "recursive children relation");
+
+    const rows = await this.get();
+    const { parentColumn, primaryKey, mode, startKeys } = this.recursiveTreeConfig;
+    const startKeySet = new Set(startKeys);
+    const byKey = new Map<any, any>();
+    const roots = new Collection<any>();
+    const rootKeys = new Set<any>();
+
+    for (const item of rows as any) {
+      byKey.set(this.valueFromResult(item, primaryKey), item);
+      this.setTreeChildren(item, childrenRelation, new Collection<any>());
+    }
+
+    for (const item of rows as any) {
+      const key = this.valueFromResult(item, primaryKey);
+      const parentId = this.valueFromResult(item, parentColumn);
+      const parent = byKey.get(parentId);
+      if (parent) {
+        this.getTreeChildren(parent, childrenRelation).push(item);
+      } else if (!rootKeys.has(key)) {
+        roots.push(item);
+        rootKeys.add(key);
+      }
+
+      if (mode !== "roots" && startKeySet.has(key) && !rootKeys.has(key)) {
+        roots.push(item);
+        rootKeys.add(key);
+      }
+    }
+
+    if (mode === "single" && this.recursiveTreeConfig.includeRoot) {
+      return (roots[0] ?? null) as unknown as TResult | null;
+    }
+    return roots as unknown as Collection<TResult>;
+  }
+
+  private decorateRecursiveRows(rows: any[]): any[] {
+    if (!this.recursiveTreeConfig || rows.length === 0) return rows;
+
+    const config = this.recursiveTreeConfig;
+    const keptRows = config.includeRoot ? rows : rows.filter((row) => this.valueFromResult(row, "depth") !== 0);
+    if (keptRows.length === 0) return keptRows;
+
+    const byKey = new Map<any, any>();
+    const childCounts = new Map<any, number>();
+    for (const row of keptRows) {
+      const key = this.valueFromResult(row, config.primaryKey);
+      byKey.set(key, row);
+    }
+    for (const row of keptRows) {
+      const parentId = this.valueFromResult(row, config.parentColumn);
+      if (parentId === null || parentId === undefined) continue;
+      childCounts.set(parentId, (childCounts.get(parentId) || 0) + 1);
+    }
+
+    const pathCache = new Map<any, string>();
+    const visiting = new Set<any>();
+    const resolvePath = (row: any): string => {
+      if (!config.path) return "";
+      const key = this.valueFromResult(row, config.primaryKey);
+      if (pathCache.has(key)) return pathCache.get(key)!;
+      if (visiting.has(key)) {
+        throw new Error(`Recursive cycle detected while building path for ${String(key)}`);
+      }
+      visiting.add(key);
+
+      const label = this.valueFromResult(row, config.path.column);
+      const labelText = label === null || label === undefined ? "" : String(label);
+      const parentId = this.valueFromResult(row, config.parentColumn);
+      const parent = byKey.get(parentId);
+      const value = parent ? `${resolvePath(parent)}${config.path.delimiter}${labelText}` : labelText;
+
+      visiting.delete(key);
+      pathCache.set(key, value);
+      return value;
+    };
+
+    for (const row of keptRows) {
+      const key = this.valueFromResult(row, config.primaryKey);
+      const hasChildren = (childCounts.get(key) || 0) > 0;
+
+      if (config.path) {
+        this.assignRecursiveAttribute(row, config.path.alias, resolvePath(row));
+      }
+      if (config.hasChildrenAlias) {
+        this.assignRecursiveAttribute(row, config.hasChildrenAlias, hasChildren);
+      }
+      if (config.leafAlias) {
+        this.assignRecursiveAttribute(row, config.leafAlias, !hasChildren);
+      }
+    }
+
+    return keptRows;
+  }
+
+  private assignRecursiveAttribute(row: any, key: string, value: any): void {
+    if (row && typeof row.setAttribute === "function") {
+      row.setAttribute(key, value);
+      return;
+    }
+    row[key] = value;
+  }
+
+  private valueFromResult(item: any, key: string): any {
+    if (item && typeof item.getAttribute === "function") return item.getAttribute(key);
+    return item?.[key];
+  }
+
+  private setTreeChildren(item: any, relation: string, children: Collection<any>): void {
+    if (item && typeof item.setRelation === "function") {
+      item.setRelation(relation, children);
+      return;
+    }
+    item[relation] = children;
+  }
+
+  private getTreeChildren(item: any, relation: string): Collection<any> {
+    if (item && typeof item.getRelation === "function") return item.getRelation(relation);
+    return item[relation];
+  }
+
+  private inferRecursiveRelationMetadata(): { relationName?: string; parentColumn: string; primaryKey: string } | undefined {
+    if (!this.model) return undefined;
+    const model = this.model as any;
+    const instance = new model();
+    const targetTable = typeof model.getTable === "function" ? model.getTable() : undefined;
+    const parentColumn = this.recursiveTreeConfig?.parentColumn;
+    const primaryKey = this.recursiveTreeConfig?.primaryKey || (typeof model.primaryKey === "string" ? model.primaryKey : "id");
+
+    let current = model.prototype;
+    while (current && current !== BaseModel.prototype) {
+      for (const name of Object.getOwnPropertyNames(current)) {
+        if (name === "constructor") continue;
+        const descriptor = Object.getOwnPropertyDescriptor(current, name);
+        if (typeof descriptor?.value !== "function") continue;
+
+        try {
+          const relation = descriptor.value.call(instance);
+          if (!(relation instanceof HasMany)) continue;
+          const related = relation.getRelatedModelConstructor();
+          const relatedTable = typeof related?.getTable === "function" ? related.getTable() : undefined;
+          if (related !== model && relatedTable !== targetTable) continue;
+          const foreignKey = relation.getForeignKeyName();
+          const localKey = relation.getLocalKeyName();
+          if (parentColumn && foreignKey !== parentColumn) continue;
+          if (primaryKey && localKey !== primaryKey) continue;
+          return { relationName: name, parentColumn: foreignKey, primaryKey: localKey };
+        } catch {
+          // Ignore ordinary methods that are not relation factories.
+        }
+      }
+      current = Object.getPrototypeOf(current);
+    }
+    return undefined;
+  }
+
+  private inferRecursiveChildrenRelation(): string | undefined {
+    return this.inferRecursiveRelationMetadata()?.relationName;
   }
 
   private shouldUseCache(): boolean {
@@ -1983,6 +2380,9 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async update(data: ModelAttributeInput<T>): Promise<any> {
+    const dispatch = this.shouldDispatchObservers();
+    const affectedIds = dispatch ? await this.pluckAffectedIds() : null;
+
     this.bindings = [];
     this.parameterize = true;
     const sets = Object.entries(data).map(([key, value]) => {
@@ -1997,10 +2397,18 @@ export class Builder<T = Record<string, any>, TResult = T> {
       whereSql,
       this.updateJoins
     );
-    return await this.connection.run(sql, this.bindings);
+    const result = await this.connection.run(sql, this.bindings);
+
+    if (dispatch && affectedIds && affectedIds.length > 0) {
+      await this.dispatchOnAffected(["updated", "saved"], affectedIds);
+    }
+    return result;
   }
 
   async delete(): Promise<any> {
+    const dispatch = this.shouldDispatchObservers();
+    const affectedIds = dispatch ? await this.pluckAffectedIds() : null;
+
     this.bindings = [];
     this.parameterize = true;
     const whereSql = this.compileWheres();
@@ -2011,7 +2419,39 @@ export class Builder<T = Record<string, any>, TResult = T> {
       this.updateJoins,
       this.limitValue
     );
-    return await this.connection.run(sql, this.bindings);
+    const result = await this.connection.run(sql, this.bindings);
+
+    if (dispatch && affectedIds && affectedIds.length > 0) {
+      // Rows are gone — hydrate placeholder instances carrying just the PK so
+      // observers can see which IDs were removed.
+      const model = this.model as any;
+      for (const id of affectedIds) {
+        const instance = new model();
+        (instance as any).setAttribute(model.primaryKey, id);
+        (instance as any).$exists = false;
+        await ObserverRegistry.dispatch("deleted", instance);
+      }
+    }
+    return result;
+  }
+
+  private shouldDispatchObservers(): boolean {
+    return Boolean(this.model) && ObserverRegistry.hasAny(this.model as any);
+  }
+
+  private async pluckAffectedIds(): Promise<any[]> {
+    const model = this.model as any;
+    const pk: string = model.primaryKey;
+    return await this.clone().pluck(pk as any);
+  }
+
+  private async dispatchOnAffected(events: Array<"updated" | "saved" | "deleted">, ids: any[]): Promise<void> {
+    const model = this.model as any;
+    const pk: string = model.primaryKey;
+    const rows = await model.whereIn(pk, ids).get();
+    for (const row of rows) {
+      for (const event of events) await ObserverRegistry.dispatch(event, row);
+    }
   }
 
   async increment(column: ModelColumn<T>, amount: number = 1, extra: ModelAttributeInput<T> = {}): Promise<any> {

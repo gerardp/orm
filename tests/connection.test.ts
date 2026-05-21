@@ -1,4 +1,6 @@
 import { expect, test, describe } from "bun:test";
+import { rm } from "fs/promises";
+import { join } from "path";
 import { Connection } from "../src/index.js";
 
 describe("Connection", () => {
@@ -25,6 +27,72 @@ describe("Connection", () => {
   test("creates connection from driver config (mysql)", () => {
     const conn = new Connection({ driver: "mysql", host: "localhost", database: "db" });
     expect(conn.getDriverName()).toBe("mysql");
+  });
+
+  test("applies SQLite WAL and synchronous NORMAL before first statement", async () => {
+    const calls: string[] = [];
+    const driver = {
+      unsafe(sql: string) {
+        calls.push(sql);
+        return [];
+      },
+    };
+    const conn = new Connection({ url: "sqlite://app.db" }, { driver: driver as any });
+
+    await conn.query("SELECT 1");
+    await conn.run("SELECT 2");
+
+    expect(calls).toEqual([
+      "PRAGMA journal_mode=WAL",
+      "PRAGMA synchronous=NORMAL",
+      "SELECT 1",
+      "SELECT 2",
+    ]);
+  });
+
+  test("SQLite defaults are visible through PRAGMA reads on file-backed databases", async () => {
+    const dbPath = join(process.cwd(), "tests", `temp_connection_${Date.now()}.sqlite`);
+    const conn = new Connection({ url: `sqlite://${dbPath}` });
+
+    try {
+      await conn.query("SELECT 1");
+
+      const journalMode = await conn.query("PRAGMA journal_mode");
+      const synchronous = await conn.query("PRAGMA synchronous");
+
+      expect(journalMode[0].journal_mode).toBe("wal");
+      expect(synchronous[0].synchronous).toBe(1);
+    } finally {
+      await conn.close();
+      await rm(dbPath, { force: true });
+      await rm(`${dbPath}-wal`, { force: true });
+      await rm(`${dbPath}-shm`, { force: true });
+    }
+  });
+
+  test("allows SQLite defaults to be disabled or customized", async () => {
+    const disabledCalls: string[] = [];
+    const disabled = new Connection(
+      { url: "sqlite://app.db", sqlitePragmas: false },
+      { driver: { unsafe: (sql: string) => (disabledCalls.push(sql), []) } as any },
+    );
+    await disabled.query("SELECT 1");
+    expect(disabledCalls).toEqual(["SELECT 1"]);
+
+    const customCalls: string[] = [];
+    const custom = new Connection(
+      {
+        url: "sqlite://app.db",
+        sqlitePragmas: { journalMode: "DELETE", synchronous: "FULL" },
+      },
+      { driver: { unsafe: (sql: string) => (customCalls.push(sql), []) } as any },
+    );
+    await custom.query("SELECT 1");
+    expect(customCalls).toEqual([
+      "PRAGMA journal_mode=DELETE",
+      "PRAGMA synchronous=FULL",
+      "SELECT 1",
+    ]);
   });
 
   test("runs and queries sql", async () => {

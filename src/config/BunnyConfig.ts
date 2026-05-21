@@ -14,6 +14,8 @@ import type { ConnectionConfig } from "../types/index.js";
 import { Queue } from "../queue/Queue.js";
 import { DatabaseQueueDriver } from "../queue/DatabaseQueueDriver.js";
 import type { QueueDriver } from "../queue/QueueDriver.js";
+import { Search } from "../search/SearchManager.js";
+import type { SearchEngine } from "../search/SearchEngine.js";
 
 export interface ModelsPath {
   landlord?: string | string[];
@@ -69,6 +71,14 @@ export interface BunnyConfig {
   commands?: {
     commandsPath?: string | string[];
   };
+  search?: {
+    engine: SearchEngine;
+    queue?: { connection?: string; name?: string };
+    chunk?: number;
+    batch?: { maxItems?: number; maxMs?: number };
+    tenantScope?: (baseIndex: string, tenantId: string | null) => string;
+    listTenants?: () => string[] | Promise<string[]>;
+  };
 }
 
 export interface ConfiguredBunny {
@@ -90,7 +100,13 @@ function resolveMigrationPath(config: BunnyConfig, scope: "landlord" | "tenant")
 }
 
 export function configureBunny(config: BunnyConfig): ConfiguredBunny {
-  void ConnectionManager.closeAll().catch(() => {});
+  // Snapshot the previous default BEFORE we touch anything else, so we can
+  // tear it down AFTER the new defaults are installed. Calling closeAll() up
+  // front would synchronously clear defaultConnection and tenantResolver
+  // before the new ones are set — a tiny window where any concurrent request
+  // would fail with "No connection set on model X". Order matters here.
+  const previousDefault = ConnectionManager.getDefault();
+
   const connection = new Connection(config.connection);
   ConnectionManager.setDefault(connection);
   Model.setConnection(connection);
@@ -139,6 +155,26 @@ export function configureBunny(config: BunnyConfig): ConfiguredBunny {
       failedTable: config.queue.failedTable,
     });
     Queue.configure(queueDriver, config.queue.defaultQueue ?? "default");
+  }
+
+  if (config.search) {
+    Search.configure({
+      engine: config.search.engine,
+      queue: config.search.queue,
+      chunk: config.search.chunk,
+      batch: config.search.batch,
+      tenantScope: config.search.tenantScope,
+      // Pull tenant lister from search-specific config, otherwise inherit the
+      // global tenancy lister so `search:list-indexes --all-tenants` works
+      // without duplicating config.
+      listTenants: config.search.listTenants ?? config.tenancy?.listTenants,
+    });
+  }
+
+  // Tear down the previous default in the background — new defaults are
+  // already live, so no request can see a missing connection.
+  if (previousDefault && previousDefault !== connection) {
+    void previousDefault.close().catch(() => {});
   }
 
   const buildMigrator = (scope: "landlord" | "tenant" = "landlord", overrides: MigratorOptions = {}) => {
