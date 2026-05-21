@@ -2,6 +2,7 @@ import { expect, test, describe, beforeAll, afterAll } from "bun:test";
 import { mkdir, readdir, unlink, rm } from "fs/promises";
 import { join } from "path";
 import { Connection, Schema, Migration, Migrator, MigrationCreator, ConnectionManager, Model } from "../src/index.js";
+import { runConfiguredMigrationCommand } from "../src/cli/MigrationHelpers.js";
 import { setupTestDb } from "./helpers.js";
 
 const TEST_MIGRATIONS_DIR = join(process.cwd(), "tests", "temp_migrations");
@@ -123,6 +124,97 @@ export default class CreateTestItems extends Migration {
     const migrator = new Migrator(connection, TEST_MIGRATIONS_DIR);
     await migrator.run();
     expect(await Schema.hasTable("test_items")).toBe(true);
+  });
+
+  test("disables query logging while running migrations", async () => {
+    const dir = join(process.cwd(), "tests", "temp_migrations_no_query_logs");
+    await mkdir(dir, { recursive: true });
+    const isolated = setupTestDb();
+    const filePath = join(dir, "20260409000000_create_no_query_log_items.ts");
+    await Bun.write(
+      filePath,
+      `
+import { Migration, Schema } from "../../src/index.js";
+export default class CreateNoQueryLogItems extends Migration {
+  async up(): Promise<void> {
+    await Schema.create("no_query_log_items", (table) => {
+      table.increments("id");
+      table.string("name");
+    });
+  }
+  async down(): Promise<void> {
+    await Schema.dropIfExists("no_query_log_items");
+  }
+}`,
+    );
+
+    const previousLogQueries = Connection.logQueries;
+    const logs: unknown[][] = [];
+    const previousConsoleLog = console.log;
+    Connection.logQueries = true;
+    console.log = (...args: unknown[]) => { logs.push(args); };
+
+    try {
+      await new Migrator(isolated, dir).run();
+    } finally {
+      console.log = previousConsoleLog;
+      Connection.logQueries = previousLogQueries;
+      await isolated.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+
+    expect(logs.some((args) => args[0] === "[QUERY]")).toBe(false);
+    expect(logs.some((args) => String(args[0]).startsWith("Migrating:"))).toBe(true);
+  });
+
+  test("disables query logging while selecting landlord and tenants", async () => {
+    const dir = join(process.cwd(), "tests", "temp_migrations_no_selection_logs");
+    await mkdir(dir, { recursive: true });
+    const isolated = setupTestDb();
+
+    const previousLogQueries = Connection.logQueries;
+    const logs: unknown[][] = [];
+    const previousConsoleLog = console.log;
+    const previousConsoleTable = console.table;
+    Connection.logQueries = true;
+    console.log = (...args: unknown[]) => { logs.push(args); };
+    console.table = (...args: unknown[]) => { logs.push(["table", ...args]); };
+
+    try {
+      await runConfiguredMigrationCommand(
+        "migrate:status",
+        {
+          migrations: { landlord: dir, tenant: dir },
+          tenancy: {
+            listTenants: async () => {
+              await isolated.query("SELECT 1 as landlord_selection");
+              return ["acme"];
+            },
+            resolveTenant: async (tenantId: string) => {
+              await isolated.query("SELECT 1 as tenant_selection");
+              return {
+                strategy: "database",
+                name: `tenant:${tenantId}`,
+                config: { url: "sqlite://:memory:" },
+              };
+            },
+          },
+        } as any,
+        isolated,
+        { scope: "default" },
+      );
+    } finally {
+      console.log = previousConsoleLog;
+      console.table = previousConsoleTable;
+      Connection.logQueries = previousLogQueries;
+      await ConnectionManager.closeAll();
+      await isolated.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+
+    expect(logs.some((args) => args[0] === "[QUERY]")).toBe(false);
+    expect(logs.some((args) => args[0] === "Landlord migrations")).toBe(true);
+    expect(logs.some((args) => args[0] === "Tenant: acme")).toBe(true);
   });
 
   test("status shows ran migrations", async () => {

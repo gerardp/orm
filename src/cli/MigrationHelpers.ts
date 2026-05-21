@@ -1,10 +1,10 @@
+import { Connection } from "../connection/Connection.js";
 import { ConnectionManager } from "../connection/ConnectionManager.js";
 import { TenantContext } from "../connection/TenantContext.js";
 import { Migrator } from "../migration/Migrator.js";
 import { SeederRunner } from "../seeding/Seeder.js";
 import { normalizePathList } from "../utils.js";
 import { resolve, sep } from "path";
-import type { Connection } from "../connection/Connection.js";
 import type { BunnyConfig, ModelsPath } from "../config/BunnyConfig.js";
 import type { MigratorOptions } from "../migration/Migrator.js";
 
@@ -151,6 +151,25 @@ export async function runTenantMigrationCommand(
 }
 
 export async function runConfiguredMigrationCommand(
+  command: MigrationCommand,
+  config: BunnyConfig,
+  connection: Connection,
+  target: MigrationTarget,
+  generateTypes: boolean = false,
+): Promise<void> {
+  const previousConnectionLogQueries = connection.logQueries;
+  const previousGlobalLogQueries = Connection.logQueries;
+  connection.logQueries = false;
+  Connection.logQueries = false;
+  try {
+    await runConfiguredMigrationCommandWithoutSqlLogging(command, config, connection, target, generateTypes);
+  } finally {
+    connection.logQueries = previousConnectionLogQueries;
+    Connection.logQueries = previousGlobalLogQueries;
+  }
+}
+
+async function runConfiguredMigrationCommandWithoutSqlLogging(
   command: MigrationCommand,
   config: BunnyConfig,
   connection: Connection,

@@ -342,6 +342,24 @@ async function runConfiguredMigrationCommand(
   connection: Connection,
   target: MigrationTarget
 ): Promise<void> {
+  const previousConnectionLogQueries = connection.logQueries;
+  const previousGlobalLogQueries = Connection.logQueries;
+  connection.logQueries = false;
+  Connection.logQueries = false;
+  try {
+    await runConfiguredMigrationCommandWithoutSqlLogging(command, config, connection, target);
+  } finally {
+    connection.logQueries = previousConnectionLogQueries;
+    Connection.logQueries = previousGlobalLogQueries;
+  }
+}
+
+async function runConfiguredMigrationCommandWithoutSqlLogging(
+  command: MigrationCommand,
+  config: BunnyConfig,
+  connection: Connection,
+  target: MigrationTarget
+): Promise<void> {
   if (!config.migrations) {
     const defaultPath = getDefaultMigrationsPath(config);
     if (target.scope === "tenant" || target.scope === "tenants") {

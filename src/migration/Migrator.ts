@@ -330,6 +330,19 @@ export class Migrator {
     }
   }
 
+  private async withoutSqlLogging<T>(callback: () => T | Promise<T>): Promise<T> {
+    const previousConnectionLogQueries = this.connection.logQueries;
+    const previousGlobalLogQueries = Connection.logQueries;
+    this.connection.logQueries = false;
+    Connection.logQueries = false;
+    try {
+      return await callback();
+    } finally {
+      this.connection.logQueries = previousConnectionLogQueries;
+      Connection.logQueries = previousGlobalLogQueries;
+    }
+  }
+
   private async inTransaction<T>(callback: (connection: Connection) => T | Promise<T>): Promise<T> {
     return await this.connection.transaction(async (connection) => {
       return await this.withRuntimeConnection(connection, () => callback(connection));
@@ -337,6 +350,10 @@ export class Migrator {
   }
 
   async run(): Promise<void> {
+    return this.withoutSqlLogging(() => this.runWithoutSqlLogging());
+  }
+
+  private async runWithoutSqlLogging(): Promise<void> {
     await this.ensureCreateIfMissing();
     await this.ensureMigrationsTable();
     const locked = await this.acquireLock();
@@ -377,6 +394,10 @@ export class Migrator {
   }
 
   async rollback(steps: number = 1): Promise<void> {
+    return this.withoutSqlLogging(() => this.rollbackWithoutSqlLogging(steps));
+  }
+
+  private async rollbackWithoutSqlLogging(steps: number = 1): Promise<void> {
     await this.ensureCreateIfMissing();
     await this.ensureMigrationsTable();
     const locked = await this.acquireLock();
@@ -435,22 +456,30 @@ export class Migrator {
   }
 
   async reset(): Promise<void> {
-    await this.ensureCreateIfMissing();
-    while ((await this.getLastBatchNumber()) > 0) {
-      await this.rollback();
-    }
+    return this.withoutSqlLogging(async () => {
+      await this.ensureCreateIfMissing();
+      while ((await this.getLastBatchNumber()) > 0) {
+        await this.rollbackWithoutSqlLogging();
+      }
+    });
   }
 
   async refresh(): Promise<void> {
-    await this.ensureCreateIfMissing();
-    await this.reset();
-    await this.run();
+    return this.withoutSqlLogging(async () => {
+      await this.ensureCreateIfMissing();
+      while ((await this.getLastBatchNumber()) > 0) {
+        await this.rollbackWithoutSqlLogging();
+      }
+      await this.runWithoutSqlLogging();
+    });
   }
 
   async fresh(): Promise<void> {
-    await this.ensureCreateIfMissing();
-    await this.dropAllTables();
-    await this.run();
+    return this.withoutSqlLogging(async () => {
+      await this.ensureCreateIfMissing();
+      await this.dropAllTables();
+      await this.runWithoutSqlLogging();
+    });
   }
 
   private async generateTypesIfNeeded(): Promise<void> {
@@ -471,6 +500,10 @@ export class Migrator {
   }
 
   async status(): Promise<MigrationStatusRow[]> {
+    return this.withoutSqlLogging(() => this.statusWithoutSqlLogging());
+  }
+
+  private async statusWithoutSqlLogging(): Promise<MigrationStatusRow[]> {
     await this.ensureCreateIfMissing();
     await this.ensureMigrationsTable();
     const ran = await this.getRanRecords();
@@ -490,6 +523,10 @@ export class Migrator {
   }
 
   async dumpSchema(path: string): Promise<string> {
+    return this.withoutSqlLogging(() => this.dumpSchemaWithoutSqlLogging(path));
+  }
+
+  private async dumpSchemaWithoutSqlLogging(path: string): Promise<string> {
     await this.ensureCreateIfMissing();
     const sql = await this.getSchemaDumpSql();
     await mkdir(resolve(path, ".."), { recursive: true });
@@ -499,8 +536,12 @@ export class Migrator {
   }
 
   async squash(path: string): Promise<string> {
+    return this.withoutSqlLogging(() => this.squashWithoutSqlLogging(path));
+  }
+
+  private async squashWithoutSqlLogging(path: string): Promise<string> {
     await this.ensureCreateIfMissing();
-    const sql = await this.dumpSchema(path);
+    const sql = await this.dumpSchemaWithoutSqlLogging(path);
     const files = await this.getMigrationFiles();
     await this.ensureMigrationsTable();
     const batch = (await this.getLastBatchNumber()) + 1;
