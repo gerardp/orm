@@ -5,6 +5,7 @@ import type { SearchBuilder } from "./SearchBuilder.js";
 import { attachSearchObserver, detachSearchObservers } from "./SearchObserver.js";
 import {
   applySearchableStatics,
+  Searchable,
   type SearchableInstance,
   type SearchableModelConstructor,
   type SearchableModelStatics,
@@ -108,6 +109,31 @@ function attachIfReady(modelClass: ModelConstructor): void {
   }
 }
 
+type SearchableClass<TBase extends ModelConstructor> = TBase
+  & SearchableModelStatics<InstanceType<TBase>>
+  & { new (...args: any[]): InstanceType<TBase> & SearchableInstance };
+
+function defineSearch<TBase extends ModelConstructor>(
+  modelClass: TBase,
+  options?: SearchableOptions<InstanceType<TBase>>,
+): SearchableClass<TBase>;
+function defineSearch<A extends Record<string, any>>(
+  tableName: string,
+  options?: SearchableOptions<Model<A> & A>,
+): ReturnType<typeof Model.define<A>>
+  & SearchableModelStatics<Model<A> & A>
+  & { new (...args: any[]): Model<A> & A & SearchableInstance };
+function defineSearch(
+  modelOrTable: ModelConstructor | string,
+  options: SearchableOptions<any> = {},
+): any {
+  const modelClass = typeof modelOrTable === "string"
+    ? Model.define(modelOrTable)
+    : modelOrTable;
+  const searchableClass = Searchable(modelClass as any, options);
+  return Search.register(searchableClass as any);
+}
+
 export const Search = {
   configure(config: SearchConfig): void {
     currentConfig = config;
@@ -162,30 +188,19 @@ export const Search = {
   register<TBase extends ModelConstructor>(
     modelClass: TBase,
     options: SearchableOptions<InstanceType<TBase>> = {},
-  ): TBase
-    & SearchableModelStatics<InstanceType<TBase>>
-    & { new (...args: any[]): InstanceType<TBase> & SearchableInstance } {
+  ): TBase & SearchableModelStatics<InstanceType<TBase>> {
     applySearchableStatics<InstanceType<TBase>>(modelClass, options);
     attachIfReady(modelClass);
     return modelClass as any;
   },
 
   /**
-   * Define a searchable model in one call. Combines `Model.define()` +
-   * `applySearchableStatics()` + lazy observer registration. Observer attaches
-   * automatically once `Search.configure()` is called.
+   * Define a searchable model in one call. Accepts either a table name
+   * (`Search.define("posts")`) or an existing Model class
+   * (`Search.define(PostBase)`). In both cases the class is passed through
+   * `Searchable()` and registered for observer attachment.
    */
-  define<A extends Record<string, any>>(
-    tableName: string,
-    options: SearchableOptions<Model<A> & A> = {},
-  ): ReturnType<typeof Model.define<A>>
-    & SearchableModelStatics<Model<A> & A>
-    & { new (...args: any[]): Model<A> & A & SearchableInstance } {
-    const Base = Model.define<A>(tableName) as any;
-    applySearchableStatics(Base, options);
-    attachIfReady(Base);
-    return Base;
-  },
+  define: defineSearch,
 
   unregister(modelClass: ModelConstructor): void {
     if (!observed.has(modelClass)) return;

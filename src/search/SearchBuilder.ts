@@ -1,4 +1,5 @@
 import type { Model, ModelConstructor, ModelColumn, ModelColumnValue } from "../model/Model.js";
+import { Collection } from "../support/Collection.js";
 import { getSearchEngine } from "./SearchManager.js";
 import type {
   CmpOp,
@@ -21,7 +22,7 @@ type Field<M> = ModelColumn<M>;
 type ValueOf<M, K> = K extends keyof M ? M[K] : any;
 
 export interface SearchPaginatorResult<T> {
-  data: T[];
+  data: Collection<T>;
   total: number;
   page: number;
   perPage: number;
@@ -29,14 +30,14 @@ export interface SearchPaginatorResult<T> {
 }
 
 export interface SearchSimplePaginatorResult<T> {
-  data: T[];
+  data: Collection<T>;
   page: number;
   perPage: number;
   hasMore: boolean;
 }
 
 export interface SearchFetchResult<T> {
-  data: T[];
+  data: Collection<T>;
   total: number;
   facetDistribution?: FacetDistribution;
 }
@@ -52,6 +53,7 @@ export class SearchBuilder<M = Model> {
   private facetRangeList: FacetRange[] = [];
   private minScoreValue?: number;
   private searchOnFields?: string[];
+  private retrieveFields?: string[];
   private highlightConfig?: SearchHighlight;
   private cropConfig: SearchCrop[] = [];
   private showScore = false;
@@ -232,6 +234,20 @@ export class SearchBuilder<M = Model> {
     return this.searchOn(...fields);
   }
 
+  /**
+   * Restrict fields returned by raw engine hits. Hydrated `.get()` still uses
+   * hit IDs to load full ORM models from the database.
+   */
+  retrieve<K extends Field<M>>(...fields: K[]): this {
+    this.retrieveFields = fields.map((f) => f as string);
+    return this;
+  }
+
+  /** Alias of `retrieve()` for display-focused raw search result payloads. */
+  display<K extends Field<M>>(...fields: K[]): this {
+    return this.retrieve(...fields);
+  }
+
   highlight<K extends Field<M>>(...fields: K[]): this {
     this.highlightConfig = {
       ...(this.highlightConfig ?? { fields: [] }),
@@ -304,7 +320,7 @@ export class SearchBuilder<M = Model> {
     return getSearchEngine().search(this.buildQuery());
   }
 
-  async get(): Promise<M[]> {
+  async get(): Promise<Collection<M>> {
     return this.hydrate(await this.raw());
   }
 
@@ -397,6 +413,7 @@ export class SearchBuilder<M = Model> {
     if (this.facetRangeList.length > 0) q.facetRanges = this.facetRangeList;
     if (this.minScoreValue !== undefined) q.minScore = this.minScoreValue;
     if (this.searchOnFields) q.attributesToSearchOn = this.searchOnFields;
+    if (this.retrieveFields) q.attributesToRetrieve = this.retrieveFields;
     if (this.highlightConfig) q.highlight = this.highlightConfig;
     if (this.cropConfig.length > 0) q.crop = this.cropConfig;
     if (this.showScore) q.showRankingScore = true;
@@ -408,8 +425,8 @@ export class SearchBuilder<M = Model> {
     return q;
   }
 
-  private async hydrate(hits: SearchHit[]): Promise<M[]> {
-    if (hits.length === 0) return [];
+  private async hydrate(hits: SearchHit[]): Promise<Collection<M>> {
+    if (hits.length === 0) return new Collection<M>();
     const ids = hits.map((h) => h.id);
     const pk = (this.modelClass as unknown as { primaryKey: string }).primaryKey;
     let q: any = (this.modelClass as any).whereIn(pk, ids);
@@ -428,6 +445,6 @@ export class SearchBuilder<M = Model> {
         byId.get(Number(id) as any);
       if (row) ordered.push(row);
     }
-    return ordered;
+    return new Collection<M>(ordered);
   }
 }

@@ -89,6 +89,7 @@ export interface SearchQuery {
   facetRanges?: FacetRange[];
   minScore?: number;
   attributesToSearchOn?: string[];
+  attributesToRetrieve?: string[];
   highlight?: SearchHighlight;
   crop?: SearchCrop[];
   showRankingScore?: boolean;

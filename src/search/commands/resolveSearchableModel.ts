@@ -1,6 +1,6 @@
 import { readdir } from "fs/promises";
 import { existsSync } from "fs";
-import { extname, join, resolve, sep } from "path";
+import { basename, extname, join, resolve } from "path";
 import { pathToFileURL } from "url";
 import { normalizePathList } from "../../utils.js";
 import type { BunnyConfig } from "../../config/BunnyConfig.js";
@@ -35,24 +35,39 @@ function modelPathRoots(config: BunnyConfig): string[] {
   return combined;
 }
 
-export async function loadSearchableModels(config: BunnyConfig): Promise<SearchableModelConstructor[]> {
+async function loadSearchableModelMap(config: BunnyConfig): Promise<Map<string, SearchableModelConstructor>> {
   const roots = modelPathRoots(config);
   const loaded = new Map<string, SearchableModelConstructor>();
+  const register = (name: string | undefined, ctor: unknown) => {
+    if (!name || typeof ctor !== "function") return;
+    const model = ctor as unknown as SearchableModelConstructor & ModelConstructor;
+    if (model.searchable === true && typeof model.searchableAs === "function") {
+      loaded.set(name, model);
+    }
+  };
+
   for (const root of roots) {
     const abs = resolve(process.cwd(), root);
     if (!existsSync(abs)) continue;
     const files = await walkModelFiles(abs);
     for (const file of files) {
       const mod = await import(pathToFileURL(file).href);
-      for (const exported of Object.values(mod)) {
-        if (typeof exported !== "function") continue;
-        const ctor = exported as unknown as SearchableModelConstructor & ModelConstructor;
-        if (ctor.searchable === true && typeof ctor.searchableAs === "function") {
-          loaded.set(ctor.name, ctor);
-        }
+      for (const [exportName, exported] of Object.entries(mod)) {
+        if (exportName === "default") continue;
+        register(exportName, exported);
+      }
+      if (typeof mod.default === "function") {
+        const fileName = basename(file, extname(file));
+        register(fileName, mod.default);
+        register(mod.default.name, mod.default);
       }
     }
   }
+  return loaded;
+}
+
+export async function loadSearchableModels(config: BunnyConfig): Promise<SearchableModelConstructor[]> {
+  const loaded = await loadSearchableModelMap(config);
   return [...loaded.values()];
 }
 
@@ -60,6 +75,6 @@ export async function resolveSearchableModel(
   config: BunnyConfig,
   name: string,
 ): Promise<SearchableModelConstructor | undefined> {
-  const all = await loadSearchableModels(config);
-  return all.find((m) => m.name === name);
+  const loaded = await loadSearchableModelMap(config);
+  return loaded.get(name) ?? [...loaded.values()].find((m) => m.name === name);
 }

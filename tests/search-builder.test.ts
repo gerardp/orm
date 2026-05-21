@@ -115,6 +115,16 @@ describe("SearchBuilder filter compilation + execution", () => {
     expect((f[2] as any).filters[1]).toMatchObject({ bool: "or", field: "priority" });
   });
 
+  test("retrieve/display fields are carried on raw query", async () => {
+    const engine = await setup();
+    await (Post as any).search("foo")
+      .retrieve("title")
+      .display("title", "author_id")
+      .raw();
+
+    expect(engine.lastQuery!.attributesToRetrieve).toEqual(["title", "author_id"]);
+  });
+
   test("cursor streams pages until short batch", async () => {
     const engine = await setup();
     const post1 = await Post.create({ title: "a", author_id: 1 } as any);

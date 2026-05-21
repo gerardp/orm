@@ -304,6 +304,11 @@ export class MeilisearchEngine implements SearchEngine {
     if (query.attributesToSearchOn && query.attributesToSearchOn.length > 0) {
       body.attributesToSearchOn = query.attributesToSearchOn;
     }
+    if (query.attributesToRetrieve && query.attributesToRetrieve.length > 0) {
+      const fields = new Set<string>(query.attributesToRetrieve);
+      fields.add(this.primaryKey);
+      body.attributesToRetrieve = [...fields];
+    }
     if (query.highlight) {
       body.attributesToHighlight = query.highlight.fields;
       if (query.highlight.preTag !== undefined) body.highlightPreTag = query.highlight.preTag;

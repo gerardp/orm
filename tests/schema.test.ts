@@ -132,6 +132,16 @@ describe("Schema Builder", () => {
     expect(sql).toContain('"name" TEXT NOT NULL');
   });
 
+  test("sqlite grammar ignores defaultUuid because models generate uuid values", () => {
+    const grammar = new SQLiteGrammar();
+    const blueprint = new Blueprint("users");
+    blueprint.uuid("id").primary().defaultUuid();
+    blueprint.string("name");
+    const sql = grammar.compileCreate(blueprint, "users");
+    expect(sql).toContain('"id" TEXT PRIMARY KEY NOT NULL');
+    expect(sql).not.toContain("DEFAULT");
+  });
+
   test("mysql grammar compileCreate with uuid primary key", () => {
     const grammar = new MySqlGrammar();
     const blueprint = new Blueprint("users");
@@ -142,6 +152,15 @@ describe("Schema Builder", () => {
     expect(sql).toContain("`name` VARCHAR(255) NOT NULL");
   });
 
+  test("mysql grammar compileCreate with default uuid primary key", () => {
+    const grammar = new MySqlGrammar();
+    const blueprint = new Blueprint("users");
+    blueprint.uuid("id").primary().defaultUuid();
+    blueprint.string("name");
+    const sql = grammar.compileCreate(blueprint, "users");
+    expect(sql).toContain("`id` CHAR(36) NOT NULL DEFAULT (UUID()) PRIMARY KEY");
+  });
+
   test("postgres grammar compileCreate with uuid primary key", () => {
     const grammar = new PostgresGrammar();
     const blueprint = new Blueprint("users");
@@ -150,6 +169,15 @@ describe("Schema Builder", () => {
     const sql = grammar.compileCreate(blueprint, "users");
     expect(sql).toContain('"id" UUID NOT NULL PRIMARY KEY');
     expect(sql).toContain('"name" VARCHAR(255) NOT NULL');
+  });
+
+  test("postgres grammar compileCreate with default uuid primary key", () => {
+    const grammar = new PostgresGrammar();
+    const blueprint = new Blueprint("users");
+    blueprint.uuid("id").primary().defaultUuid();
+    blueprint.string("name");
+    const sql = grammar.compileCreate(blueprint, "users");
+    expect(sql).toContain('"id" UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY');
   });
 
   test("postgres grammar qualifies foreign keys for schema tables", () => {

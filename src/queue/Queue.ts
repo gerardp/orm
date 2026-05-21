@@ -61,3 +61,17 @@ export class Queue {
     return getJobDriverByConnection(connection);
   }
 }
+
+export async function dispatch(instance: DispatchableJob, options?: DispatchOptions): Promise<void>;
+export async function dispatch(jobClass: JobConstructor, args?: any[], options?: DispatchOptions): Promise<void>;
+export async function dispatch(
+  jobClassOrInstance: JobConstructor | DispatchableJob,
+  argsOrOptions?: any[] | DispatchOptions,
+  options: DispatchOptions = {},
+): Promise<void> {
+  return Queue.dispatch(
+    jobClassOrInstance as any,
+    argsOrOptions as any,
+    options,
+  );
+}

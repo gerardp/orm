@@ -52,7 +52,8 @@ export abstract class Grammar {
     let sql = `${this.wrap(column.name)} ${this.getType(column)}`;
     if (column.unsigned) sql += this.modifyUnsigned(column);
     if (!column.nullable) sql += " NOT NULL";
-    if (column.default !== undefined) sql += ` DEFAULT ${this.getDefaultValue(column.default)}`;
+    if (column.defaultUuid) sql += this.modifyDefaultUuid(column);
+    else if (column.default !== undefined) sql += ` DEFAULT ${this.getDefaultValue(column.default)}`;
     if (column.autoIncrement) sql += this.modifyAutoIncrement(column);
     if (column.comment) sql += this.modifyComment(column);
     return sql;
@@ -69,6 +70,10 @@ export abstract class Grammar {
   }
 
   protected modifyComment(_column: ColumnDefinition): string {
+    return "";
+  }
+
+  protected modifyDefaultUuid(_column: ColumnDefinition): string {
     return "";
   }
 

@@ -53,7 +53,8 @@ export class SQLiteGrammar extends Grammar {
     if (column.autoIncrement) sql += this.modifyAutoIncrement(column);
     else if (column.primary) sql += " PRIMARY KEY";
     if (!column.nullable) sql += " NOT NULL";
-    if (column.default !== undefined) sql += ` DEFAULT ${this.getDefaultValue(column.default)}`;
+    if (column.defaultUuid) sql += this.modifyDefaultUuid(column);
+    else if (column.default !== undefined) sql += ` DEFAULT ${this.getDefaultValue(column.default)}`;
     if (column.unique && !column.autoIncrement) sql += " UNIQUE";
     return sql;
   }

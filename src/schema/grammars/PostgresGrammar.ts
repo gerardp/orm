@@ -63,10 +63,15 @@ export class PostgresGrammar extends Grammar {
     return "";
   }
 
+  protected modifyDefaultUuid(_column: ColumnDefinition): string {
+    return " DEFAULT gen_random_uuid()";
+  }
+
   protected getColumn(_blueprint: any, column: ColumnDefinition): string {
     let sql = `${this.wrap(column.name)} ${this.getType(column)}`;
     if (!column.nullable) sql += " NOT NULL";
-    if (column.default !== undefined) sql += ` DEFAULT ${this.getDefaultValue(column.default)}`;
+    if (column.defaultUuid) sql += this.modifyDefaultUuid(column);
+    else if (column.default !== undefined) sql += ` DEFAULT ${this.getDefaultValue(column.default)}`;
     if (column.autoIncrement) sql += this.modifyAutoIncrement(column);
     if (column.unique) sql += " UNIQUE";
     if (column.primary) sql += " PRIMARY KEY";

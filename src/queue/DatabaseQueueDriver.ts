@@ -124,14 +124,27 @@ export class DatabaseQueueDriver implements QueueDriver {
     }
   }
 
+  private placeholders(count: number): string {
+    if (this.connection.getDriverName() === "postgres") {
+      return Array.from({ length: count }, (_, i) => `$${i + 1}`).join(", ");
+    }
+    return Array.from({ length: count }, () => "?").join(", ");
+  }
+
   async dispatch(queue: string, jobClass: string, payload: string, delaySeconds: number, maxAttempts: number): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
     const availableAt = now + delaySeconds;
     const t = this.table;
+    const driver = this.connection.getDriverName();
 
-    if (this.connection.getDriverName() === "mysql") {
+    if (driver === "mysql") {
       await this.connection.run(
         `INSERT INTO \`${t}\` (queue, job_class, payload, attempts, max_attempts, available_at, created_at) VALUES (?, ?, ?, 0, ?, ?, ?)`,
+        [queue, jobClass, payload, maxAttempts, availableAt, now],
+      );
+    } else if (driver === "postgres") {
+      await this.connection.run(
+        `INSERT INTO ${t} (queue, job_class, payload, attempts, max_attempts, available_at, created_at) VALUES ($1, $2, $3, 0, $4, $5, $6)`,
         [queue, jobClass, payload, maxAttempts, availableAt, now],
       );
     } else {
@@ -166,8 +179,26 @@ export class DatabaseQueueDriver implements QueueDriver {
       });
     }
 
+    if (driver === "postgres") {
+      return this.connection.transaction(async (conn) => {
+        const rows = (await conn.query(
+          `SELECT * FROM ${t}
+           WHERE queue = $1 AND (reserved_at IS NULL OR reserved_at <= $2) AND available_at <= $3
+           ORDER BY id ASC LIMIT 1 FOR UPDATE SKIP LOCKED`,
+          [queue, expiredCutoff, now],
+        )) as RawJobRow[];
+        const row = rows[0];
+        if (!row) return null;
+        await conn.run(
+          `UPDATE ${t} SET reserved_at = $1, attempts = attempts + 1 WHERE id = $2`,
+          [now, row.id],
+        );
+        return toJobRecord({ ...row, reserved_at: now, attempts: row.attempts + 1 });
+      });
+    }
+
     const skipLocked = "FOR UPDATE SKIP LOCKED";
-    const tq = driver === "mysql" ? `\`${t}\`` : t;
+    const tq = `\`${t}\``;
 
     return this.connection.transaction(async (conn) => {
       const rows = (await conn.query(
@@ -187,41 +218,66 @@ export class DatabaseQueueDriver implements QueueDriver {
   }
 
   async complete(id: number): Promise<void> {
-    const t = this.connection.getDriverName() === "mysql" ? `\`${this.table}\`` : this.table;
-    await this.connection.run(`DELETE FROM ${t} WHERE id = ?`, [id]);
+    const driver = this.connection.getDriverName();
+    const t = driver === "mysql" ? `\`${this.table}\`` : this.table;
+    if (driver === "postgres") {
+      await this.connection.run(`DELETE FROM ${t} WHERE id = $1`, [id]);
+    } else {
+      await this.connection.run(`DELETE FROM ${t} WHERE id = ?`, [id]);
+    }
   }
 
   async fail(id: number, exception: string): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
-    const t = this.connection.getDriverName() === "mysql" ? `\`${this.table}\`` : this.table;
-    const f = this.connection.getDriverName() === "mysql" ? `\`${this.failedTable}\`` : this.failedTable;
+    const driver = this.connection.getDriverName();
+    const t = driver === "mysql" ? `\`${this.table}\`` : this.table;
+    const f = driver === "mysql" ? `\`${this.failedTable}\`` : this.failedTable;
 
     await this.connection.transaction(async (conn) => {
-      const rows = (await conn.query(`SELECT * FROM ${t} WHERE id = ?`, [id])) as RawJobRow[];
+      const rows = (await conn.query(`SELECT * FROM ${t} WHERE id = ${driver === "postgres" ? "$1" : "?"}`, [id])) as RawJobRow[];
       const row = rows[0];
       if (!row) return;
-      await conn.run(
-        `INSERT INTO ${f} (queue, job_class, payload, exception, failed_at) VALUES (?, ?, ?, ?, ?)`,
-        [row.queue, row.job_class, row.payload, exception, now],
-      );
-      await conn.run(`DELETE FROM ${t} WHERE id = ?`, [id]);
+      if (driver === "postgres") {
+        await conn.run(
+          `INSERT INTO ${f} (queue, job_class, payload, exception, failed_at) VALUES ($1, $2, $3, $4, $5)`,
+          [row.queue, row.job_class, row.payload, exception, now],
+        );
+        await conn.run(`DELETE FROM ${t} WHERE id = $1`, [id]);
+      } else {
+        await conn.run(
+          `INSERT INTO ${f} (queue, job_class, payload, exception, failed_at) VALUES (?, ?, ?, ?, ?)`,
+          [row.queue, row.job_class, row.payload, exception, now],
+        );
+        await conn.run(`DELETE FROM ${t} WHERE id = ?`, [id]);
+      }
     });
   }
 
   async release(id: number, delaySeconds: number): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
     const availableAt = now + delaySeconds;
-    const t = this.connection.getDriverName() === "mysql" ? `\`${this.table}\`` : this.table;
-    await this.connection.run(
-      `UPDATE ${t} SET reserved_at = NULL, available_at = ? WHERE id = ?`,
-      [availableAt, id],
-    );
+    const driver = this.connection.getDriverName();
+    const t = driver === "mysql" ? `\`${this.table}\`` : this.table;
+    if (driver === "postgres") {
+      await this.connection.run(
+        `UPDATE ${t} SET reserved_at = NULL, available_at = $1 WHERE id = $2`,
+        [availableAt, id],
+      );
+    } else {
+      await this.connection.run(
+        `UPDATE ${t} SET reserved_at = NULL, available_at = ? WHERE id = ?`,
+        [availableAt, id],
+      );
+    }
   }
 
   async size(queue?: string): Promise<number> {
-    const t = this.connection.getDriverName() === "mysql" ? `\`${this.table}\`` : this.table;
+    const driver = this.connection.getDriverName();
+    const t = driver === "mysql" ? `\`${this.table}\`` : this.table;
     const rows = (queue
-      ? await this.connection.query(`SELECT COUNT(*) as cnt FROM ${t} WHERE queue = ?`, [queue])
+      ? driver === "postgres"
+        ? await this.connection.query(`SELECT COUNT(*) as cnt FROM ${t} WHERE queue = $1`, [queue])
+        : await this.connection.query(`SELECT COUNT(*) as cnt FROM ${t} WHERE queue = ?`, [queue])
       : await this.connection.query(`SELECT COUNT(*) as cnt FROM ${t}`)) as { cnt: number }[];
     return Number(rows[0]?.cnt ?? 0);
   }

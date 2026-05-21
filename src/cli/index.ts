@@ -15,6 +15,7 @@ import { makeMakeModelCommand } from "./MakeModelCommand.js";
 import { makeMakeMigrationCommand } from "./MakeMigrationCommand.js";
 import { makeMakeCommandCommand } from "../commands/cli/index.js";
 import { registerSearchCommands } from "../search/commands/index.js";
+import { makeMakeJobCommand } from "../queue/commands/index.js";
 import type { Connection } from "../connection/Connection.js";
 import type { BunnyConfig } from "../config/BunnyConfig.js";
 
@@ -34,6 +35,9 @@ export function registerOrmCommands(config: BunnyConfig, connection: Connection)
   registerCommand(makeMakeModelCommand(config));
   registerCommand(makeMakeMigrationCommand(config));
   registerCommand(makeMakeCommandCommand(config));
+  if (config.queue) {
+    registerCommand(makeMakeJobCommand(config));
+  }
   if (config.search) {
     registerSearchCommands(config);
   }

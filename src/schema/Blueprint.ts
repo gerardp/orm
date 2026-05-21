@@ -209,6 +209,11 @@ export class Blueprint {
     return this;
   }
 
+  defaultUuid(): this {
+    if (this.currentColumn) this.currentColumn.defaultUuid = true;
+    return this;
+  }
+
   unique(): this {
     if (this.currentColumn) {
       this.currentColumn.unique = true;

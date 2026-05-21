@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { join } from "path";
 import { mkdir, rm } from "fs/promises";
 import { Connection, ConnectionManager, Model, Schema, Seeder, SeederRunner, TenantContext, Factory } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { cleanupSqliteFile, setupTestDb } from "./helpers.js";
 
 class SeedUser extends Model {
   static table = "seed_users";
@@ -144,7 +144,7 @@ export default class SecondSeeder extends Seeder {
     setupTestDb();
 
     const tenantDb = join(process.cwd(), "tests", "temp_tenant_seed.sqlite");
-    await rm(tenantDb, { force: true });
+    await cleanupSqliteFile(tenantDb);
 
     ConnectionManager.setTenantResolver((tenantId) => ({
       strategy: "database",
@@ -172,7 +172,7 @@ export default class SecondSeeder extends Seeder {
     });
 
     await ConnectionManager.closeAll();
-    await rm(tenantDb, { force: true });
+    await cleanupSqliteFile(tenantDb);
   });
 
   test("Seeder.call accepts a single seeder or an object map of seeders", async () => {

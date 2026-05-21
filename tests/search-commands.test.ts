@@ -1,8 +1,11 @@
 import { describe, expect, test, beforeEach } from "bun:test";
+import { mkdir, rm, writeFile } from "fs/promises";
+import { join, relative } from "path";
 import { Model, Schema } from "../src/index.js";
 import { Search } from "../src/search/index.js";
 import type { SearchEngine, SearchableRecord } from "../src/search/index.js";
 import { importModel } from "../src/search/commands/importHelper.js";
+import { resolveSearchableModel } from "../src/search/commands/resolveSearchableModel.js";
 import { setupTestDb } from "./helpers.js";
 
 class TrackingEngine implements SearchEngine {
@@ -63,6 +66,33 @@ describe("Search command helpers", () => {
     const result = await importModel(FAKE_CONFIG, Widget as any, { chunk: 10, dryRun: true }, ctx);
     expect(result.total).toBe(3);
     expect(engine.updates).toHaveLength(0);
+  });
+
+  test("resolveSearchableModel finds default Search.define exports by file name", async () => {
+    const dir = join(process.cwd(), "tests", `temp_search_models_${Date.now()}`);
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, "Student.ts"),
+      [
+        `import { Model } from "../../src/index.js";`,
+        `import { Search } from "../../src/search/index.js";`,
+        ``,
+        `class _Student extends Model.define<{ id: number; name: string }>("students") {}`,
+        ``,
+        `const Student = Search.define(_Student, { index: "students" });`,
+        `export default Student;`,
+        ``,
+      ].join("\n"),
+      "utf-8",
+    );
+
+    try {
+      const config = { modelsPath: relative(process.cwd(), dir) } as any;
+      expect(await resolveSearchableModel(config, "Student")).toBeDefined();
+      expect(await resolveSearchableModel(config, "_Student")).toBeDefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -65,7 +65,7 @@ class _Post extends Model.define<PostAttributes>("posts") {
   static fillable = ["title", "body", "status"];
 }
 
-const Post = Search.register(_Post, {
+export const Post = Search.register(_Post, {
   index: "posts_v2",
   settings: {
     filterableAttributes: ["status"],
@@ -80,16 +80,16 @@ const Post = Search.register(_Post, {
   shouldBeSearchable: (m) => m.getAttribute("status") === "published",
 });
 
-export type Post = InstanceType<typeof Post>;
+export type PostInstance = InstanceType<typeof Post>;
 export default Post;
 ```
 
-Default-export `Post` carries the full searchable constructor type. The companion `export type Post` lets consumers annotate instances (`const p: Post = ...`). The underscore-prefixed `_Post` stays local — it is the un-augmented base.
+Default-export `Post` carries the full searchable constructor type. The companion `export type PostInstance` lets consumers annotate instances (`const p: PostInstance = ...`). The underscore-prefixed `_Post` stays local — it is the un-augmented base.
 
 ```ts
 // consumer
 import Post from "./app/models/Post";
-import type { Post as PostInstance } from "./app/models/Post";
+import type { PostInstance } from "./app/models/Post";
 
 const hits: PostInstance[] = await Post.search("rust").get();
 ```
@@ -98,14 +98,26 @@ Scaffold via CLI: `bunny make:searchable Post`.
 
 ### Alternative — `Search.define()`
 
-One-call shorthand when you don't need a separate base class.
+Wrap an existing model class, add the searchable API, and register the
+observer automatically.
 
 ```ts
+import { Model } from "@bunnykit/orm";
 import { Search } from "@bunnykit/orm/search";
 
-export class Post extends Search.define<PostAttrs>("posts", { index: "posts_v2" }) {
+class _Post extends Model.define<PostAttrs>("posts") {
   static fillable = ["title", "body", "status"];
 }
+
+export const Post = Search.define(_Post, { index: "posts_v2" });
+export type PostInstance = InstanceType<typeof Post>;
+export default Post;
+```
+
+The older one-call table shorthand is still supported:
+
+```ts
+export class Post extends Search.define<PostAttrs>("posts", { index: "posts_v2" }) {}
 ```
 
 ### Alternative — `Searchable` mixin
@@ -205,14 +217,17 @@ const posts = await Post.search("alpha").with("author", "tags").get();
 posts[0].author;   // loaded
 ```
 
+Hydrated search results use the same `Collection` type as ORM queries.
+`raw()` is the escape hatch when you want plain engine hits.
+
 ### Pagination
 
 ```ts
 const page  = await Post.search("alpha").paginate(15, 2);
-// { data, total, page, perPage }
+// { data: Collection<Post>, total, page, perPage }
 
 const simple = await Post.search("alpha").simplePaginate(15, 2);
-// { data, page, perPage, hasMore } — no total count query
+// { data: Collection<Post>, page, perPage, hasMore } — no total count query
 ```
 
 ### Streaming
@@ -278,6 +293,21 @@ Opt in to per-hit ranking scores:
 const hits = await Post.search("rust").withScore().raw();
 hits[0].score;   // number | undefined
 ```
+
+Restrict raw hit fields for display/autocomplete payloads:
+
+```ts
+const hits = await Student.search("michelle")
+  .searchOn("full_name")
+  .retrieve("id", "full_name")
+  .highlight("full_name")
+  .raw();
+
+hits[0].data;       // { id, full_name }
+hits[0].formatted;  // highlighted fields, when supported by the engine
+```
+
+`.display()` is an alias of `.retrieve()`.
 
 ### Per-query field weighting (boost)
 
@@ -534,7 +564,7 @@ interface SearchHit {
 }
 
 interface SearchPaginatorResult<T> {
-  data: T[];
+  data: Collection<T>;
   total: number;
   page: number;
   perPage: number;
@@ -542,7 +572,7 @@ interface SearchPaginatorResult<T> {
 }
 
 interface SearchFetchResult<T> {
-  data: T[];
+  data: Collection<T>;
   total: number;
   facetDistribution?: Record<string, Record<string, number>>;
 }
@@ -582,7 +612,7 @@ class _Post extends Model.define<PostAttributes>("posts") {
   static fillable = ["title", "body", "status"];
 }
 
-const Post = Search.register(_Post, {
+export const Post = Search.register(_Post, {
   index: "posts_fts",
   fts: {
     columns: ["title", "body"],          // tokenized
@@ -596,7 +626,7 @@ const Post = Search.register(_Post, {
   }),
 });
 
-export type Post = InstanceType<typeof Post>;
+export type PostInstance = InstanceType<typeof Post>;
 export default Post;
 ```
 

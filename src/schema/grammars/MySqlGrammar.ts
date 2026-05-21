@@ -57,6 +57,10 @@ export class MySqlGrammar extends Grammar {
     return column.autoIncrement ? " AUTO_INCREMENT" : "";
   }
 
+  protected modifyDefaultUuid(_column: ColumnDefinition): string {
+    return " DEFAULT (UUID())";
+  }
+
   protected modifyComment(column: ColumnDefinition): string {
     return column.comment ? ` COMMENT '${column.comment.replace(/'/g, "\\'")}'` : "";
   }
@@ -65,7 +69,8 @@ export class MySqlGrammar extends Grammar {
     let sql = `${this.wrap(column.name)} ${this.getType(column)}`;
     if (column.unsigned) sql += this.modifyUnsigned(column);
     if (!column.nullable) sql += " NOT NULL";
-    if (column.default !== undefined) sql += ` DEFAULT ${this.getDefaultValue(column.default)}`;
+    if (column.defaultUuid) sql += this.modifyDefaultUuid(column);
+    else if (column.default !== undefined) sql += ` DEFAULT ${this.getDefaultValue(column.default)}`;
     if (column.autoIncrement) sql += this.modifyAutoIncrement(column);
     if (column.unique) sql += " UNIQUE";
     if (column.primary) sql += " PRIMARY KEY";

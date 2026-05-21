@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach } from "bun:test";
-import { Model, Schema } from "../src/index.js";
+import { Collection, Model, Schema } from "../src/index.js";
 import { Search } from "../src/search/index.js";
 import type { SearchEngine, SearchableRecord, SearchHit, SearchPage, SearchQuery } from "../src/search/index.js";
 import { setupTestDb } from "./helpers.js";
@@ -84,6 +84,7 @@ describe("Search observer + builder", () => {
     const a = await Post.create({ title: "Alpha", body: "x" } as any);
     const b = await Post.create({ title: "Beta", body: "y" } as any);
     const results = await (Post as any).search("alpha").get();
+    expect(results).toBeInstanceOf(Collection);
     expect(results).toHaveLength(1);
     expect(results[0].getAttribute("id")).toBe(a.getAttribute("id" as any));
     const all = await (Post as any).search("").get();
@@ -98,6 +99,7 @@ describe("Search observer + builder", () => {
     for (let i = 0; i < 5; i++) await Post.create({ title: `Post ${i}`, body: "x" } as any);
     const page = await (Post as any).search("").paginate(2, 2);
     expect(page).toMatchObject({ total: 5, page: 2, perPage: 2 });
+    expect(page.data).toBeInstanceOf(Collection);
     expect(page.data).toHaveLength(2);
   });
 
@@ -123,6 +125,36 @@ describe("Search observer + builder", () => {
     const results = await (Widget as any).search("foo").get();
     expect(results).toHaveLength(1);
     expect(results[0].getAttribute("name")).toBe("Foo");
+  });
+
+  test("Search.define accepts a Model class and registers it automatically", async () => {
+    setupTestDb();
+    await Schema.create("comments", (t) => {
+      t.increments("id");
+      t.string("body");
+      t.timestamps();
+    });
+    Search.reset();
+
+    class _Comment extends Model.define<{ id: number; body: string }>("comments") {
+      static fillable = ["body"];
+    }
+
+    const Comment = Search.define(_Comment, {
+      index: "comments_v2",
+      toSearchableArray: (m) => ({ body: m.getAttribute("body") }),
+    });
+
+    const engine = new FakeEngine();
+    Search.configure({ engine });
+
+    const comment = await Comment.create({ body: "Needs indexing" } as any);
+    expect(engine.updates).toHaveLength(1);
+    expect(engine.updates[0]).toMatchObject({
+      index: "comments_v2",
+      id: comment.getAttribute("id" as any),
+      data: { body: "Needs indexing" },
+    });
   });
 
   test("shouldBeSearchable=false deletes instead of indexing", async () => {

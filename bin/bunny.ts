@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { redis, SQL } from "bun";
 import { Connection } from "../src/connection/Connection.js";
 import { ConnectionManager } from "../src/connection/ConnectionManager.js";
 import { TenantContext } from "../src/connection/TenantContext.js";
@@ -16,6 +17,8 @@ import { normalizePathList, snakeCase } from "../src/utils.js";
 import { discoverModelTables } from "../src/typegen/discoverModelTables.js";
 import type { ModelsPath } from "../src/config/BunnyConfig.js";
 import { DatabaseQueueDriver } from "../src/queue/DatabaseQueueDriver.js";
+import { RedisQueueDriver } from "../src/queue/RedisQueueDriver.js";
+import type { QueueDriver } from "../src/queue/QueueDriver.js";
 import { Worker } from "../src/queue/Worker.js";
 import { registerJob } from "../src/queue/Job.js";
 import { registerCommand, resolveCommand, listCommands, isCommandConstructor } from "../src/commands/Command.js";
@@ -501,6 +504,11 @@ async function createReplBootstrap(config: BunnyConfig): Promise<string> {
 
     async function loadModels(roots) {
       const loaded = {};
+      function registerModel(name, model) {
+        if (!name || typeof model !== "function" || !(model.prototype instanceof Model)) return;
+        loaded[name] = model;
+        globalThis[name] = model;
+      }
       for (const root of roots) {
         const resolvedRoot = resolve(process.cwd(), root);
         if (!existsSync(resolvedRoot)) continue;
@@ -509,16 +517,14 @@ async function createReplBootstrap(config: BunnyConfig): Promise<string> {
           const mod = await import(pathToFileURL(file).href);
           for (const [exportName, exported] of Object.entries(mod)) {
             if (exportName === "default") continue;
-            if (typeof exported === "function" && exported.prototype instanceof Model) {
-              const modelName = exportName;
-              loaded[modelName] = exported;
-              globalThis[modelName] = exported;
-            }
+            registerModel(exportName, exported);
           }
           if (typeof mod.default === "function" && mod.default.prototype instanceof Model) {
-            const modelName = mod.default.name || basename(file, extname(file));
-            loaded[modelName] = mod.default;
-            globalThis[modelName] = mod.default;
+            const fileName = basename(file, extname(file));
+            registerModel(fileName, mod.default);
+            if (mod.default.name && mod.default.name !== fileName) {
+              registerModel(mod.default.name, mod.default);
+            }
           }
         }
       }
@@ -752,7 +758,7 @@ async function main() {
     { name: "migrate:status",   sig: "migrate:status {--landlord} {--tenants} {--tenant=}",       desc: "Show migration status" },
     { name: "make:migration",   sig: "make:migration {name} {--model} {--m} {--dir=} {--models-dir=}", desc: "Create a new migration file" },
     { name: "make:model",       sig: "make:model {name} {--migration} {--m} {--dir=}",           desc: "Create a new model file" },
-    { name: "migrate:make",     sig: "migrate:make {name} {dir?}",                                desc: "Create a new migration file" },
+    { name: "migrate:make",    sig: "migrate:make {name} {dir?}",                                desc: "Create a new migration file" },
     { name: "db:seed",          sig: "db:seed {seeder?} {--landlord} {--tenants} {--tenant=}",    desc: "Run database seeders" },
     { name: "schema:dump",      sig: "schema:dump {path?}",                                       desc: "Dump current schema to SQL" },
     { name: "schema:squash",    sig: "schema:squash {path?}",                                     desc: "Dump schema and mark migrations as run" },
@@ -852,11 +858,26 @@ async function main() {
       const queueName   = getFlagValue(restArgs, "--queue") ?? config.queue?.defaultQueue ?? "default";
       const workerCount = parseInt(getFlagValue(restArgs, "--workers") ?? String(config.queue?.workers ?? 1), 10);
 
-      const driver = new DatabaseQueueDriver(connection, {
-        table: config.queue?.table,
-        failedTable: config.queue?.failedTable,
-      });
-      await driver.migrate();
+      let driver: QueueDriver;
+      if (config.queue?.driver === "db" || !config.queue?.driver) {
+        driver = new DatabaseQueueDriver(connection, {
+          table: config.queue?.table,
+          failedTable: config.queue?.failedTable,
+        });
+        await driver.migrate();
+      } else if (config.queue?.driver === "redis") {
+        driver = new RedisQueueDriver(redis, {
+          prefix: config.cache?.prefix ? `${config.cache.prefix}queue:` : undefined,
+        });
+      } else if (typeof config.queue?.driver === "object" && "reserve" in config.queue.driver) {
+        driver = config.queue.driver;
+      } else {
+        driver = new DatabaseQueueDriver(connection, {
+          table: config.queue?.table,
+          failedTable: config.queue?.failedTable,
+        });
+        await driver.migrate();
+      }
 
       for (const jobsPath of normalizePathList(config.queue?.jobsPath)) {
         const resolvedPath = resolve(process.cwd(), jobsPath);
@@ -878,6 +899,7 @@ async function main() {
         queue: queueName,
         concurrency: workerCount,
         retryAfterSeconds: config.queue?.retryAfterSeconds,
+        pollIntervalMs: config.queue?.pollIntervalMs,
       });
       console.log(`[Queue] Worker started. queue=${queueName} concurrency=${workerCount}`);
       const shutdown = () => { console.log("\n[Queue] Shutting down..."); worker.stop(); };

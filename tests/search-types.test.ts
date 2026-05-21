@@ -5,7 +5,7 @@
  * regresses, type-checking fails. Runtime body is trivial.
  */
 import { test, expect } from "bun:test";
-import { Model } from "../src/index.js";
+import { Collection, Model } from "../src/index.js";
 import {
   Search,
   Searchable,
@@ -53,6 +53,17 @@ const TArticle = Search.register(_TArticle, {
   },
 });
 
+class _TComment extends Model.define<{ id: number; body: string }>("t_comments") {
+  static fillable = ["body"];
+}
+const TComment = Search.define(_TComment, {
+  index: "comments",
+  shouldBeSearchable: (m) => {
+    expectType<string>(m.getAttribute("body"));
+    return true;
+  },
+});
+
 // ── Style 3: Searchable mixin ───────────────────────────────────────────────
 
 class TWidget extends Searchable(
@@ -70,11 +81,13 @@ function _typeAssertions(): void {
     // Static API exists on each style. Builder<M> = base attribute shape.
     expectAssignable<SearchBuilder<PostBase>>(TPost.search("foo"));
     expectAssignable<SearchBuilder<any>>(TArticle.search("foo"));
+    expectAssignable<SearchBuilder<_TComment>>(TComment.search("foo"));
     expectAssignable<SearchBuilder<any>>(TWidget.search("foo"));
 
     // searchableAs() returns string on all styles.
     expectType<string>(TPost.searchableAs());
     expectType<string>(TArticle.searchableAs());
+    expectType<string>(TComment.searchableAs());
     expectType<string>(TWidget.searchableAs());
 
     // Builder chain methods return SearchBuilder<M> for fluent chaining.
@@ -108,7 +121,7 @@ function _typeAssertions(): void {
     expectAssignable<SearchBuilder<PostBase>>(chained);
 
     // Execution shapes carry the model type.
-    expectAssignable<Promise<PostBase[]>>(chained.get());
+    expectAssignable<Promise<Collection<PostBase>>>(chained.get());
     expectType<Promise<SearchHit[]>>(chained.raw());
     expectAssignable<Promise<SearchPaginatorResult<PostBase>>>(chained.paginate(15, 1));
     expectAssignable<Promise<SearchSimplePaginatorResult<PostBase>>>(chained.simplePaginate(15, 1));
@@ -119,14 +132,17 @@ function _typeAssertions(): void {
     // Instance methods exposed by every style.
     const post = new TPost();
     const article = new (TArticle as any)();
+    const comment = new TComment();
     const widget = new TWidget();
     expectType<Promise<void>>(post.searchable());
     expectType<Promise<void>>(post.unsearchable());
     expectType<Promise<void>>(article.searchable());
+    expectType<Promise<void>>(comment.searchable());
     expectType<Promise<void>>(widget.searchable());
 
     // register() returns a SearchableModelConstructor.
     expectAssignable<SearchableModelConstructor<_TArticle>>(TArticle);
+    expectAssignable<SearchableModelConstructor<_TComment>>(TComment);
 
     // Model attributes still flow through .getAttribute() on the typed shape.
     expectType<number>(post.getAttribute("id"));
@@ -178,6 +194,8 @@ function _typeAssertions(): void {
       .facets("status", "title")
       .minScore(0.4)
       .searchOn("title", "status")
+      .retrieve("id", "title")
+      .display("id", "title")
       .boost("title")
       .highlight("title", "status")
       .highlightTags("<em>", "</em>")
@@ -196,6 +214,8 @@ function _typeAssertions(): void {
     TPost.search("").highlightTags(42, "</em>");
     // @ts-expect-error - crop length must be number.
     TPost.search("").crop("title", "long");
+    // @ts-expect-error - retrieve fields must be strings.
+    TPost.search("").retrieve(123);
     // @ts-expect-error - facets is variadic of strings.
     TPost.search("").facets(123);
     // @ts-expect-error - withScore takes no args.
@@ -209,7 +229,7 @@ function _typeAssertions(): void {
 
     // paginate result optionally carries facetDistribution.
     const page: SearchPaginatorResult<PostBase> = {
-      data: [],
+      data: new Collection<PostBase>(),
       total: 0,
       page: 1,
       perPage: 10,

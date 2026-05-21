@@ -17,35 +17,37 @@ function snakeCase(s: string): string {
 }
 
 function buildStub(className: string): string {
-  const table = `${snakeCase(className)}s`;
-  return `import { Model } from "@bunnykit/orm";
-import { Search } from "@bunnykit/orm/search";
-
-export interface ${className}Attributes {
-  id: number;
-  // TODO: add searchable fields
-  created_at: string;
-  updated_at: string;
-}
-
-class _${className} extends Model.define<${className}Attributes>("${table}") {
-  static fillable: string[] = [];
-}
-
-const ${className} = Search.register(_${className}, {
-  index: "${table}",
-  // settings: {
-  //   filterableAttributes: [],
-  //   sortableAttributes: ["created_at"],
-  //   searchableAttributes: [],
-  // },
-  // toSearchableArray: (m) => m.toJSON(),
-  // shouldBeSearchable: (m) => true,
-});
-
-export type ${className} = InstanceType<typeof ${className}>;
-export default ${className};
-`;
+  const table = snakeCase(className) + "s";
+  return [
+    `import { Model } from "@bunnykit/orm";`,
+    `import { Search } from "@bunnykit/orm/search";`,
+    ``,
+    `export interface ${className}Attributes {`,
+    `  id: number;`,
+    `  // TODO: add searchable fields`,
+    `  created_at: string;`,
+    `  updated_at: string;`,
+    `}`,
+    ``,
+    `class _${className} extends Model.define<${className}Attributes>("${table}") {`,
+    `  static fillable: string[] = [];`,
+    `}`,
+    ``,
+    `export const ${className} = Search.define(_${className}, {`,
+    `  index: "${table}",`,
+    `  // settings: {`,
+    `  //   filterableAttributes: [],`,
+    `  //   sortableAttributes: ["created_at"],`,
+    `  //   searchableAttributes: [],`,
+    `  // },`,
+    `  // toSearchableArray: (m) => m.toJSON(),`,
+    `  // shouldBeSearchable: (m) => true,`,
+    `});`,
+    ``,
+    `export type ${className}Instance = InstanceType<typeof ${className}>;`,
+    `export default ${className};`,
+    ``,
+  ].join("\n");
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -53,7 +55,9 @@ async function exists(path: string): Promise<boolean> {
 }
 
 export function makeMakeSearchableCommand(config: BunnyConfig) {
-  return class extends Command.define("make:searchable {name : Model class name} {--dir= : Directory to create the model in}") {
+  return class extends Command.define(
+    "make:searchable {name : Model class name} {--dir= : Directory to create the model in}",
+  ) {
     static description = "Scaffold a searchable model wired up with Search.define().";
 
     async handle() {
@@ -64,6 +68,7 @@ export function makeMakeSearchableCommand(config: BunnyConfig) {
         ?? "./app/models";
 
       await mkdir(modelsDir, { recursive: true });
+
       const modelPath = join(modelsDir, `${className}.ts`);
       if (await exists(modelPath)) {
         this.warn(`Skipped: ${modelPath} already exists`);

@@ -1,4 +1,4 @@
-export { Queue } from "./Queue.js";
+export { Queue, dispatch } from "./Queue.js";
 export { DispatchableJob, registerJob, resolveJob } from "./Job.js";
 export type { JobConstructor, JobStatics, DispatchOptions } from "./Job.js";
 export { DatabaseQueueDriver } from "./DatabaseQueueDriver.js";

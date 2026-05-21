@@ -1,7 +1,7 @@
 import { expect, test, describe } from "bun:test";
-import { rm } from "fs/promises";
 import { join } from "path";
 import { Connection } from "../src/index.js";
+import { cleanupSqliteFile } from "./helpers.js";
 
 describe("Connection", () => {
   test("creates connection from sqlite url", () => {
@@ -64,9 +64,7 @@ describe("Connection", () => {
       expect(synchronous[0].synchronous).toBe(1);
     } finally {
       await conn.close();
-      await rm(dbPath, { force: true });
-      await rm(`${dbPath}-wal`, { force: true });
-      await rm(`${dbPath}-shm`, { force: true });
+      await cleanupSqliteFile(dbPath);
     }
   });
 

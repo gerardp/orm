@@ -2,6 +2,7 @@ import { expect, test, describe, beforeAll, afterAll } from "bun:test";
 import { mkdir, rm, writeFile } from "fs/promises";
 import { join } from "path";
 import { ConnectionManager, configureBunny, Schema } from "../src/index.js";
+import { cleanupSqliteFile } from "./helpers.js";
 
 const MIGRATIONS_DIR = join(process.cwd(), "tests", "temp_bcf_migrations");
 const TENANT_MIGRATIONS_DIR = join(process.cwd(), "tests", "temp_bcf_tenant_migrations");
@@ -231,7 +232,7 @@ export default class WidgetSeeder extends Seeder {
       expect(await file.exists()).toBe(true);
     } finally {
       await bunny.connection.close();
-      await rm(dbPath, { force: true });
+      await cleanupSqliteFile(dbPath);
     }
   });
 });

@@ -13,6 +13,7 @@ import type { ModelDeclaration } from "../typegen/TypeGenerator.js";
 import type { ConnectionConfig } from "../types/index.js";
 import { Queue } from "../queue/Queue.js";
 import { DatabaseQueueDriver } from "../queue/DatabaseQueueDriver.js";
+import { RedisQueueDriver } from "../queue/RedisQueueDriver.js";
 import type { QueueDriver } from "../queue/QueueDriver.js";
 import { Search } from "../search/SearchManager.js";
 import type { SearchEngine } from "../search/SearchEngine.js";
@@ -60,13 +61,16 @@ export interface BunnyConfig {
     defaultTtl?: number;
   };
   queue?: {
-    driver?: QueueDriver;
+    driver?: "db" | "redis" | QueueDriver;
     defaultQueue?: string;
     workers?: number;
     jobsPath?: string | string[];
     retryAfterSeconds?: number;
+    pollIntervalMs?: number;
     table?: string;
     failedTable?: string;
+    connection?: ConnectionConfig;
+    redis?: { url?: string };
   };
   commands?: {
     commandsPath?: string | string[];
@@ -150,11 +154,28 @@ export function configureBunny(config: BunnyConfig): ConfiguredBunny {
   }
 
   if (config.queue) {
-    const queueDriver = config.queue.driver ?? new DatabaseQueueDriver(connection, {
-      table: config.queue.table,
-      failedTable: config.queue.failedTable,
-    });
-    Queue.configure(queueDriver, config.queue.defaultQueue ?? "default");
+    let driver: QueueDriver;
+    if (config.queue.driver === "db" || config.queue.driver === "redis") {
+      if (config.queue.driver === "db") {
+        const dbConnection = config.queue.connection
+          ? new Connection(config.queue.connection)
+          : connection;
+        driver = new DatabaseQueueDriver(dbConnection, {
+          table: config.queue.table,
+          failedTable: config.queue.failedTable,
+        });
+      } else {
+        driver = new RedisQueueDriver(redis, {
+          prefix: config.cache?.prefix ? `${config.cache.prefix}queue:` : undefined,
+        });
+      }
+    } else {
+      driver = config.queue.driver ?? new DatabaseQueueDriver(connection, {
+        table: config.queue.table,
+        failedTable: config.queue.failedTable,
+      });
+    }
+    Queue.configure(driver, config.queue.defaultQueue ?? "default");
   }
 
   if (config.search) {
