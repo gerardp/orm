@@ -163,6 +163,24 @@ describe("SearchBuilder filter compilation + execution", () => {
     expect(engine.lastQuery!.offset).toBe(0);
   });
 
+  test("rawPaginate returns engine page metadata without hydration", async () => {
+    const engine = await setup();
+    engine.responder = () => [
+      { id: 1, data: { title: "Jane Doe" } },
+      { id: 2, data: { title: "John Doe" } },
+    ];
+
+    const page = await (Post as any).search("doe").rawPaginate(10, 2);
+
+    expect(page.page).toBe(2);
+    expect(page.perPage).toBe(10);
+    expect(page.total).toBe(2);
+    expect(page.hits).toEqual([
+      { id: 1, data: { title: "Jane Doe" } },
+      { id: 2, data: { title: "John Doe" } },
+    ]);
+  });
+
   test(".with() eager-loads relations during hydration", async () => {
     const engine = await setup();
     const author = await Author.create({ name: "A" } as any);

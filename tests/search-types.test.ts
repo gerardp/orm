@@ -5,7 +5,7 @@
  * regresses, type-checking fails. Runtime body is trivial.
  */
 import { test, expect } from "bun:test";
-import { Collection, Model } from "../src/index.js";
+import { Collection, Connection, Model } from "../src/index.js";
 import {
   Search,
   Searchable,
@@ -16,9 +16,11 @@ import {
   type SearchPaginatorResult,
   type SearchSimplePaginatorResult,
   type SearchFetchResult,
+  type SearchPage,
   type SearchMultiResult,
   type FacetDistribution,
   type MatchPosition,
+  type SearchCapabilities,
 } from "../src/search/index.js";
 
 function expectType<T>(_v: T): void {}
@@ -124,6 +126,7 @@ function _typeAssertions(): void {
     expectAssignable<Promise<Collection<PostBase>>>(chained.get());
     expectType<Promise<SearchHit[]>>(chained.raw());
     expectAssignable<Promise<SearchPaginatorResult<PostBase>>>(chained.paginate(15, 1));
+    expectAssignable<Promise<SearchPage>>(chained.rawPaginate(15, 1));
     expectAssignable<Promise<SearchSimplePaginatorResult<PostBase>>>(chained.simplePaginate(15, 1));
 
     // Cursor is an AsyncGenerator of base model type.
@@ -150,6 +153,19 @@ function _typeAssertions(): void {
 
     // Engine API — Search.configure accepts MeilisearchEngine instance.
     Search.configure({ engine: new MeilisearchEngine({ host: "http://x" }) });
+    Search.configure({ engine: "meilisearch" });
+    Search.configure({ engine: "meili" });
+    Search.configure({ engine: "pg" });
+    Search.configure({ engine: "postgres" });
+    Search.configure({ engine: "postgres-fts" });
+    Search.configure({ engine: "sqlite" });
+    Search.configure({ engine: "sqlite-fts5" });
+    Search.configure({ engine: "pg", connection: { url: "postgres://localhost/postgres" } });
+    Search.configure({ engine: "sqlite", connection: { url: "sqlite://:memory:" } });
+    Search.configure({ engine: "sqlite", connection: new Connection({ url: "sqlite://:memory:" }) });
+    Search.configure({ engine: "meilisearch", host: "http://localhost:7700" });
+    Search.configure({ engine: "meilisearch", apiKey: "secret" });
+    Search.configure({ engine: "meilisearch", host: "http://localhost:7700", apiKey: "secret" });
     Search.configure({
       engine: new MeilisearchEngine({ host: "http://x" }),
       queue: { name: "scout" },
@@ -159,6 +175,22 @@ function _typeAssertions(): void {
     // Negative checks: unsupported operations should error.
     // @ts-expect-error - search() requires string query.
     TPost.search(42);
+    // @ts-expect-error - unknown search engine alias.
+    Search.configure({ engine: "elastic" });
+    // @ts-expect-error - connection must be a Connection or ConnectionConfig.
+    Search.configure({ engine: "sqlite", connection: "search" });
+    // @ts-expect-error - Meilisearch alias does not accept database connection.
+    Search.configure({ engine: "meilisearch", connection: { url: "sqlite://:memory:" } });
+    // @ts-expect-error - host must be a string.
+    Search.configure({ engine: "meilisearch", host: 123 });
+    // @ts-expect-error - apiKey must be a string.
+    Search.configure({ engine: "meilisearch", apiKey: 123 });
+    // @ts-expect-error - PostgreSQL alias does not accept Meilisearch host.
+    Search.configure({ engine: "pg", host: "http://localhost:7700" });
+    // @ts-expect-error - SQLite alias does not accept Meilisearch API key.
+    Search.configure({ engine: "sqlite", apiKey: "secret" });
+    // @ts-expect-error - custom engine instances do not accept alias options.
+    Search.configure({ engine: new MeilisearchEngine({ host: "http://x" }), host: "http://localhost:7700" });
     // @ts-expect-error - non-searchable Model.define result has no .search() static.
     Model.define<{ id: number }>("nope").search("x");
     // @ts-expect-error - chunkSize must be number.
@@ -346,6 +378,11 @@ function _typeAssertions(): void {
 
     const meiliEng = new MeilisearchEngine({ host: "http://x" });
     expectType<Promise<boolean>>(meiliEng.indexExists("posts"));
+    expectType<SearchCapabilities>(Search.capabilities());
+    expectType<boolean>(Search.supports("indexSettings"));
+    expectType<boolean>(Search.supports("nativeMultiSearch"));
+    // @ts-expect-error - unknown capability.
+    Search.supports("unknown");
   }
 }
 

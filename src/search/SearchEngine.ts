@@ -124,6 +124,28 @@ export interface SearchTaskStatus {
   error?: { message: string; code?: string };
 }
 
+export type SearchMatchesPositionSupport = "native" | "approximate" | false;
+
+export interface SearchCapabilities {
+  /** Engine can execute multi-search in one native engine call. False means Search.multi() falls back to sequential queries. */
+  nativeMultiSearch: boolean;
+  /** Engine supports applying index settings via updateIndexSettings(). */
+  indexSettings: boolean;
+  /** Match position source/quality. */
+  matchesPosition: SearchMatchesPositionSupport;
+  highlight: boolean;
+  crop: boolean;
+  facets: boolean;
+  minScore: boolean;
+  searchOn: boolean;
+  rawQuery: boolean;
+  typoTolerance: boolean;
+  vector: boolean;
+  hybrid: boolean;
+}
+
+export type SearchCapability = keyof SearchCapabilities;
+
 export interface SearchEngine {
   update(records: SearchableRecord[]): Promise<void>;
   delete(records: SearchableRecord[]): Promise<void>;
@@ -132,7 +154,8 @@ export interface SearchEngine {
   flush(index: string): Promise<void>;
   createIndex(name: string, options?: Record<string, unknown>): Promise<void>;
   deleteIndex(name: string): Promise<void>;
-  updateIndexSettings(name: string, settings: Record<string, unknown>): Promise<void>;
+  updateIndexSettings?(name: string, settings: Record<string, unknown>): Promise<void>;
+  capabilities?(): SearchCapabilities;
   health?(): Promise<SearchHealth>;
   multiSearch?(queries: SearchQuery[]): Promise<SearchMultiResult[]>;
   /** Returns true if the named index already exists in the engine. */

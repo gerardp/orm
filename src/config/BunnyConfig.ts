@@ -16,7 +16,7 @@ import { DatabaseQueueDriver } from "../queue/DatabaseQueueDriver.js";
 import { RedisQueueDriver } from "../queue/RedisQueueDriver.js";
 import type { QueueDriver } from "../queue/QueueDriver.js";
 import { Search } from "../search/SearchManager.js";
-import type { SearchEngine } from "../search/SearchEngine.js";
+import type { SearchConfig } from "../search/SearchManager.js";
 
 export interface ModelsPath {
   landlord?: string | string[];
@@ -75,14 +75,7 @@ export interface BunnyConfig {
   commands?: {
     commandsPath?: string | string[];
   };
-  search?: {
-    engine: SearchEngine;
-    queue?: { connection?: string; name?: string };
-    chunk?: number;
-    batch?: { maxItems?: number; maxMs?: number };
-    tenantScope?: (baseIndex: string, tenantId: string | null) => string;
-    listTenants?: () => string[] | Promise<string[]>;
-  };
+  search?: SearchConfig;
 }
 
 export interface ConfiguredBunny {
@@ -180,11 +173,7 @@ export function configureBunny(config: BunnyConfig): ConfiguredBunny {
 
   if (config.search) {
     Search.configure({
-      engine: config.search.engine,
-      queue: config.search.queue,
-      chunk: config.search.chunk,
-      batch: config.search.batch,
-      tenantScope: config.search.tenantScope,
+      ...config.search,
       // Pull tenant lister from search-specific config, otherwise inherit the
       // global tenancy lister so `search:list-indexes --all-tenants` works
       // without duplicating config.

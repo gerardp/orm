@@ -1,7 +1,12 @@
 import { Model } from "../model/Model.js";
 import type { ModelConstructor } from "../model/Model.js";
-import type { SearchEngine, SearchMultiResult, SearchableRecord } from "./SearchEngine.js";
+import { Connection } from "../connection/Connection.js";
+import type { ConnectionConfig } from "../types/index.js";
+import type { SearchCapabilities, SearchCapability, SearchEngine, SearchMultiResult, SearchableRecord } from "./SearchEngine.js";
 import type { SearchBuilder } from "./SearchBuilder.js";
+import { MeilisearchEngine } from "./engines/MeilisearchEngine.js";
+import { PostgresFTSEngine } from "./engines/PostgresFTSEngine.js";
+import { SqliteFTS5Engine } from "./engines/SqliteFTS5Engine.js";
 import { attachSearchObserver, detachSearchObservers } from "./SearchObserver.js";
 import {
   applySearchableStatics,
@@ -19,8 +24,20 @@ export interface SearchBatchConfig {
   maxMs?: number;
 }
 
-export interface SearchConfig {
-  engine: SearchEngine;
+export type SearchEngineName =
+  | "meilisearch"
+  | "meili"
+  | "pg"
+  | "postgres"
+  | "postgres-fts"
+  | "sqlite"
+  | "sqlite-fts5";
+
+type MeilisearchEngineName = "meilisearch" | "meili";
+type PostgresSearchEngineName = "pg" | "postgres" | "postgres-fts";
+type SqliteSearchEngineName = "sqlite" | "sqlite-fts5";
+
+interface BaseSearchConfig {
   queue?: { connection?: string; name?: string };
   chunk?: number;
   batch?: SearchBatchConfig;
@@ -50,7 +67,26 @@ export interface SearchConfig {
   listTenants?: () => string[] | Promise<string[]>;
 }
 
-let currentConfig: SearchConfig | null = null;
+export type SearchConfig =
+  | (BaseSearchConfig & {
+    engine: MeilisearchEngineName;
+    /** Meilisearch host. Falls back to MEILISEARCH_HOST / MEILI_HOST. */
+    host?: string;
+    /** Meilisearch API key. Falls back to MEILISEARCH_API_KEY / MEILI_KEY / MEILI_MASTER_KEY. */
+    apiKey?: string;
+  })
+  | (BaseSearchConfig & {
+    engine: PostgresSearchEngineName | SqliteSearchEngineName;
+    /** Dedicated DB connection for the built-in PostgreSQL/SQLite aliases. */
+    connection?: Connection | ConnectionConfig;
+  })
+  | (BaseSearchConfig & {
+    engine: SearchEngine;
+  });
+
+type ResolvedSearchConfig = Omit<SearchConfig, "engine"> & { engine: SearchEngine };
+
+let currentConfig: ResolvedSearchConfig | null = null;
 const observed = new Set<ModelConstructor>();
 const pending = new Set<ModelConstructor>();
 
@@ -109,6 +145,79 @@ function attachIfReady(modelClass: ModelConstructor): void {
   }
 }
 
+const defaultCapabilities: SearchCapabilities = {
+  nativeMultiSearch: false,
+  indexSettings: false,
+  matchesPosition: false,
+  highlight: false,
+  crop: false,
+  facets: false,
+  minScore: false,
+  searchOn: false,
+  rawQuery: false,
+  typoTolerance: false,
+  vector: false,
+  hybrid: false,
+};
+
+function engineCapabilities(engine: SearchEngine): SearchCapabilities {
+  return engine.capabilities ? engine.capabilities() : { ...defaultCapabilities };
+}
+
+function env(name: string): string | undefined {
+  return typeof process !== "undefined" ? process.env?.[name] : undefined;
+}
+
+function resolveConnection(connection: Connection | ConnectionConfig | undefined): Connection | undefined {
+  if (!connection) return undefined;
+  return connection instanceof Connection ? connection : new Connection(connection);
+}
+
+function resolveSearchEngine(config: SearchConfig): SearchEngine {
+  const { engine } = config;
+  if (typeof engine !== "string") {
+    if (
+      ("connection" in config && config.connection) ||
+      ("host" in config && config.host) ||
+      ("apiKey" in config && config.apiKey)
+    ) {
+      throw new Error("Search.configure: `connection`, `host`, and `apiKey` are only supported with built-in engine aliases. Pass options to the custom engine constructor instead.");
+    }
+    return engine;
+  }
+
+  switch (engine) {
+    case "meilisearch":
+    case "meili":
+      if ("connection" in config && config.connection) {
+        throw new Error("Search.configure: `connection` is not supported for the Meilisearch engine alias.");
+      }
+      return new MeilisearchEngine({
+        host: config.host ?? env("MEILISEARCH_HOST") ?? env("MEILI_HOST") ?? "http://127.0.0.1:7700",
+        apiKey: config.apiKey ?? env("MEILISEARCH_API_KEY") ?? env("MEILI_KEY") ?? env("MEILI_MASTER_KEY"),
+      });
+    case "pg":
+    case "postgres":
+    case "postgres-fts":
+      if (("host" in config && config.host) || ("apiKey" in config && config.apiKey)) {
+        throw new Error("Search.configure: `host` and `apiKey` are only supported for the Meilisearch engine alias.");
+      }
+      return config.connection
+        ? new PostgresFTSEngine({ connection: resolveConnection(config.connection) })
+        : new PostgresFTSEngine({ shared: true });
+    case "sqlite":
+    case "sqlite-fts5":
+      if (("host" in config && config.host) || ("apiKey" in config && config.apiKey)) {
+        throw new Error("Search.configure: `host` and `apiKey` are only supported for the Meilisearch engine alias.");
+      }
+      return config.connection
+        ? new SqliteFTS5Engine({ connection: resolveConnection(config.connection) })
+        : new SqliteFTS5Engine({ shared: true });
+    default:
+      throw new Error(`Unknown search engine "${engine}". Expected one of: meilisearch, pg, sqlite.`);
+  }
+}
+
 type SearchableClass<TBase extends ModelConstructor> = TBase
   & SearchableModelStatics<InstanceType<TBase>>
   & { new (...args: any[]): InstanceType<TBase> & SearchableInstance };
@@ -136,7 +245,7 @@ function defineSearch(
 
 export const Search = {
   configure(config: SearchConfig): void {
-    currentConfig = config;
+    currentConfig = { ...config, engine: resolveSearchEngine(config) };
     for (const m of pending) {
       attachSearchObserver(m);
       observed.add(m);
@@ -215,7 +324,15 @@ export const Search = {
     return currentConfig.engine;
   },
 
-  config(): SearchConfig | null {
+  capabilities(): SearchCapabilities {
+    return engineCapabilities(this.engine());
+  },
+
+  supports(capability: SearchCapability): boolean {
+    return Boolean(this.capabilities()[capability]);
+  },
+
+  config(): ResolvedSearchConfig | null {
     return currentConfig;
   },
 
@@ -314,6 +431,6 @@ export function getSearchEngine(): SearchEngine {
   return Search.engine();
 }
 
-export function getSearchConfig(): SearchConfig | null {
+export function getSearchConfig(): ResolvedSearchConfig | null {
   return currentConfig;
 }

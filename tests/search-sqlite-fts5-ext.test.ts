@@ -45,6 +45,30 @@ describe("SqliteFTS5Engine — highlight + snippet", () => {
     const snip = hits[0].formatted!.body as string;
     expect(snip).toContain("<b>rust</b>");
   });
+
+  test("matchesPosition returns best-effort character offsets for searched fields", async () => {
+    const { engine } = freshEngine();
+    engine.configureIndex("posts_fts", { columns: ["title", "body"] });
+    await engine.createIndex("posts_fts");
+    await engine.update([
+      { index: "posts_fts", id: 1, data: { title: "Rust lang", body: "Rust ownership and rust borrow" } },
+    ]);
+
+    const hits = await engine.search({
+      index: "posts_fts",
+      query: "rust",
+      filters: [],
+      sorts: [],
+      attributesToSearchOn: ["body"],
+    });
+
+    expect(hits[0].matchesPosition).toEqual({
+      body: [
+        { start: 0, length: 4 },
+        { start: 19, length: 4 },
+      ],
+    });
+  });
 });
 
 describe("SqliteFTS5Engine — matchRaw (prefix / boolean)", () => {

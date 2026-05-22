@@ -9,8 +9,10 @@ import type {
   SearchMultiResult,
   SearchPage,
   SearchQuery,
+  SearchCapabilities,
   SearchableRecord,
 } from "../SearchEngine.js";
+import { computeMatchesPosition } from "../matchPositions.js";
 
 /** Type-safe helper for defining an FTS5 schema from a model's attribute interface. */
 export function defineFtsConfig<Attrs>(
@@ -99,6 +101,23 @@ export class SqliteFTS5Engine implements SearchEngine {
         this.indexConfigs.set(name, cfg);
       }
     }
+  }
+
+  capabilities(): SearchCapabilities {
+    return {
+      nativeMultiSearch: false,
+      indexSettings: false,
+      matchesPosition: "approximate",
+      highlight: true,
+      crop: true,
+      facets: true,
+      minScore: true,
+      searchOn: true,
+      rawQuery: true,
+      typoTolerance: false,
+      vector: false,
+      hybrid: false,
+    };
   }
 
   /** Register or replace the FTS5 schema for an index. */
@@ -258,15 +277,6 @@ export class SqliteFTS5Engine implements SearchEngine {
     const conn = this.connection();
     if (this.useTriggers) await this.dropTriggers(name);
     await conn.run(`DROP TABLE IF EXISTS ${this.quoteIdent(name)}`);
-  }
-
-  /**
-   * FTS5 has no per-index settings endpoint. Settings are applied at table
-   * creation. This is a no-op kept for `SearchEngine` parity; settings
-   * surface via `configureIndex()` instead.
-   */
-  async updateIndexSettings(_name: string, _settings: Record<string, unknown>): Promise<void> {
-    // intentional no-op
   }
 
   async indexExists(name: string): Promise<boolean> {
@@ -689,6 +699,9 @@ export class SqliteFTS5Engine implements SearchEngine {
   private toHits(rows: any[], query: SearchQuery): SearchHit[] {
     const cfg = this.requireConfig(query.index);
     const cols = this.allColumns(cfg);
+    const matchFields = query.attributesToSearchOn && query.attributesToSearchOn.length > 0
+      ? query.attributesToSearchOn.filter((field) => cfg.columns.includes(field))
+      : cfg.columns;
     return rows.map((row) => {
       const data: Record<string, unknown> = {};
       for (const c of cols) data[c] = row[c];
@@ -710,6 +723,8 @@ export class SqliteFTS5Engine implements SearchEngine {
         }
       }
       if (Object.keys(formatted).length > 0) hit.formatted = formatted;
+      const matchesPosition = computeMatchesPosition(query, data, matchFields);
+      if (matchesPosition) hit.matchesPosition = matchesPosition;
       return hit;
     });
   }

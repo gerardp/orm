@@ -1,5 +1,5 @@
 export { Search, getSearchEngine, getSearchConfig } from "./SearchManager.js";
-export type { SearchConfig, SearchBatchConfig } from "./SearchManager.js";
+export type { SearchConfig, SearchBatchConfig, SearchEngineName } from "./SearchManager.js";
 export { Searchable, makeSearchableRecord, applySearchableStatics } from "./Searchable.js";
 export type {
   SearchableModelConstructor,
@@ -20,6 +20,11 @@ export type {
   SqliteFTS5EngineOptions,
   SqliteFTS5IndexConfig,
 } from "./engines/SqliteFTS5Engine.js";
+export { PostgresFTSEngine } from "./engines/PostgresFTSEngine.js";
+export type {
+  PostgresFTSEngineOptions,
+  PostgresFTSIndexConfig,
+} from "./engines/PostgresFTSEngine.js";
 export {
   MEILISEARCH_SETTING_KEYS,
   validateMeilisearchSettings,
@@ -44,6 +49,9 @@ export type {
   SearchCrop,
   SearchMultiResult,
   SearchTaskStatus,
+  SearchCapabilities,
+  SearchCapability,
+  SearchMatchesPositionSupport,
   FacetDistribution,
   FacetRange,
   MatchPosition,

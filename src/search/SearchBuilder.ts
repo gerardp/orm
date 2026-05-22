@@ -336,6 +336,14 @@ export class SearchBuilder<M = Model> {
     };
   }
 
+  /**
+   * Raw page result from the active search engine.
+   * Returns engine hits and pagination metadata without ORM hydration.
+   */
+  async rawPaginate(perPage = 15, page = 1): Promise<SearchPage> {
+    return getSearchEngine().paginate(this.buildQuery(), perPage, page);
+  }
+
   /** Page-shape result that always carries facet distribution when facets are set. */
   async fetch(limit?: number): Promise<SearchFetchResult<M>> {
     const result = await getSearchEngine().paginate(this.buildQuery(), limit ?? this.limitValue ?? 20, 1);

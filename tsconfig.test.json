@@ -10,7 +10,8 @@
     "bin/**/*",
     "tests/factory-types.test.ts",
     "tests/validation-types.test.ts",
-    "tests/search-types.test.ts"
+    "tests/search-types.test.ts",
+    "tests/postgres-fts-types.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

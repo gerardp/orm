@@ -6,7 +6,7 @@ import { runWithTenant } from "./runWithTenant.js";
 
 export function makeSearchFtsRebuildCommand(config: BunnyConfig) {
   return class extends Command.define("search:fts:rebuild {model : Model class name} {--tenant= : Run under a tenant context}") {
-    static description = "Run FTS5 'rebuild' to repopulate the index from the source content table.";
+    static description = "Run FTS rebuild to repopulate the index from the source content table.";
 
     async handle() {
       const name = this.argument("model");
@@ -15,7 +15,7 @@ export function makeSearchFtsRebuildCommand(config: BunnyConfig) {
       if (!ctor) { this.error(`Model "${name}" not found or not searchable.`); return; }
       const engine = Search.engine() as any;
       if (typeof engine.rebuild !== "function") {
-        this.error(`Active engine does not support rebuild(). FTS5-only command.`);
+        this.error(`Active engine does not support rebuild().`);
         return;
       }
       await runWithTenant(tenantId, async () => {

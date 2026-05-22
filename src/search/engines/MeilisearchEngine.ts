@@ -10,6 +10,7 @@ import type {
   SearchPage,
   SearchQuery,
   SearchTaskStatus,
+  SearchCapabilities,
   SearchableRecord,
 } from "../SearchEngine.js";
 import {
@@ -94,6 +95,23 @@ export class MeilisearchEngine implements SearchEngine {
     this.waitForTasksDefault = options.waitForTasks === true;
     this.taskTimeoutMs = options.taskTimeoutMs ?? 30_000;
     this.taskPollMs = options.taskPollMs ?? 50;
+  }
+
+  capabilities(): SearchCapabilities {
+    return {
+      nativeMultiSearch: true,
+      indexSettings: true,
+      matchesPosition: "native",
+      highlight: true,
+      crop: true,
+      facets: true,
+      minScore: true,
+      searchOn: true,
+      rawQuery: false,
+      typoTolerance: true,
+      vector: true,
+      hybrid: true,
+    };
   }
 
   async update(records: SearchableRecord[]): Promise<void> {

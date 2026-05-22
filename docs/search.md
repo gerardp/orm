@@ -1,20 +1,74 @@
-# Search (Meilisearch)
+# Search
 
-`@bunnykit/orm/search` — Laravel Scout-inspired full-text search. v1 ships a Meilisearch engine. The `SearchEngine` interface stays driver-agnostic so additional engines (Algolia, Typesense, FlexSearch, Database, Collection) can drop in later.
+`@bunnykit/orm/search` — Laravel Scout-inspired full-text search. Ships Meilisearch, PostgreSQL FTS, and SQLite FTS5 engines. The `SearchEngine` interface stays driver-agnostic so custom engines can drop in.
 
 ## Install
 
-Meilisearch must be reachable over HTTP. Local dev:
+Meilisearch requires a reachable HTTP service. Local dev:
 
 ```bash
 docker run -p 7700:7700 getmeili/meilisearch
 ```
 
-No npm dep is required — the engine uses Bun's native `fetch`.
+No npm dep is required — the engine uses Bun's native `fetch`. PostgreSQL FTS and SQLite FTS5 use the ORM connection and need no search service.
 
 ## Configure
 
-Wire the engine into `configureBunny`:
+Wire the engine into `configureBunny`. For default engine instances, use a string alias:
+
+```ts
+import { configureBunny } from "@bunnykit/orm";
+
+configureBunny({
+  connection: { url: "sqlite://app.db" },
+  modelsPath: "./app/Models",
+  search: {
+    engine: "sqlite", // "meilisearch" | "pg" | "sqlite"
+    // Optional for "pg" / "sqlite": use a dedicated search connection.
+    // connection: { url: "sqlite://search.db" },
+    // Optional: dispatch sync as queued jobs instead of running inline.
+    // queue: { name: "scout" },
+    chunk: 500,
+  },
+});
+```
+
+Aliases:
+
+| Alias | Engine | Defaults |
+|---|---|---|
+| `"meilisearch"` or `"meili"` | `MeilisearchEngine` | host from `MEILISEARCH_HOST`, `MEILI_HOST`, or `http://127.0.0.1:7700`; key from `MEILISEARCH_API_KEY`, `MEILI_KEY`, or `MEILI_MASTER_KEY` |
+| `"pg"`, `"postgres"`, or `"postgres-fts"` | `PostgresFTSEngine` | `{ shared: true }`, reuses the default ORM PostgreSQL connection |
+| `"sqlite"` or `"sqlite-fts5"` | `SqliteFTS5Engine` | `{ shared: true }`, reuses the default ORM SQLite connection |
+
+For `"meilisearch"`, provide `host` and `apiKey` directly:
+
+```ts
+configureBunny({
+  connection: { url: process.env.DATABASE_URL! },
+  search: {
+    engine: "meilisearch",
+    host: "http://127.0.0.1:7700",
+    apiKey: process.env.MEILI_KEY,
+  },
+});
+```
+
+For `"pg"` and `"sqlite"`, provide `search.connection` to use a dedicated connection while still using the string alias:
+
+```ts
+configureBunny({
+  connection: { url: process.env.DATABASE_URL! },
+  search: {
+    engine: "pg",
+    connection: { url: process.env.SEARCH_DATABASE_URL! },
+  },
+});
+```
+
+`search.connection` accepts either a `ConnectionConfig` or an existing `Connection` instance. It is not used for `"meilisearch"`. For custom engine instances, pass options directly to the engine constructor.
+
+Pass an engine instance when you need options or a custom engine:
 
 ```ts
 import { configureBunny } from "@bunnykit/orm";
@@ -28,9 +82,6 @@ configureBunny({
       host: "http://127.0.0.1:7700",
       apiKey: process.env.MEILI_KEY,
     }),
-    // Optional: dispatch sync as queued jobs instead of running inline.
-    // queue: { name: "scout" },
-    chunk: 500,
   },
 });
 ```
@@ -38,9 +89,9 @@ configureBunny({
 Or configure outside the bunny facade:
 
 ```ts
-import { Search, MeilisearchEngine } from "@bunnykit/orm/search";
+import { Search } from "@bunnykit/orm/search";
 
-Search.configure({ engine: new MeilisearchEngine({ host: "http://127.0.0.1:7700" }) });
+Search.configure({ engine: "pg" });
 ```
 
 ## Make a model searchable
@@ -226,6 +277,9 @@ Hydrated search results use the same `Collection` type as ORM queries.
 const page  = await Post.search("alpha").paginate(15, 2);
 // { data: Collection<Post>, total, page, perPage }
 
+const rawPage = await Post.search("alpha").rawPaginate(15, 2);
+// { hits: SearchHit[], total, page, perPage, facetDistribution? }
+
 const simple = await Post.search("alpha").simplePaginate(15, 2);
 // { data: Collection<Post>, page, perPage, hasMore } — no total count query
 ```
@@ -360,13 +414,13 @@ When `search` is configured, these commands register automatically:
 | `bunny search:import <Model>` | Bulk-index all rows of a model (chunked). |
 | `bunny search:flush <Model>` | Wipe the index for a model. |
 | `bunny search:sync-index-settings [Model]` | Push `searchIndexSettings` to Meilisearch. |
-| `bunny search:status` | Engine health + configured indexes. With `SqliteFTS5Engine`: SQLite pragmas (journal_mode, page_count, size, fragmentation %) + per-index row counts. |
-| `bunny search:create-index <Model>` | Create the model's index. Auto-applies `Model.searchFtsConfig` via `engine.configureIndex()` when the engine supports it (SQLite FTS5). |
+| `bunny search:status` | Engine health + configured indexes. SQLite and PostgreSQL FTS engines expose engine diagnostics. |
+| `bunny search:create-index <Model>` | Create the model's index. Auto-applies `Model.searchFtsConfig` via `engine.configureIndex()` when the engine supports it (SQLite FTS5 and PostgreSQL FTS). |
 | `bunny search:delete-index <Model> --force` | Delete the model's index. `--force` required. |
 | `bunny search:reimport <Model> [--chunk=N]` | Flush + bulk-import in one step. |
 | `bunny search:import <Model> [--chunk=N] [--dry-run]` | `--dry-run` counts rows without pushing. |
 | `bunny search:fts:optimize <Model>` | FTS5-only. Merges b-tree levels, reduces fragmentation. |
-| `bunny search:fts:rebuild <Model>` | FTS5-only. Repopulates the index from the source content table. |
+| `bunny search:fts:rebuild <Model>` | FTS engines with `rebuild()`. Repopulates the index from the source content table. |
 | `bunny search:list-indexes [--tenant=ID] [--tenants=A,B] [--all-tenants] [--include-landlord]` | Print the resolved index name per searchable model, optionally per-tenant. |
 | `bunny search:verify [--tenant=ID] [--all-tenants] [--include-landlord] [--fix]` | Check that every searchable model's index exists on the engine. `--fix` auto-creates missing ones. |
 
@@ -417,7 +471,7 @@ Exit code:
 
 `--fix` re-uses each model's `searchFtsConfig` + engine `createIndex()` to provision missing entries. Safe to re-run; existing indexes are skipped.
 
-Requires `engine.indexExists?()` — implemented by `MeilisearchEngine` (via `GET /indexes/{name}`, 404 → false) and `SqliteFTS5Engine` (via `sqlite_master` lookup filtered to FTS5 virtual tables). Engines without it skip with a warning.
+Requires `engine.indexExists?()` — implemented by `MeilisearchEngine` (via `GET /indexes/{name}`, 404 → false), `SqliteFTS5Engine` (via `sqlite_master` lookup filtered to FTS5 virtual tables), and `PostgresFTSEngine` (via `pg_class`). Engines without it skip with a warning.
 
 `<Model>` matches the exported class name discovered in `config.modelsPath`.
 
@@ -585,15 +639,170 @@ interface SearchMultiResult {
 }
 ```
 
+## Engine capabilities
+
+Engines do not have identical native features. Use capabilities when UI or CLI code needs to branch by engine:
+
+```ts
+const caps = Search.capabilities();
+
+caps.matchesPosition;       // "native" | "approximate" | false
+caps.nativeMultiSearch;     // true for Meilisearch, false for PG/SQLite fallback
+caps.indexSettings;         // true when updateIndexSettings() is supported
+
+if (Search.supports("typoTolerance")) {
+  // show typo tolerance controls
+}
+```
+
+Current shipped engines:
+
+| Capability | Meilisearch | PostgreSQL FTS | SQLite FTS5 |
+|---|---|---|---|
+| `nativeMultiSearch` | ✅ | ❌ sequential fallback | ❌ sequential fallback |
+| `indexSettings` | ✅ | ❌ | ❌ |
+| `matchesPosition` | `"native"` | `"approximate"` | `"approximate"` |
+| `highlight` / `crop` | ✅ | ✅ | ✅ |
+| `facets` | ✅ | ✅ | ✅ |
+| `minScore` | ✅ | ✅ | ✅ |
+| `searchOn` | ✅ | ✅ | ✅ |
+| `rawQuery` | ❌ | ✅ | ✅ |
+| `typoTolerance` | ✅ | ❌ | ❌ |
+| `vector` / `hybrid` | ✅ | ❌ | ❌ |
+
 ## Architecture
 
-- `SearchEngine` — driver interface (`update`, `delete`, `search`, `paginate`, `multiSearch?`, `flush`, `createIndex`, `deleteIndex`, `updateIndexSettings`, `health?`).
+- `SearchEngine` — driver interface (`update`, `delete`, `search`, `paginate`, `multiSearch?`, `flush`, `createIndex`, `deleteIndex`, `updateIndexSettings?`, `capabilities?`, `health?`).
 - `MeilisearchEngine` — HTTP driver. Filters compile to Meili expressions (`field = "v"`, `field IN [..]`); sorts to `field:dir`; facets/highlight/crop/min-score/attributesToSearchOn passed through.
+- `PostgresFTSEngine` — PostgreSQL `tsvector` driver. Uses a shadow table, GIN index, optional triggers, `websearch_to_tsquery()` for normal queries, and `to_tsquery()` for `.matchRaw()`.
+- `SqliteFTS5Engine` — SQLite FTS5 driver. Uses an FTS5 virtual table, optional triggers, BM25 ranking, snippets, and column-scoped matches.
 - `Searchable(Base)` — mixin adding the static API and a per-instance `searchable()` / `unsearchable()` pair.
 - `SearchObserver` — internal `ObserverContract` impl attached via `Search.register(Model)`. Fires on `saved`/`deleted`.
 - `SearchBuilder` — fluent query builder; returns hydrated ORM models.
 - `MakeSearchableJob` / `RemoveFromSearchJob` — queue jobs for async sync.
 - `Search.multi(builders)` — single round-trip across multiple indexes; routes through `engine.multiSearch()` when available, falls back to sequential `engine.search()`.
+
+## Engine: `PostgresFTSEngine`
+
+For PostgreSQL apps, `PostgresFTSEngine` provides full-text search without a separate service. It creates one shadow table per index, stores searchable columns plus filter/facet fields, maintains a `tsvector`, and creates a GIN index.
+
+### Setup — same PostgreSQL database
+
+Declare the FTS schema on the model. `columns` are tokenized. `unindexed` columns are stored for filters, facets, sorting, and raw display payloads.
+
+```ts
+// app/models/Post.ts
+import { Model } from "@bunnykit/orm";
+import { Search } from "@bunnykit/orm/search";
+
+class _Post extends Model.define<PostAttributes>("posts") {
+  static fillable = ["title", "body", "status"];
+}
+
+export const Post = Search.define(_Post, {
+  index: "posts",
+  fts: {
+    columns: ["title", "body"],
+    unindexed: ["status", "author_id"],
+    language: "english",
+    contentTable: "posts",  // required for trigger/rebuild mode
+    contentRowid: "id",
+  },
+  toSearchableArray: (post) => ({
+    title: post.getAttribute("title"),
+    body: post.getAttribute("body"),
+    status: post.getAttribute("status"),
+    author_id: post.getAttribute("author_id"),
+  }),
+});
+
+export type PostInstance = InstanceType<typeof Post>;
+export default Post;
+```
+
+```ts
+// app.ts
+import { configureBunny } from "@bunnykit/orm";
+
+configureBunny({
+  connection: { url: process.env.DATABASE_URL! },
+  modelsPath: "./app/models",
+  search: { engine: "pg" },
+});
+```
+
+```bash
+bunny search:create-index Post
+bunny search:import Post
+```
+
+The `"pg"` alias creates `new PostgresFTSEngine({ shared: true })`, so it reuses the ORM's active PostgreSQL connection. Add `search.connection` to keep the string alias but use a separate PostgreSQL connection:
+
+```ts
+search: {
+  engine: "pg",
+  connection: { url: process.env.SEARCH_DATABASE_URL! },
+}
+```
+
+For custom engine options:
+
+```ts
+import { PostgresFTSEngine } from "@bunnykit/orm/search";
+
+search: {
+  engine: new PostgresFTSEngine({
+    shared: true,
+    prefix: "_fts_",
+    defaultLanguage: "english",
+    useTriggers: true,
+  }),
+}
+```
+
+### Trigger mode
+
+When `useTriggers` is enabled and the model's `fts` config has `contentTable`, `createIndex()` creates PostgreSQL triggers that keep the shadow table synchronized on `INSERT`, `UPDATE`, and `DELETE`.
+
+```ts
+const engine = new PostgresFTSEngine({ shared: true, useTriggers: true });
+engine.configureIndex("posts", {
+  columns: ["title", "body"],
+  unindexed: ["status"],
+  contentTable: "posts",
+  contentRowid: "id",
+});
+
+await engine.createIndex("posts");
+```
+
+Trigger functions are schema-qualified when the active connection uses schema-qualified tenancy, so schema-per-tenant setups can reuse the same index names safely.
+
+### Query behavior
+
+```ts
+await Post.search("rust postgres")
+  .searchOn("title")       // searches only title
+  .retrieve("title", "status") // raw() returns only these fields in hit.data
+  .where("status", "published")
+  .highlight("title")
+  .crop("body", 20)
+  .paginate(15, 1);
+```
+
+Normal searches use PostgreSQL `websearch_to_tsquery()`. Use `.matchRaw()` when you want raw PostgreSQL tsquery syntax:
+
+```ts
+await Post.search("").matchRaw("rust:* & postgres").raw();
+```
+
+### Caveats
+
+- Shadow-table columns are stored as `TEXT`. Numeric filters/ranges are cast to numeric by the engine; keep filter values consistent.
+- `search:create-index` creates the shadow table and GIN index. Existing rows still need `search:import` or `engine.rebuild()`.
+- `search:fts:rebuild` requires `contentTable` and rebuilds the shadow table from source rows.
+- `updateIndexSettings()` is unsupported for PostgreSQL FTS; use the model's `fts` config and recreate/rebuild indexes when schema changes.
+- PostgreSQL FTS is keyword search. It does not provide typo tolerance like Meilisearch.
 
 ## Engine: `SqliteFTS5Engine`
 
@@ -684,19 +893,21 @@ await fts.createIndex("posts_fts");
 
 ### Capability matrix
 
-| Builder feature | SqliteFTS5 | Meilisearch |
-|---|---|---|
-| `where` / `whereIn` / `whereBetween` / `whereNull` / `whereExists` / `whereRaw` | ✅ via SQL on UNINDEXED columns | ✅ |
-| OR / nested groups | ✅ | ✅ |
-| `orderBy` | ✅ — default is `bm25()` relevance | ✅ |
-| `take` / pagination / `simplePaginate` / `cursor` | ✅ | ✅ |
-| `.facet()` / facet distribution | ✅ — SQL `GROUP BY` | ✅ native |
-| `.minScore()` | ✅ — `bm25()` threshold | ✅ |
-| `.searchOn()` / `.boost()` | ✅ — FTS5 column-scoped match | ✅ |
-| `.withScore()` | ✅ — exposes `-bm25()` | ✅ |
-| `.highlight()` / `.crop()` | ⚠️ FTS5 has `highlight()` + `snippet()` but not wired in v1 | ✅ |
-| `matchesPosition` | ⚠️ FTS5 `offsets()` available but not wired | ✅ |
-| `Search.multi([...])` | sequential | native multi-search |
+| Builder feature | Meilisearch | PostgreSQL FTS | SQLite FTS5 |
+|---|---|---|---|
+| `where` / `whereIn` / `whereBetween` / `whereNull` / `whereExists` / `whereRaw` | ✅ | ✅ via SQL on stored columns | ✅ via SQL on UNINDEXED columns |
+| OR / nested groups | ✅ | ✅ | ✅ |
+| `orderBy` | ✅ | ✅ — default is `ts_rank()` relevance | ✅ — default is `bm25()` relevance |
+| `take` / pagination / `simplePaginate` / `cursor` | ✅ | ✅ | ✅ |
+| `.facet()` / facet distribution | ✅ native | ✅ — SQL `GROUP BY` | ✅ — SQL `GROUP BY` |
+| `.minScore()` | ✅ | ✅ — `ts_rank()` threshold | ✅ — `bm25()` threshold |
+| `.searchOn()` / `.boost()` | ✅ | ✅ — dynamic column-scoped `tsvector` | ✅ — FTS5 column-scoped match |
+| `.retrieve()` / `.display()` | ✅ | ✅ | ✅ |
+| `.matchRaw()` | engine syntax | ✅ — raw PostgreSQL `to_tsquery()` | ✅ — raw FTS5 syntax |
+| `.withScore()` | ✅ | ✅ — exposes `ts_rank()` | ✅ — exposes `-bm25()` |
+| `.highlight()` / `.crop()` | ✅ | ✅ — `ts_headline()` | ✅ — `highlight()` + `snippet()` |
+| `matchesPosition` | ✅ native | ✅ best-effort character offsets | ✅ best-effort character offsets |
+| `Search.multi([...])` | native multi-search | sequential | sequential |
 
 ### Caveats
 
@@ -708,7 +919,6 @@ await fts.createIndex("posts_fts");
 
 ## Not yet in v1
 
-- Other engines (Algolia, Typesense, FlexSearch, Postgres `tsvector`, MySQL `MATCH AGAINST`) — interface is ready, implementations are not.
+- Other engines (Algolia, Typesense, FlexSearch, MySQL `MATCH AGAINST`) — interface is ready, implementations are not.
 - Task completion polling (Meilisearch async operations return task UIDs; v1 does not wait).
-- Highlight / snippet / matches-position passthrough for SqliteFTS5Engine.
-- Multi-tenant index routing.
+- Native tokenizer-backed matches-position passthrough for PostgreSQL and SQLite FTS. Current implementation computes best-effort character offsets from returned field text.
