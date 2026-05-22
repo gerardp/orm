@@ -1,4 +1,5 @@
 import { parseSignatureName } from "./SignatureParser.js";
+import { getPromptService } from "./Prompt.js";
 
 // ─── Type-level signature parsing ─────────────────────────────────────────────
 
@@ -65,6 +66,8 @@ export interface CommandContext<TSig extends string = string> {
   argumentOptional(name: ArgParam<TSig>): string | undefined;
   argumentArray(name: ArgParam<TSig>): string[];
   option(name: OptionParam<TSig>): string | boolean | undefined;
+  prompt(question: string, defaultValue?: string): Promise<string>;
+  confirm(question: string, defaultValue?: boolean): Promise<boolean>;
   info(msg: string | object): void;
   warn(msg: string | object): void;
   error(msg: string | object): void;
@@ -154,6 +157,14 @@ export abstract class Command<TSig extends string = string> {
 
   option(name: OptionParam<TSig>): string | boolean | undefined {
     return this._parsedOptions[name as string];
+  }
+
+  prompt(question: string, defaultValue?: string): Promise<string> {
+    return getPromptService().prompt(question, defaultValue);
+  }
+
+  confirm(question: string, defaultValue?: boolean): Promise<boolean> {
+    return getPromptService().confirm(question, defaultValue);
   }
 
   info(msg: string | object): void  { console.log(ANSI.green(format(msg))); }

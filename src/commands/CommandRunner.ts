@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { parseSignature, type ParsedSignature } from "./SignatureParser.js";
+import { getPromptService } from "./Prompt.js";
 import {
   Command,
   isCommandConstructor,
@@ -141,6 +142,12 @@ export class CommandRunner {
       },
       option(name) {
         return options[name];
+      },
+      prompt(question, defaultValue) {
+        return getPromptService().prompt(question, defaultValue);
+      },
+      confirm(question, defaultValue) {
+        return getPromptService().confirm(question, defaultValue);
       },
       info(msg)  { console.log(ANSI.green(format(msg))); },
       warn(msg)  { console.warn(ANSI.yellow(format(msg))); },

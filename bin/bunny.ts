@@ -67,6 +67,184 @@ function parseEnvPathSetting(value?: string): string | string[] | undefined {
   return paths.length === 1 ? paths[0] : paths;
 }
 
+function hasLocalBunnyConfig(): boolean {
+  const tsConfigPath = join(process.cwd(), "bunny.config.ts");
+  const jsConfigPath = join(process.cwd(), "bunny.config.js");
+  return existsSync(tsConfigPath) || existsSync(jsConfigPath);
+}
+
+function isInteractiveTerminal(): boolean {
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
+async function promptYesNo(question: string, defaultYes = true): Promise<boolean> {
+  if (!isInteractiveTerminal()) return defaultYes;
+  const suffix = defaultYes ? " [Y/n] " : " [y/N] ";
+  for (;;) {
+    process.stdout.write(`${question}${suffix}`);
+    const input = await new Promise<string>((resolve) => {
+      process.stdin.resume();
+      process.stdin.once("data", (chunk) => resolve(String(chunk).trim()));
+    });
+    if (!input) return defaultYes;
+    const normalized = input.toLowerCase();
+    if (["y", "yes"].includes(normalized)) return true;
+    if (["n", "no"].includes(normalized)) return false;
+    process.stdout.write("Please answer yes or no.\n");
+  }
+}
+
+async function promptText(question: string, defaultValue: string): Promise<string> {
+  if (!isInteractiveTerminal()) return defaultValue;
+  process.stdout.write(`${question} (${defaultValue}): `);
+  const input = await new Promise<string>((resolve) => {
+    process.stdin.resume();
+    process.stdin.once("data", (chunk) => resolve(String(chunk).trim()));
+  });
+  return input || defaultValue;
+}
+
+function buildBunnyConfigTemplate(opts: {
+  databaseUrl: string;
+  migrationsPath: string;
+  seedersPath: string;
+  modelsPath: string;
+  enableTenancy: boolean;
+  enableSearch: boolean;
+  enableQueue: boolean;
+  enableCache: boolean;
+  enableLogs: boolean;
+  commandsPath: string;
+}): string {
+  const lines: string[] = [
+    `import type { BunnyConfig } from "@bunnykit/orm";`,
+    "",
+    "const config: BunnyConfig = {",
+    "  connection: {",
+    "    // Update this to your database URL.",
+    '    // Examples: "sqlite://./database/app.db", "postgres://user:pass@localhost:5432/app"',
+    `    url: process.env.DATABASE_URL || "${opts.databaseUrl}",`,
+    "  },",
+    `  migrationsPath: "${opts.migrationsPath}",`,
+    `  seedersPath: "${opts.seedersPath}",`,
+    `  modelsPath: "${opts.modelsPath}",`,
+    `  commands: { commandsPath: "${opts.commandsPath}" },`,
+  ];
+
+  if (opts.enableLogs) {
+    lines.push(
+      "  log: {",
+      "    console: true,",
+      '    // file: "./storage/logs/sql.log",',
+      "  },",
+    );
+  }
+
+  if (opts.enableTenancy) {
+    lines.push(
+      "  tenancy: {",
+      "    // Replace with your own resolver and tenant lister.",
+      "    // resolveTenant: async () => null,",
+      "    // listTenants: async () => [\"tenant-1\"],",
+      "    idleTimeoutMs: 300_000,",
+      "  },",
+    );
+  }
+
+  if (opts.enableSearch) {
+    lines.push(
+      "  search: {",
+      "    engine: \"sqlite\",",
+      "    chunk: 500,",
+      ...(opts.enableTenancy
+        ? [
+          "    // Keep search indexes tenant-scoped when tenancy is enabled.",
+          "    tenantScope: (base, tenantId) => tenantId ? `${base}_t_${tenantId}` : base,",
+        ]
+        : []),
+      "    // For Meilisearch, switch engine and set host/apiKey:",
+      "    // engine: \"meilisearch\",",
+      "    // host: process.env.MEILISEARCH_HOST || \"http://127.0.0.1:7700\",",
+      "    // apiKey: process.env.MEILISEARCH_API_KEY,",
+      "  },",
+    );
+  }
+
+  if (opts.enableQueue) {
+    lines.push(
+      "  queue: {",
+      "    driver: \"db\",",
+      "    defaultQueue: \"default\",",
+      "    workers: 1,",
+      "    jobsPath: \"./app/jobs\",",
+      "  },",
+    );
+  }
+
+  if (opts.enableCache) {
+    lines.push(
+      "  cache: {",
+      "    // Default is Redis cache store from Bun's Redis client.",
+      "    prefix: \"bunny:\",",
+      "    defaultTtl: 3600,",
+      "  },",
+    );
+  }
+
+  lines.push("};", "", "export default config;", "");
+  return lines.join("\n");
+}
+
+async function buildInitTemplateFromPrompts(): Promise<string> {
+  const databaseUrl = await promptText("Database URL", "sqlite://./database/app.db");
+  const migrationsPath = await promptText("Migrations path", "./database/migrations");
+  const seedersPath = await promptText("Seeders path", "./database/seeders");
+  const modelsPath = await promptText("Models path", "./app/models");
+  const commandsPath = await promptText("Commands path", "./app/commands");
+
+  const enableTenancy = await promptYesNo("Add multitenancy section?", false);
+  const enableSearch = await promptYesNo("Add search section?", true);
+  const enableQueue = await promptYesNo("Add queue section?", true);
+  const enableCache = await promptYesNo("Add cache section?", false);
+  const enableLogs = await promptYesNo("Enable SQL logging section?", false);
+
+  return buildBunnyConfigTemplate({
+    databaseUrl,
+    migrationsPath,
+    seedersPath,
+    modelsPath,
+    commandsPath,
+    enableTenancy,
+    enableSearch,
+    enableQueue,
+    enableCache,
+    enableLogs,
+  });
+}
+
+async function runInitCommand(rawArgs: string[]): Promise<number> {
+  const force = rawArgs.includes("--force") || rawArgs.includes("-f");
+  const tsConfigPath = join(process.cwd(), "bunny.config.ts");
+  const jsConfigPath = join(process.cwd(), "bunny.config.js");
+  const tsExists = existsSync(tsConfigPath);
+  const jsExists = existsSync(jsConfigPath);
+
+  if ((tsExists || jsExists) && !force) {
+    const existing = tsExists ? tsConfigPath : jsConfigPath;
+    console.error(`\x1b[31mConfig already exists:\x1b[0m ${existing}`);
+    console.error("Use `bunny init --force` to overwrite `bunny.config.ts`.");
+    return 1;
+  }
+
+  const template = await buildInitTemplateFromPrompts();
+  await writeFile(tsConfigPath, template, "utf-8");
+  console.log(`\x1b[32mCreated:\x1b[0m ${tsConfigPath}`);
+  if (jsExists) {
+    console.warn(`\x1b[33mNote:\x1b[0m ${jsConfigPath} still exists and may cause confusion.`);
+  }
+  return 0;
+}
+
 function getDefaultMigrationsPath(config: BunnyConfig): string | string[] {
   return config.migrationsPath || config.migrations?.landlord || "./database/migrations";
 }
@@ -765,6 +943,7 @@ async function loadConfig(allowFallback = false): Promise<BunnyConfig> {
 async function main() {
   const args    = process.argv.slice(2);
   const command = args[0];
+  const isInit = command === "init";
 
   // Static metadata for built-in commands — shown before config loads
   const CORE_COMMANDS: Array<{ name: string; sig: string; desc: string }> = [
@@ -783,6 +962,7 @@ async function main() {
     { name: "types:generate",   sig: "types:generate {dir?} {--landlord} {--tenant=}",            desc: "Generate TypeScript model types from DB schema" },
     { name: "queue:install",    sig: "queue:install {dir?} {--models=}",                          desc: "Generate the jobs and failed_jobs migration and optional models" },
     { name: "queue",            sig: "queue {--queue=} {--workers=}",                             desc: "Start the background job worker" },
+    { name: "init",             sig: "init {--force} {-f}",                                       desc: "Create a bunny.config.ts file" },
     { name: "repl",             sig: "repl",                                                      desc: "Start an interactive REPL" },
   ];
 
@@ -824,6 +1004,11 @@ async function main() {
     process.exit(await runRepl(config, args.slice(1)));
   }
 
+  // Init runs before config loading.
+  if (isInit) {
+    process.exit(await runInitCommand(args.slice(1)));
+  }
+
   // Load config — if it fails and the user asked for help, show static fallback
   let config: BunnyConfig;
   try {
@@ -833,6 +1018,24 @@ async function main() {
     if (isHelp) {
       const meta = CORE_COMMANDS.find((c) => c.name === command);
       if (meta) { printStaticCommandHelp(meta); return; }
+    }
+    const missingConfig = err instanceof Error
+      && err.message.includes("No database configuration found")
+      && !hasLocalBunnyConfig();
+    if (missingConfig) {
+      console.error("\x1b[31mNo bunny.config.ts found.\x1b[0m");
+      if (process.stdin.isTTY && process.stdout.isTTY) {
+        const shouldInit = await promptYesNo("Initialize bunny.config.ts now?", true);
+        if (shouldInit) {
+          const code = await runInitCommand([]);
+          if (code === 0) {
+            console.log("Run your original command again after updating the config.");
+          }
+          process.exit(code);
+        }
+      }
+      console.error("Run `bunny init` to create a starter config.");
+      process.exit(1);
     }
     throw err;
   }

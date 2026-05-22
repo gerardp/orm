@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { parseSignature, parseSignatureName } from "../src/commands/SignatureParser.js";
 import {
   Command,
@@ -10,6 +10,7 @@ import {
   isCommandConstructor,
 } from "../src/commands/Command.js";
 import { CommandRunner } from "../src/commands/CommandRunner.js";
+import { setPromptService, type PromptService } from "../src/commands/Prompt.js";
 
 // ─── SignatureParser ───────────────────────────────────────────────────────────
 
@@ -285,6 +286,69 @@ describe("CommandRunner — function-based", () => {
     await runner.run(cmd, []);
     expect(process.exitCode).toBe(1);
     process.exitCode = 0;
+  });
+});
+
+describe("Command prompts", () => {
+  const runner = new CommandRunner();
+  const calls: string[] = [];
+
+  beforeEach(() => {
+    calls.length = 0;
+    const mockPromptService: PromptService = {
+      async prompt(question: string, defaultValue?: string): Promise<string> {
+        calls.push(`prompt:${question}:${defaultValue ?? ""}`);
+        return "Jane Doe";
+      },
+      async confirm(question: string, defaultValue?: boolean): Promise<boolean> {
+        calls.push(`confirm:${question}:${String(defaultValue)}`);
+        return true;
+      },
+    };
+    setPromptService(mockPromptService);
+  });
+
+  afterEach(() => {
+    setPromptService(null);
+  });
+
+  it("supports prompt/confirm in class-based commands", async () => {
+    let name = "";
+    let approved = false;
+    class AskCommand extends Command {
+      static signature = "ask";
+      async handle() {
+        name = await this.prompt("Name", "Guest");
+        approved = await this.confirm("Proceed?", false);
+      }
+    }
+    await runner.run(AskCommand, []);
+    expect(name).toBe("Jane Doe");
+    expect(approved).toBe(true);
+    expect(calls).toEqual([
+      "prompt:Name:Guest",
+      "confirm:Proceed?:false",
+    ]);
+  });
+
+  it("supports prompt/confirm in function-based commands", async () => {
+    let name = "";
+    let approved = false;
+    const cmd = defineCommand({
+      signature: "ask:fn",
+      async handle(ctx) {
+        name = await ctx.prompt("Your name");
+        approved = await ctx.confirm("Save?", true);
+      },
+    });
+
+    await runner.run(cmd, []);
+    expect(name).toBe("Jane Doe");
+    expect(approved).toBe(true);
+    expect(calls).toEqual([
+      "prompt:Your name:",
+      "confirm:Save?:true",
+    ]);
   });
 });
 
