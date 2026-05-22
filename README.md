@@ -156,6 +156,7 @@ See the [Quickstart guide](./docs/quickstart.md) for the full walkthrough.
 
 | Topic | Summary |
 |---|---|
+| [SvelteKit Helper](./docs/sveltekit.md) | Typed route model binding and action validation helpers for `+page.server.ts`. |
 | [Observers](./docs/observers.md) | Lifecycle hooks for `creating`, `updating`, `deleting`, and more. |
 | [Events](./docs/events.md) | Application-level events with function listeners, class handlers, and temporary subscriptions. |
 | [Library Usage](./docs/library-usage.md) | Programmatic API via `configureBunny()`. |

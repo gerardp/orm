@@ -52,6 +52,10 @@
     "./search": {
       "types": "./dist/src/search/index.d.ts",
       "import": "./dist/src/search/index.js"
+    },
+    "./sveltekit": {
+      "types": "./dist/src/sveltekit/index.d.ts",
+      "import": "./dist/src/sveltekit/index.js"
     }
   },
   "typesVersions": {
@@ -73,6 +77,9 @@
       ],
       "search": [
         "dist/src/search/index.d.ts"
+      ],
+      "sveltekit": [
+        "dist/src/sveltekit/index.d.ts"
       ]
     }
   },
@@ -97,6 +104,14 @@
     "migrate:status": "bun run bin/bunny.ts migrate:status"
   },
   "dependencies": {},
+  "peerDependencies": {
+    "@sveltejs/kit": "^2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@sveltejs/kit": {
+      "optional": true
+    }
+  },
   "files": [
     "dist",
     "README.md",
@@ -104,6 +119,7 @@
   ],
   "devDependencies": {
     "@types/bun": "latest",
+    "@sveltejs/kit": "^2.0.0",
     "typescript": "^5.9.3"
   }
 }
