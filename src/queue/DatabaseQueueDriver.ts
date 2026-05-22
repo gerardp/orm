@@ -35,10 +35,25 @@ function toJobRecord(row: RawJobRow): JobRecord {
 export class DatabaseQueueDriver implements QueueDriver {
   private table: string;
   private failedTable: string;
+  private sqliteMutex: Promise<void> = Promise.resolve();
 
   constructor(private connection: Connection, options: DatabaseQueueDriverOptions = {}) {
     this.table = options.table ?? "jobs";
     this.failedTable = options.failedTable ?? "failed_jobs";
+  }
+
+  private async withSqliteMutex<T>(work: () => Promise<T>): Promise<T> {
+    const previous = this.sqliteMutex;
+    let release!: () => void;
+    this.sqliteMutex = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+    }
   }
 
   async migrate(): Promise<void> {
@@ -162,7 +177,7 @@ export class DatabaseQueueDriver implements QueueDriver {
     const t = this.table;
 
     if (driver === "sqlite") {
-      return this.connection.transaction(async (conn) => {
+      return this.withSqliteMutex(async () => this.connection.transaction(async (conn) => {
         const rows = (await conn.query(
           `SELECT * FROM ${t}
            WHERE queue = ? AND (reserved_at IS NULL OR reserved_at <= ?) AND available_at <= ?
@@ -176,7 +191,7 @@ export class DatabaseQueueDriver implements QueueDriver {
           [now, row.id],
         );
         return toJobRecord({ ...row, reserved_at: now, attempts: row.attempts + 1 });
-      });
+      }));
     }
 
     if (driver === "postgres") {
@@ -233,7 +248,7 @@ export class DatabaseQueueDriver implements QueueDriver {
     const t = driver === "mysql" ? `\`${this.table}\`` : this.table;
     const f = driver === "mysql" ? `\`${this.failedTable}\`` : this.failedTable;
 
-    await this.connection.transaction(async (conn) => {
+    const failWork = async () => this.connection.transaction(async (conn) => {
       const rows = (await conn.query(`SELECT * FROM ${t} WHERE id = ${driver === "postgres" ? "$1" : "?"}`, [id])) as RawJobRow[];
       const row = rows[0];
       if (!row) return;
@@ -251,6 +266,11 @@ export class DatabaseQueueDriver implements QueueDriver {
         await conn.run(`DELETE FROM ${t} WHERE id = ?`, [id]);
       }
     });
+    if (driver === "sqlite") {
+      await this.withSqliteMutex(failWork);
+      return;
+    }
+    await failWork();
   }
 
   async release(id: number, delaySeconds: number): Promise<void> {

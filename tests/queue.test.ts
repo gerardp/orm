@@ -342,4 +342,32 @@ describe("Worker", () => {
     const failed = await conn.query<any>("SELECT * FROM failed_jobs");
     expect(failed).toHaveLength(1);
   });
+
+  it("handles concurrency > 1 on sqlite without nested transaction errors", async () => {
+    const handled: number[] = [];
+
+    class FastJob extends DispatchableJob {
+      constructor(public id: number) { super(id); }
+      async handle() { handled.push(this.id); }
+    }
+    registerJob(FastJob);
+
+    for (let i = 1; i <= 20; i++) {
+      await FastJob.dispatch(i);
+    }
+
+    const worker = new Worker(driver, {
+      concurrency: 2,
+      pollIntervalMs: 5,
+      retryAfterSeconds: 0,
+    });
+    const runPromise = worker.run();
+    await new Promise((r) => setTimeout(r, 250));
+    worker.stop();
+    await runPromise;
+
+    expect(await driver.size("default")).toBe(0);
+    expect(handled.length).toBeGreaterThan(0);
+    expect(new Set(handled).size).toBe(handled.length);
+  });
 });
