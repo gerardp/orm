@@ -30,6 +30,7 @@ type BindSpec = {
 };
 
 let svelteKitErrorFactory: ((status: number, body: string) => unknown) | null = null;
+let svelteKitFailFactory: ((status: number, body: Record<string, unknown>) => unknown) | null = null;
 let svelteKitDependencyChecked = false;
 let svelteKitModuleResolved = false;
 
@@ -51,11 +52,43 @@ async function ensureSvelteKitDependency(): Promise<void> {
   try {
     const mod = await import("@sveltejs/kit");
     svelteKitErrorFactory = mod.error;
+    svelteKitFailFactory = mod.fail;
     svelteKitDependencyChecked = true;
   } catch {
     // The module was resolved synchronously in route(); this fallback only
     // catches unexpected runtime loader failures.
     throw new Error('Failed to import "@sveltejs/kit" at runtime.');
+  }
+}
+
+async function requestValues(request: Request): Promise<Record<string, unknown>> {
+  const contentType = request.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    try {
+      const json = await request.clone().json();
+      if (json && typeof json === "object" && !Array.isArray(json)) {
+        return json as Record<string, unknown>;
+      }
+    } catch {
+      // no-op; fall through to empty object
+    }
+    return {};
+  }
+
+  try {
+    const formData = await request.clone().formData();
+    const values: Record<string, unknown> = {};
+    for (const [key, value] of formData.entries()) {
+      if (Object.prototype.hasOwnProperty.call(values, key)) {
+        const existing = values[key];
+        values[key] = Array.isArray(existing) ? [...existing, value] : [existing, value];
+      } else {
+        values[key] = value;
+      }
+    }
+    return values;
+  } catch {
+    return {};
   }
 }
 
@@ -149,9 +182,21 @@ class RouteBuilder<
   ): (event: RequestEvent) => Promise<TResult> {
     return async (event: RequestEvent): Promise<TResult> => {
       const bound = await this.resolveBindings(event);
-      const data = this.schemaDef
-        ? await Validator.parse(this.schemaDef as any, event.request)
-        : undefined;
+      let data: unknown = undefined;
+      if (this.schemaDef) {
+        const parsed = await Validator.safeParse(this.schemaDef as any, event.request);
+        if (!parsed.success) {
+          await ensureSvelteKitDependency();
+          if (!svelteKitFailFactory) {
+            throw new Error('Failed to import `fail` from "@sveltejs/kit" at runtime.');
+          }
+          return svelteKitFailFactory(422, {
+            issues: parsed.issues,
+            values: await requestValues(event.request),
+          }) as TResult;
+        }
+        data = parsed.output;
+      }
 
       return await handler(event, {
         ...bound,

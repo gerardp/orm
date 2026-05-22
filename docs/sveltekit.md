@@ -36,6 +36,11 @@ export const load: PageServerLoad = route()
 ## `actions` example (`+page.server.ts`)
 
 `action` uses model binding from `event.params` and schema validation from `event.request`.
+When validation fails, it returns:
+
+```ts
+fail(422, { issues, values })
+```
 
 ```ts
 import type { Actions } from "./$types";
