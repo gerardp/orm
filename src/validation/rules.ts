@@ -679,6 +679,13 @@ export class MinRule implements RuleContract {
     return sizeOf(v) >= this.n;
   }
   message(c: ValidationContext) {
+    const value = c.get(c.attribute);
+    if (typeof value === "string") {
+      return `The ${c.attribute} field must be at least ${this.n} characters.`;
+    }
+    if (Array.isArray(value)) {
+      return `The ${c.attribute} field must have at least ${this.n} items.`;
+    }
     return `The ${c.attribute} field must be at least ${this.n}.`;
   }
 }

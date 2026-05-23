@@ -13,6 +13,7 @@ import { makeTypesGenerateCommand } from "./TypesGenerateCommand.js";
 import { makeQueueInstallCommand } from "./QueueInstallCommand.js";
 import { makeMakeModelCommand } from "./MakeModelCommand.js";
 import { makeMakeMigrationCommand } from "./MakeMigrationCommand.js";
+import { makeMakePolicyCommand } from "./MakePolicyCommand.js";
 import { makeMakeCommandCommand } from "../commands/cli/index.js";
 import { registerSearchCommands } from "../search/commands/index.js";
 import { makeMakeJobCommand } from "../queue/commands/index.js";
@@ -34,6 +35,7 @@ export function registerOrmCommands(config: BunnyConfig, connection: Connection)
   registerCommand(makeQueueInstallCommand(config));
   registerCommand(makeMakeModelCommand(config));
   registerCommand(makeMakeMigrationCommand(config));
+  registerCommand(makeMakePolicyCommand(config));
   registerCommand(makeMakeCommandCommand(config));
   if (config.queue) {
     registerCommand(makeMakeJobCommand(config));

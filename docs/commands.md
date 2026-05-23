@@ -151,6 +151,18 @@ bunny run email:send --help    # show usage + options
 bunny run                      # list all registered commands
 ```
 
+## Built-in Generators
+
+```sh
+bunny make:model User
+bunny make:migration create_users_table
+bunny make:job SendWelcomeEmail
+bunny make:policy AnnouncementPolicy
+bunny make:policy AnnouncementPolicy --model=Announcement
+```
+
+`make:policy` writes to `--dir` when provided, otherwise to `policyPath` from `bunny.config.ts`, falling back to `./app/policies`.
+
 ## Registering Commands Manually
 
 Auto-discovery via `commandsPath` is the default. To register manually (e.g. in app code or tests):

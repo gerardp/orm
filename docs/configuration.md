@@ -340,6 +340,18 @@ modelsPath: {
 
 The grouped form lets `bunny migrate landlord` regenerate types only for landlord-scoped models.
 
+## `policyPath`
+
+Optional default output path for policy generators:
+
+```ts
+policyPath: "./app/policies",
+// or
+policyPath: ["./app/policies", "./modules/core/policies"],
+```
+
+Used by `bunny make:policy` when `--dir` is not provided.
+
 ## Type generation
 
 ```ts

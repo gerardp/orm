@@ -44,6 +44,7 @@ export interface BunnyConfig {
     sweep?: boolean | number;
   };
   modelsPath?: string | string[] | ModelsPath;
+  policyPath?: string | string[];
   typesOutDir?: string;
   typeDeclarations?: Record<string, string | ModelDeclaration>;
   typeDeclarationModelsDir?: string;

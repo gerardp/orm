@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
-import type { Actions, PageServerLoad, RequestEvent, ServerLoadEvent } from "@sveltejs/kit";
+import type { Actions, PageServerLoad, RequestEvent, RequestHandler, ServerLoadEvent } from "@sveltejs/kit";
 import { Model } from "../src/model/Model.js";
-import { route } from "../src/sveltekit/index.js";
+import { configureSvelteKit, route } from "../src/sveltekit/index.js";
 import { Validator, rule } from "../src/validation/index.js";
 function expectType<T>(_v: T): void {}
 
@@ -19,12 +19,26 @@ class Announcement extends Model.define("announcements") {
     return this.hasMany(AnnouncementTarget);
   }
 }
+class CustomBound {
+  constructor(public id: string, public active: boolean) {}
+}
 
 const PostSchema = Validator.schema({
   title: rule().required().string(),
 });
 
 describe("sveltekit route() typing", () => {
+  it("supports global sveltekit helper configuration", () => {
+    configureSvelteKit({
+      error: (_status, _body) => {
+        throw new Error("configured");
+      },
+      fail: (_status, body) => body,
+    });
+    const load: PageServerLoad = route().load(async () => ({ ok: true }));
+    expect(typeof load).toBe("function");
+  });
+
   it("is compatible with PageServerLoad and supports aliases", () => {
     const load: PageServerLoad = route()
       .bind(Branch)
@@ -53,17 +67,20 @@ describe("sveltekit route() typing", () => {
     const formActions: Actions = {
       create: route()
         .bind(Branch)
+        .can("update")
         .schema(PostSchema)
-        .action(async (_event, { branch, data }) => {
+        .action(async (_event, { branch, data, flash }) => {
           expectType<RequestEvent>(_event);
           expectType<Branch>(branch);
           expectType<{ title: string }>(data);
+          expectType<(value: string | { message: string; type?: "success" | "error" | "info" | "warning" }) => void>(flash);
           expect(branch).toBeDefined();
           expect(data.title).toBeDefined();
           return { ok: true };
         }),
       update: route()
         .bind(Payroll, "payroll_id")
+        .can("view", "payroll")
         .action(async (_event, { payroll }) => {
           expectType<Payroll>(payroll);
           return { id: payroll.id as any };
@@ -92,11 +109,12 @@ describe("sveltekit route() typing", () => {
       .bind(Announcement, "announcement_id", "announcementWithDetails", { with: ["targets", "targets.details"] })
       .bind(Announcement, "draft_id", "draftAnnouncement")
       .bind(Announcement, "full_id", "fullAnnouncement", { with: ["targets"] })
-      .load(async (_event, { announcement, announcementWithDetails, draftAnnouncement, fullAnnouncement }) => {
+      .load(async (_event, { announcement, announcementWithDetails, draftAnnouncement, fullAnnouncement, flash }) => {
         expectType<Announcement>(announcement);
         expectType<Announcement>(announcementWithDetails);
         expectType<Announcement>(draftAnnouncement);
         expectType<Announcement>(fullAnnouncement);
+        expectType<string | { type: "success" | "error" | "info" | "warning"; message: string } | readonly (string | { type: "success" | "error" | "info" | "warning"; message: string })[] | null>(flash);
         expectType<AnnouncementTarget | null>(announcement.targets.first());
         const firstTarget = announcement.targets.first();
         if (firstTarget) {
@@ -111,5 +129,34 @@ describe("sveltekit route() typing", () => {
         return { ok: true };
       });
     expect(typeof load).toBe("function");
+  });
+
+  it("supports resolver-based bind with alias typing", () => {
+    const load: PageServerLoad = route()
+      .bind(async (event) => {
+        expectType<ServerLoadEvent>(event as ServerLoadEvent);
+        return new CustomBound(event.params.id ?? "x", true);
+      }, "customRecord")
+      .load(async (_event, { customRecord }) => {
+        expectType<CustomBound>(customRecord);
+        expect(customRecord.active).toBe(true);
+        return { ok: true };
+      });
+    expect(typeof load).toBe("function");
+  });
+
+  it("supports RequestHandler-compatible route().request()", () => {
+    const post: RequestHandler = route()
+      .bind(Branch)
+      .schema(PostSchema)
+      .request(async (_event, { branch, data, flash }) => {
+        expectType<Branch>(branch);
+        expectType<{ title: string }>(data);
+        flash("queued");
+        return new Response(JSON.stringify({ id: branch.id, title: data.title }), {
+          headers: { "content-type": "application/json" },
+        });
+      });
+    expect(typeof post).toBe("function");
   });
 });

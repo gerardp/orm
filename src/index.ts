@@ -53,6 +53,17 @@ export { MorphMap } from "./model/MorphMap.js";
 export { MorphTo, MorphOne, MorphMany, MorphToMany } from "./model/MorphRelations.js";
 export { BelongsToMany } from "./model/BelongsToMany.js";
 export { IdentityMap } from "./model/IdentityMap.js";
+export {
+  registerPolicy,
+  registerPolicies,
+  clearPolicies,
+  inspect as inspectPolicy,
+  can,
+  authorize,
+  attachPolicyMethods,
+  PolicyAuthorizationError,
+} from "./policies/index.js";
+export type { PolicyDecision, PolicyMethod, PolicyLike, PolicyClass, PolicyUserMethods } from "./policies/index.js";
 
 export { Migration } from "./migration/Migration.js";
 export { Migrator } from "./migration/Migrator.js";

@@ -86,6 +86,17 @@ describe("Validator — sync rules", () => {
     expect(errs.role).toBeDefined();
   });
 
+  test("string min message uses characters wording", async () => {
+    const validator = Validator.make(
+      { content: "short" },
+      { content: rule().string().min(10) },
+    );
+    const errors = await validator.errors();
+    expect(errors.content).toEqual([
+      "The content field must be at least 10 characters.",
+    ]);
+  });
+
   test("confirmed / same / different", async () => {
     const schema = {
       password: rule().required().string().min(8).confirmed(),
@@ -504,6 +515,7 @@ describe("Validator — sync rules", () => {
     expect(bad.success).toBe(false);
     if (!bad.success) {
       expect(bad.issues.value[0]).toContain("required");
+      expect(bad.input).toBe("");
     }
 
     const objectSchema = {
@@ -537,6 +549,7 @@ describe("Validator — sync rules", () => {
     expect(bad.success).toBe(false);
     if (!bad.success) {
       expect(bad.issues[0].message).toContain("required");
+      expect(bad.input).toEqual({});
     }
   });
 
@@ -555,6 +568,7 @@ describe("Validator — sync rules", () => {
     expect(bad.success).toBe(false);
     if (!bad.success) {
       expect(bad.issues[0].message).toContain("required");
+      expect(bad.input).toEqual({});
     }
   });
 

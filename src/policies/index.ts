@@ -1,0 +1,118 @@
+export type PolicyDecision =
+  | boolean
+  | string
+  | { allow: boolean; message?: string };
+
+export type PolicyMethod = (user: unknown, model: unknown) => PolicyDecision | Promise<PolicyDecision>;
+export type PolicyLike = Record<string, PolicyMethod>;
+export type PolicyClass = new () => PolicyLike;
+export type PolicyUserMethods = {
+  can(ability: string, model: unknown): Promise<boolean>;
+  authorize(ability: string, model: unknown): Promise<void>;
+};
+
+export class PolicyAuthorizationError extends Error {
+  status = 403 as const;
+  constructor(message = "Forbidden.") {
+    super(message);
+    this.name = "PolicyAuthorizationError";
+  }
+}
+
+const policiesByCtor = new Map<Function, PolicyLike>();
+const policiesByModelName = new Map<string, PolicyLike>();
+
+function toPolicyInstance(policy: PolicyLike | PolicyClass): PolicyLike {
+  if (typeof policy === "function") {
+    return new policy();
+  }
+  return policy;
+}
+
+export function clearPolicies(): void {
+  policiesByCtor.clear();
+  policiesByModelName.clear();
+}
+
+export function registerPolicy(model: Function | string, policy: PolicyLike | PolicyClass): void {
+  const instance = toPolicyInstance(policy);
+  if (typeof model === "string") {
+    policiesByModelName.set(model, instance);
+    return;
+  }
+  policiesByCtor.set(model, instance);
+  if (model.name) {
+    policiesByModelName.set(model.name, instance);
+  }
+}
+
+export function registerPolicies(entries: Record<string, PolicyLike | PolicyClass>): void {
+  for (const [modelName, policy] of Object.entries(entries)) {
+    registerPolicy(modelName, policy);
+  }
+}
+
+function resolvePolicy(model: unknown): PolicyLike | undefined {
+  if (!model || typeof model !== "object") return undefined;
+  const ctor = (model as { constructor?: Function }).constructor;
+  if (ctor && policiesByCtor.has(ctor)) {
+    return policiesByCtor.get(ctor);
+  }
+  const modelName = ctor?.name;
+  if (modelName && policiesByModelName.has(modelName)) {
+    return policiesByModelName.get(modelName);
+  }
+  return undefined;
+}
+
+export async function inspect(
+  user: unknown,
+  ability: string,
+  model: unknown,
+): Promise<{ allowed: boolean; message?: string }> {
+  const policy = resolvePolicy(model);
+  if (!policy) {
+    return { allowed: false, message: `No policy registered for "${(model as any)?.constructor?.name ?? "model"}".` };
+  }
+  const method = policy[ability];
+  if (typeof method !== "function") {
+    return { allowed: false, message: `Policy does not define "${ability}" ability.` };
+  }
+  const decision = await method(user, model);
+  if (typeof decision === "boolean") {
+    return decision ? { allowed: true } : { allowed: false, message: "Forbidden." };
+  }
+  if (typeof decision === "string") {
+    return { allowed: false, message: decision };
+  }
+  return decision.allow
+    ? { allowed: true }
+    : { allowed: false, message: decision.message ?? "Forbidden." };
+}
+
+export async function can(user: unknown, ability: string, model: unknown): Promise<boolean> {
+  const result = await inspect(user, ability, model);
+  return result.allowed;
+}
+
+export async function authorize(user: unknown, ability: string, model: unknown): Promise<void> {
+  const result = await inspect(user, ability, model);
+  if (!result.allowed) {
+    throw new PolicyAuthorizationError(result.message ?? "Forbidden.");
+  }
+}
+
+export function attachPolicyMethods<T extends object>(user: T): T & PolicyUserMethods {
+  const target = user as T & Partial<PolicyUserMethods>;
+  if (typeof target.can !== "function") {
+    target.can = async function (ability: string, model: unknown): Promise<boolean> {
+      return await can(target, ability, model);
+    };
+  }
+  if (typeof target.authorize !== "function") {
+    target.authorize = async function (ability: string, model: unknown): Promise<void> {
+      await authorize(target, ability, model);
+    };
+  }
+  return target as T & PolicyUserMethods;
+}

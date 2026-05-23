@@ -60,7 +60,7 @@ const validator = Validator.make(data, schema);
 await validator.validate();  // throws ValidationError on failure
 await validator.validated(); // alias
 await validator.parse();      // alias of validate()
-await validator.safeParse();  // { success, output? , issues? }
+await validator.safeParse();  // { success, output? , issues?, input? }
 await validator.passes();    // boolean
 await validator.fails();     // boolean
 await validator.errors();    // Record<string, string[]>
@@ -80,6 +80,7 @@ const username = await Validator.parse(Validator.required().string().min(3), inp
 const result = await Validator.safeParse(Validator.required().string().min(3), input);
 if (!result.success) {
   console.log(result.issues.value);
+  console.log(result.input); // original input value (typed)
 }
 ```
 
@@ -95,14 +96,17 @@ const schema = Validator.schema({
 
 const validated = await Validator.parse(schema, { name: "Ada" }); // raw output
 
-const result = await schema.safeParse({ name: "Ada" }); // { success, output?, issues? }
+const result = await schema.safeParse({ name: "Ada" }); // { success, output?, issues?, input? }
 if (!result.success) {
   console.log(result.issues);
+  console.log(result.input); // original input object (typed)
+  console.log(Validator.flatten(result.issues)); // Record<string, string[]>
 }
 ```
 
-`Validator.schema(...)` returns a Standard Schema-compatible object with `~standard`, plus `parse()` / `validate()` / `safeParse()` / `messages()` methods. `parse()` returns raw validated output. `validate()` and `safeParse()` return the Valibot-style `{ success, output, issues }` result, which is convenient for SvelteKit wrappers and other Standard Schema consumers.
+`Validator.schema(...)` returns a Standard Schema-compatible object with `~standard`, plus `parse()` / `validate()` / `safeParse()` / `messages()` methods. `parse()` returns raw validated output. `validate()` and `safeParse()` return `{ success, output, issues, input }` where `input` is present on failures, which is convenient for SvelteKit wrappers and other Standard Schema consumers.
 `Validator.validate(...)` and `schema.validate(...)` are aliases of `safeParse()`.
+Use `Validator.flatten(issues)` when you want a flat bag shape (`Record<string, string[]>`) from either legacy error bags or Standard Schema issues arrays.
 
 Like the instance validator, `Validator.schema(...)` accepts plain objects, `FormData`, `URLSearchParams`, and `Request` inputs.
 
@@ -217,6 +221,18 @@ export const actions = {
 ```
 
 In SvelteKit actions, `safeParse()` is the most direct fit because it gives you a success flag plus collected issues without throwing. Use `parse()` when you want the validated payload and are happy to let failures throw.
+
+`safeParse()` failure results include `input`, so you can return both errors and the attempted payload:
+
+```ts
+const result = await profileSchema.safeParse(await request.formData());
+if (!result.success) {
+  return fail(422, {
+    issues: result.issues,
+    input: result.input,
+  });
+}
+```
 
 To inspect errors without throwing, keep the validator instance and call `fails()` / `errors()`:
 
