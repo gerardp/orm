@@ -243,7 +243,7 @@ describe("sveltekit route() validation response", () => {
     ).rejects.toMatchObject({ status: 403, message: "Forbidden." });
   });
 
-  it("attaches user.can() and user.authorize() on event.locals.user", async () => {
+  it("uses a local extended user for policy checks without mutating event.locals.user", async () => {
     configureSvelteKit({
       error: (status, body) => {
         const err = new Error(body.message) as Error & { status: number };
@@ -260,9 +260,8 @@ describe("sveltekit route() validation response", () => {
     const action = route()
       .bind(async () => record, "announcement")
       .action(async (event) => {
-        const ok = await (event.locals.user as any).can("update", record);
-        await (event.locals.user as any).authorize("update", record);
-        return { ok };
+        const hasCan = typeof (event.locals.user as any).can === "function";
+        return { hasCan };
       });
 
     await expect(
@@ -272,7 +271,7 @@ describe("sveltekit route() validation response", () => {
         cookies: makeCookies(),
         locals: { user: { id: "u1" } },
       } as any),
-    ).resolves.toEqual({ ok: true });
+    ).resolves.toEqual({ hasCan: false });
   });
 
   it("request() returns 422 JSON payload when schema validation fails", async () => {
@@ -309,6 +308,90 @@ describe("sveltekit route() validation response", () => {
       },
       values: {
         title: "",
+      },
+    });
+  });
+
+  it("request() supports RFC7807 problem+json validation responses", async () => {
+    configureSvelteKit({
+      error: (status, body) => {
+        const err = new Error(body.message) as Error & { status: number };
+        err.status = status;
+        throw err;
+      },
+      fail: (status, body) => ({ status, body }),
+    });
+
+    const schema = Validator.schema({
+      title: rule().required().string(),
+    });
+
+    const handler = route()
+      .schema(schema)
+      .request(async () => new Response("ok"), { validationError: "problem+json" });
+
+    const form = new FormData();
+    form.set("title", "");
+
+    const response = await handler({
+      params: {},
+      request: new Request("http://localhost/test", { method: "POST", body: form }),
+      cookies: makeCookies(),
+    } as any);
+
+    expect(response.status).toBe(422);
+    expect(response.headers.get("content-type")).toBe("application/problem+json");
+    expect(await response.json()).toEqual({
+      type: "https://bunnykit.dev/problems/validation-error",
+      title: "Validation failed",
+      status: 422,
+      detail: "One or more fields are invalid.",
+      errors: {
+        title: ["The title field is required."],
+      },
+      values: {
+        title: "",
+      },
+    });
+  });
+
+  it("request() supports custom validationError response formatter", async () => {
+    configureSvelteKit({
+      error: (status, body) => {
+        const err = new Error(body.message) as Error & { status: number };
+        err.status = status;
+        throw err;
+      },
+      fail: (status, body) => ({ status, body }),
+    });
+
+    const schema = Validator.schema({
+      title: rule().required().string(),
+    });
+
+    const handler = route()
+      .schema(schema)
+      .request(async () => new Response("ok"), {
+        validationError: ({ issues }) => new Response(JSON.stringify({ ok: false, issues }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        }),
+      });
+
+    const form = new FormData();
+    form.set("title", "");
+
+    const response = await handler({
+      params: {},
+      request: new Request("http://localhost/test", { method: "POST", body: form }),
+      cookies: makeCookies(),
+    } as any);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      ok: false,
+      issues: {
+        title: ["The title field is required."],
       },
     });
   });

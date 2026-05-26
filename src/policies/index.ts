@@ -4,8 +4,8 @@ export type PolicyDecision =
   | { allow: boolean; message?: string };
 
 export type PolicyMethod = (user: unknown, model: unknown) => PolicyDecision | Promise<PolicyDecision>;
-export type PolicyLike = Record<string, PolicyMethod>;
-export type PolicyClass = new () => PolicyLike;
+export type PolicyLike = object;
+export type PolicyClass = new () => object;
 export type PolicyUserMethods = {
   can(ability: string, model: unknown): Promise<boolean>;
   authorize(ability: string, model: unknown): Promise<void>;
@@ -19,12 +19,12 @@ export class PolicyAuthorizationError extends Error {
   }
 }
 
-const policiesByCtor = new Map<Function, PolicyLike>();
-const policiesByModelName = new Map<string, PolicyLike>();
+const policiesByCtor = new Map<Function, object>();
+const policiesByModelName = new Map<string, object>();
 
-function toPolicyInstance(policy: PolicyLike | PolicyClass): PolicyLike {
+function toPolicyInstance(policy: PolicyLike | PolicyClass): object {
   if (typeof policy === "function") {
-    return new policy();
+    return new (policy as PolicyClass)();
   }
   return policy;
 }
@@ -52,7 +52,7 @@ export function registerPolicies(entries: Record<string, PolicyLike | PolicyClas
   }
 }
 
-function resolvePolicy(model: unknown): PolicyLike | undefined {
+function resolvePolicy(model: unknown): object | undefined {
   if (!model || typeof model !== "object") return undefined;
   const ctor = (model as { constructor?: Function }).constructor;
   if (ctor && policiesByCtor.has(ctor)) {
@@ -74,7 +74,7 @@ export async function inspect(
   if (!policy) {
     return { allowed: false, message: `No policy registered for "${(model as any)?.constructor?.name ?? "model"}".` };
   }
-  const method = policy[ability];
+  const method = (policy as Record<string, unknown>)[ability];
   if (typeof method !== "function") {
     return { allowed: false, message: `Policy does not define "${ability}" ability.` };
   }
@@ -103,16 +103,27 @@ export async function authorize(user: unknown, ability: string, model: unknown):
 }
 
 export function attachPolicyMethods<T extends object>(user: T): T & PolicyUserMethods {
-  const target = user as T & Partial<PolicyUserMethods>;
-  if (typeof target.can !== "function") {
-    target.can = async function (ability: string, model: unknown): Promise<boolean> {
-      return await can(target, ability, model);
-    };
+  const base = user as T & Partial<PolicyUserMethods>;
+  if (typeof base.can === "function" && typeof base.authorize === "function") {
+    return base as T & PolicyUserMethods;
   }
-  if (typeof target.authorize !== "function") {
-    target.authorize = async function (ability: string, model: unknown): Promise<void> {
-      await authorize(target, ability, model);
-    };
-  }
-  return target as T & PolicyUserMethods;
+
+  const extended = Object.create(user) as T & PolicyUserMethods;
+  Object.defineProperty(extended, "can", {
+    enumerable: false,
+    configurable: true,
+    writable: true,
+    value: async function (ability: string, model: unknown): Promise<boolean> {
+      return await can(user, ability, model);
+    },
+  });
+  Object.defineProperty(extended, "authorize", {
+    enumerable: false,
+    configurable: true,
+    writable: true,
+    value: async function (ability: string, model: unknown): Promise<void> {
+      await authorize(user, ability, model);
+    },
+  });
+  return extended;
 }

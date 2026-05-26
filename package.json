@@ -126,7 +126,7 @@
   ],
   "devDependencies": {
     "@types/bun": "latest",
-    "@sveltejs/kit": "^2.0.0",
+    "@sveltejs/kit": "^2.61.0",
     "typescript": "^5.9.3"
   }
 }

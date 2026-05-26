@@ -78,10 +78,40 @@ This is mostly useful when you're combining the ORM with generated `.d.ts` files
 ## Conventions
 
 - **Table name** — inferred from the class name in `snake_case` plus a trailing `s`. `class User` → `users`, `class BlogPost` → `blog_posts`. Override with `static table = "..."`.
+- **Schema (PostgreSQL)** — optional `static modelSchema = "..."` pins a model to a schema (for example landlord/shared models on `public`).
 - **Primary key** — defaults to `id`. Override with `static primaryKey = "..."`.
 - **Key type** — defaults to `int`. Set `static keyType = "uuid"` or `"string"` for non-numeric keys; set `static incrementing = false` if the database doesn't auto-increment.
 - **Timestamps** — `created_at` and `updated_at` are managed automatically. Disable with `static timestamps = false`.
 - **Connection** — uses the default connection. Override per model with `static connection = "..."` plus `ConnectionManager.add(...)`.
+
+## Schema Resolution (PostgreSQL tenancy)
+
+When using schema-per-tenant tenancy, models resolve table names in this order:
+
+1. `static modelSchema` on the model (explicit override)
+2. Active tenant schema from `TenantContext.run(...)`
+3. Fallback `public` (PostgreSQL only)
+
+Example:
+
+```ts
+import { Model, TenantContext } from "@bunnykit/orm";
+
+class Plan extends Model.define<{ id: number; name: string }>("plans") {
+  static modelSchema = "public"; // landlord/shared
+}
+
+class Invoice extends Model.define<{ id: number; total: string }>("invoices") {
+  // tenant-resolved schema
+}
+
+await TenantContext.run("acme", async () => {
+  console.log(Plan.getQualifiedTable());    // public.plans
+  console.log(Invoice.getQualifiedTable()); // tenant_acme.invoices (depends on resolver)
+});
+```
+
+`static modelSchema` is intended for PostgreSQL schema-based setups. MySQL/SQLite do not use PostgreSQL schema qualification.
 
 ## Default attributes
 

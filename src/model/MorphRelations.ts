@@ -119,7 +119,7 @@ export class MorphTo<T extends Record<string, any> = Model> {
     const Related = this.resolveRelated(type);
     if (!Related) this.throwMissingMorph(type);
     const query = (Related as any).on(this.parent.getConnection()).select("1");
-    query.whereColumn(`${Related.getTable()}.${Related.primaryKey}`, "=", `${parentTable}.${this.idColumn}`);
+    query.whereColumn(`${Related.getQualifiedTable(this.parent.getConnection())}.${Related.primaryKey}`, "=", `${parentTable}.${this.idColumn}`);
     query.where(`${parentTable}.${this.typeColumn}`, type);
     if (callback) callback(query);
     return query.toSql();
@@ -307,13 +307,13 @@ export class MorphOne<T extends Record<string, any> = Model, N extends string = 
   get(): Promise<T | null> { return this.getResults(); }
 
   qualifyRelatedColumn(column: string): string {
-    return column.includes(".") ? column : `${this.related.getTable()}.${column}`;
+    return column.includes(".") ? column : `${this.related.getQualifiedTable(this.parent.getConnection())}.${column}`;
   }
 
   protected newExistenceQuery(parentTable: string, aggregate: string, callback?: (query: Builder<any>) => void | Builder<any>): Builder<any> {
     const query = (this.related as any).on(this.parent.getConnection()).select(aggregate);
-    query.whereColumn(`${this.related.getTable()}.${this.idColumn}`, "=", `${parentTable}.${this.localKey}`);
-    query.where(`${this.related.getTable()}.${this.typeColumn}`, this.getMorphType());
+    query.whereColumn(`${this.related.getQualifiedTable(this.parent.getConnection())}.${this.idColumn}`, "=", `${parentTable}.${this.localKey}`);
+    query.where(`${this.related.getQualifiedTable(this.parent.getConnection())}.${this.typeColumn}`, this.getMorphType());
     if (callback) callback(query);
     return query;
   }
@@ -467,13 +467,13 @@ export class MorphMany<T extends Record<string, any> = Model, N extends string =
   }
 
   qualifyRelatedColumn(column: string): string {
-    return column.includes(".") ? column : `${this.related.getTable()}.${column}`;
+    return column.includes(".") ? column : `${this.related.getQualifiedTable(this.parent.getConnection())}.${column}`;
   }
 
   protected newExistenceQuery(parentTable: string, aggregate: string, callback?: (query: Builder<any>) => void | Builder<any>): Builder<any> {
     const query = (this.related as any).on(this.parent.getConnection()).select(aggregate);
-    query.whereColumn(`${this.related.getTable()}.${this.idColumn}`, "=", `${parentTable}.${this.localKey}`);
-    query.where(`${this.related.getTable()}.${this.typeColumn}`, this.getMorphType());
+    query.whereColumn(`${this.related.getQualifiedTable(this.parent.getConnection())}.${this.idColumn}`, "=", `${parentTable}.${this.localKey}`);
+    query.where(`${this.related.getQualifiedTable(this.parent.getConnection())}.${this.typeColumn}`, this.getMorphType());
     if (callback) callback(query);
     return query;
   }
@@ -794,7 +794,7 @@ export class MorphToMany<
   }
 
   protected addConstraints(): void {
-    const relatedTable = this.related.getTable();
+    const relatedTable = this.related.getQualifiedTable(this.parent.getConnection());
     const pivotSelect = this.getPivotSelectColumns();
     this.builder.select(`${relatedTable}.*`, ...pivotSelect);
     this.builder.join(
@@ -814,7 +814,7 @@ export class MorphToMany<
   addEagerConstraints(models: Model[]): void {
     const keys = models.map((m) => m.getAttribute(this.parentKey)).filter((k) => k != null);
     if (keys.length === 0) { this.$skipEagerQuery = true; return; }
-    const relatedTable = this.related.getTable();
+    const relatedTable = this.related.getQualifiedTable(this.parent.getConnection());
     this.builder = this.decoratePivotQuery((this.related as any).on(this.parent.getConnection()));
     const pivotSelect = this.getPivotSelectColumns();
     this.builder.select(`${relatedTable}.*`, `${this.table}.${this.foreignPivotKey}`, ...pivotSelect);
@@ -862,14 +862,13 @@ export class MorphToMany<
   get(): Promise<Collection<T>> { return this.getResults(); }
 
   protected async shouldAutoGeneratePivotPrimaryKey(primaryKey: string): Promise<boolean> {
-    const column = await Schema.getColumn(this.table, primaryKey);
+    const column = await Schema.getColumn(this.qualifiedPivotTable(), primaryKey);
     if (!column) return false;
     if (!column.primary) return false;
     if (column.autoIncrement) return false;
 
-    const type = String(column.type || "").toLowerCase();
-    const numericTypes = new Set(["integer", "int", "bigint", "smallint", "tinyint", "real", "float", "double", "decimal", "numeric"]);
-    return !numericTypes.has(type);
+    const type = String(column.type || "").toLowerCase().replace(/\s+/g, "");
+    return type === "uuid" || type === "char(36)";
   }
 
   async attach(ids: any | any[], attributes?: Record<string, any>): Promise<any> {
@@ -895,7 +894,7 @@ export class MorphToMany<
     }
 
     const connection = this.parent.getConnection();
-    const builder = new Builder(connection, connection.qualifyTable(this.table));
+    const builder = new Builder(connection, this.qualifiedPivotTable());
 
     if (idList.length === 1) {
       if (needsUuid) {
@@ -955,11 +954,11 @@ export class MorphToMany<
   }
 
   qualifyRelatedColumn(column: string): string {
-    return column.includes(".") ? column : `${this.related.getTable()}.${column}`;
+    return column.includes(".") ? column : `${this.related.getQualifiedTable(this.parent.getConnection())}.${column}`;
   }
 
   protected newExistenceQuery(parentTable: string, aggregate: string, callback?: (query: Builder<any>) => void | Builder<any>): Builder<any> {
-    const relatedTable = this.related.getTable();
+    const relatedTable = this.related.getQualifiedTable(this.parent.getConnection());
     const query = this.decoratePivotQuery((this.related as any).on(this.parent.getConnection()).select(aggregate));
     query.join(
       this.qualifiedPivotTable(),

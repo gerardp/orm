@@ -61,6 +61,14 @@ type ResolverBindSpec = {
 type BindSpec = ModelBindSpec | ResolverBindSpec;
 type BindOptions<M extends ModelConstructor<any>> = { with?: BindWithArg<M> };
 type PolicyCheck = { ability: string; alias?: string };
+type RequestValidationErrorPayload = {
+  issues: Record<string, string[]>;
+  values: Record<string, unknown>;
+};
+type RequestValidationErrorMode = "default" | "problem+json";
+type RequestOptions = {
+  validationError?: RequestValidationErrorMode | ((payload: RequestValidationErrorPayload) => Response);
+};
 type KitErrorFn = (status: number, body: { message: string }) => never;
 type KitFailFn = (status: number, body: Record<string, unknown>) => unknown;
 type RouteKitHelpers = {
@@ -242,7 +250,7 @@ export function flash(
 export function extendLocalsUser<T extends { locals?: { user?: unknown } }>(event: T): T {
   const rawUser = (event as any)?.locals?.user;
   if (rawUser && typeof rawUser === "object") {
-    (event as any).locals.user = attachPolicyMethods(rawUser as Record<string, unknown>);
+    attachPolicyMethods(rawUser as Record<string, unknown>);
   }
   return event;
 }
@@ -394,8 +402,9 @@ class RouteBuilder<
   }
 
   private attachLocalsUserPolicyMethods(event: RequestEvent | ServerLoadEvent): unknown {
-    extendLocalsUser(event as any);
-    return (event as any)?.locals?.user;
+    const rawUser = (event as any)?.locals?.user;
+    if (!rawUser || typeof rawUser !== "object") return rawUser;
+    return attachPolicyMethods(rawUser as Record<string, unknown>);
   }
 
   private async resolveBindings(event: RequestEventLike): Promise<TBindings> {
@@ -469,6 +478,7 @@ class RouteBuilder<
 
   request(
     handler: RouteHandler<RequestEvent, TBindings, TSchema extends undefined ? undefined : SchemaOutput<TSchema>, ActionExtras, Response>,
+    options: RequestOptions = {},
   ): (event: RequestEvent) => Promise<Response> {
     return async (event: RequestEvent): Promise<Response> => {
       const bound = await this.resolveBindings(event);
@@ -481,6 +491,22 @@ class RouteBuilder<
             issues: Validator.flatten(parsed.issues),
             values: await requestValues(event.request),
           };
+          if (typeof options.validationError === "function") {
+            return options.validationError(payload);
+          }
+          if (options.validationError === "problem+json") {
+            return new Response(JSON.stringify({
+              type: "https://bunnykit.dev/problems/validation-error",
+              title: "Validation failed",
+              status: 422,
+              detail: "One or more fields are invalid.",
+              errors: payload.issues,
+              values: payload.values,
+            }), {
+              status: 422,
+              headers: { "content-type": "application/problem+json" },
+            });
+          }
           return new Response(JSON.stringify(payload), {
             status: 422,
             headers: { "content-type": "application/json" },

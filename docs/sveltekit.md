@@ -68,7 +68,7 @@ export const load: PageServerLoad = route()
 When validation fails, it returns:
 
 ```ts
-fail(422, { issues, values })
+fail(422, { issues, values });
 ```
 
 `issues` is normalized to a flat bag shape:
@@ -145,6 +145,30 @@ When validation fails in `.request()`, it returns HTTP `422` JSON:
 }
 ```
 
+To use RFC7807/problem details:
+
+```ts
+export const POST: RequestHandler = route()
+  .schema(BodySchema)
+  .request(async () => new Response("ok"), {
+    validationError: "problem+json",
+  });
+```
+
+You can also customize validation error responses:
+
+```ts
+export const POST: RequestHandler = route()
+  .schema(BodySchema)
+  .request(async () => new Response("ok"), {
+    validationError: ({ issues, values }) =>
+      new Response(JSON.stringify({ ok: false, issues, values }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      }),
+  });
+```
+
 ## Flash in `load`
 
 `route().load(...)` automatically reads flash from cookie, deletes it, and injects it into context as `flash`.
@@ -158,10 +182,12 @@ export const load: PageServerLoad = route().load(async (_event, { flash }) => {
 `flash` shape:
 
 ```ts
-type FlashMessage = string | {
-  type: "success" | "error" | "info" | "warning";
-  message: string;
-};
+type FlashMessage =
+  | string
+  | {
+      type: "success" | "error" | "info" | "warning";
+      message: string;
+    };
 
 type Flash = FlashMessage | FlashMessage[] | null;
 ```
@@ -225,12 +251,7 @@ export const load: PageServerLoad = route()
   .load(async (_event, { announcement }) => ({ announcement }));
 ```
 
-Inside `route().load()` / `route().action()` handlers, `event.locals.user` is extended at runtime with:
-
-```ts
-await event.locals.user.can("update", announcement);
-await event.locals.user.authorize("update", announcement);
-```
+`route().can(...)` uses an internal extended actor for policy checks and does not mutate `event.locals.user`.
 
 You can target a specific alias when multiple records are bound:
 

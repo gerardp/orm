@@ -165,7 +165,7 @@ total sockets ≈ (number of distinct connections) × max
 Strategy implications:
 
 - **`qualify`** (recommended for high concurrency): all tenants share the base connection's pool — table names are schema-prefixed (`tenant_x.users`). One pool total. No connection pinned per request. Best scalability.
-- **`search_path`**: correctness-isolated via a per-request transaction. **One pool connection is pinned for the entire request duration** (including any external I/O inside the handler). Concurrent requests must stay below `max`. Keep handlers fast; prefer `qualify` unless you need raw-SQL/`search_path` isolation.
+- **`search_path`**: uses a dedicated reserved connection for the callback and sets `search_path` for that session, then resets it. **One pool connection is pinned for the callback duration** (including any external I/O inside the handler). Keep callbacks short; prefer `qualify` unless you need `search_path` behavior for raw SQL.
 - **`database`**: each distinct tenant database gets its **own pool**. `T` tenants ⇒ `T × max` sockets — this exhausts `max_connections` fast. This is mitigated by default: when `tenancy.resolveTenant` is set, `configureBunny()` applies a 5-minute idle TTL and a 60s background eviction sweep automatically. Tune or disable via [`tenancy.idleTimeoutMs`](#idletimeoutms) and [`tenancy.sweep`](#sweep):
 
 ```ts
@@ -281,6 +281,24 @@ tenancy: {
 ```
 
 `name` is an internal cache key; pick something stable. The resolution is cached for the duration of the process.
+
+### Model-level schema override (`static modelSchema`)
+
+For PostgreSQL schema-per-tenant apps, you can pin specific models to a fixed schema (commonly landlord/shared models on `public`) while other models stay tenant-scoped:
+
+```ts
+class LandlordPlan extends Model.define<{ id: number }>("plans") {
+  static modelSchema = "public";
+}
+
+class TenantInvoice extends Model.define<{ id: number }>("invoices") {}
+```
+
+Resolution order for model table names:
+
+1. `static modelSchema` on the model
+2. Active tenant schema from `TenantContext.run(...)`
+3. Fallback `public` (PostgreSQL only)
 
 ### `listTenants`
 

@@ -51,6 +51,7 @@ If you are new here, start with [Installation](./installation.md), then walk thr
 | Topic | What you will learn |
 |---|---|
 | [SvelteKit Helper](./sveltekit.md) | Typed route model binding and action validation helpers for `+page.server.ts`. |
+| [Policies](./policies.md) | Register model/resource policies, use `can` / `authorize`, and enforce access in RouteBuilder. |
 | [Observers](./observers.md) | Lifecycle hooks for `creating`, `created`, `updating`, `deleting`, and more. |
 | [Events](./events.md) | Application-level events with function listeners, class handlers, and temporary subscriptions. |
 | [Library Usage](./library-usage.md) | Run migrations and seeders programmatically from app code using the `configureBunny()` facade. |

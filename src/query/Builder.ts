@@ -1551,7 +1551,9 @@ export class Builder<T = Record<string, any>, TResult = T> {
 
     if (this.model) {
       const identityMap = IdentityMap.current();
-      const table = (this.model as any).getTable();
+      const table = typeof (this.model as any).getQualifiedTable === "function"
+        ? (this.model as any).getQualifiedTable(this.connection)
+        : (this.model as any).getTable();
       const primaryKey = (this.model as any).primaryKey || "id";
 
       const models = rows.map((row: any) => {
@@ -1730,7 +1732,11 @@ export class Builder<T = Record<string, any>, TResult = T> {
     if (!this.model) return undefined;
     const model = this.model as any;
     const instance = new model();
-    const targetTable = typeof model.getTable === "function" ? model.getTable() : undefined;
+    const targetTable = typeof model.getQualifiedTable === "function"
+      ? model.getQualifiedTable(this.connection)
+      : typeof model.getTable === "function"
+      ? model.getTable()
+      : undefined;
     const parentColumn = this.recursiveTreeConfig?.parentColumn;
     const primaryKey = this.recursiveTreeConfig?.primaryKey || (typeof model.primaryKey === "string" ? model.primaryKey : "id");
 
@@ -1745,7 +1751,11 @@ export class Builder<T = Record<string, any>, TResult = T> {
           const relation = descriptor.value.call(instance);
           if (!(relation instanceof HasMany)) continue;
           const related = relation.getRelatedModelConstructor();
-          const relatedTable = typeof related?.getTable === "function" ? related.getTable() : undefined;
+          const relatedTable = typeof related?.getQualifiedTable === "function"
+            ? related.getQualifiedTable(this.connection)
+            : typeof related?.getTable === "function"
+            ? related.getTable()
+            : undefined;
           if (related !== model && relatedTable !== targetTable) continue;
           const foreignKey = relation.getForeignKeyName();
           const localKey = relation.getLocalKeyName();
@@ -2654,9 +2664,12 @@ export class Builder<T = Record<string, any>, TResult = T> {
     if (!related) return false;
     const targetConstructor = Object.getPrototypeOf(target).constructor as ModelConstructor;
     if (related === targetConstructor) return true;
-    return typeof related.getTable === "function" &&
-      typeof targetConstructor.getTable === "function" &&
-      related.getTable() === targetConstructor.getTable();
+    if (typeof related.getQualifiedTable === "function" && typeof targetConstructor.getQualifiedTable === "function") {
+      return related.getQualifiedTable(this.connection) === targetConstructor.getQualifiedTable(this.connection);
+    }
+    return typeof related.getTable === "function"
+      && typeof targetConstructor.getTable === "function"
+      && related.getTable() === targetConstructor.getTable();
   }
 
   private getModelRelation(relationName: string): any {

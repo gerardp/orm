@@ -56,9 +56,10 @@ export function makeMakePolicyCommand(config: BunnyConfig) {
       const policyRoots = config.policyPath
         ? normalizePathList(config.policyPath)
         : [];
+      const hasSrcDir = await exists("./src");
       const outputDir = (this.option("dir") as string | undefined)
         ?? policyRoots[0]
-        ?? "./app/policies";
+        ?? (hasSrcDir ? "./src/policies" : "./app/policies");
 
       await mkdir(outputDir, { recursive: true });
       const policyPath = join(outputDir, `${policyClass}.ts`);

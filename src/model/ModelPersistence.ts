@@ -11,7 +11,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
   static async shouldAutoGeneratePrimaryKey(): Promise<boolean> {
     if ((this as any).usesUuids || this.keyType === "uuid") return true;
     const { Schema } = await import("../schema/Schema.js");
-    const column = await Schema.getColumn((this as any).getTable(), this.primaryKey);
+    const column = await Schema.getColumn((this as any).getQualifiedTable(), this.primaryKey);
     if (!column) return false;
     if (!column.primary) return false;
     if (column.autoIncrement) return false;
@@ -130,7 +130,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
 
   static async truncate<M extends ModelConstructor>(this: M): Promise<void> {
     const connection = (this as any).getConnection();
-    await connection.run(`DELETE FROM ${connection.qualifyTable((this as any).getTable())}`);
+    await connection.run(`DELETE FROM ${(this as any).getQualifiedTable(connection)}`);
   }
 
   static async insert<M extends ModelConstructor>(
@@ -357,7 +357,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
         if (events) await ObserverRegistry.dispatch("updating", this as any);
         const pk = this.getAttribute(constructor.primaryKey);
         const connection = this.getConnection();
-        await new Builder(connection, connection.qualifyTable(constructor.getTable()))
+        await new Builder(connection, constructor.getQualifiedTable(connection))
           .where(constructor.primaryKey, pk)
           .update(dirty);
         this.$changes = { ...dirty };
@@ -393,9 +393,9 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
 
       const connection = this.getConnection();
       if (shouldGeneratePrimaryKey || primaryKeyValue !== null && primaryKeyValue !== undefined && primaryKeyValue !== "") {
-        await new Builder(connection, connection.qualifyTable(constructor.getTable())).insert(this.$attributes);
+        await new Builder(connection, constructor.getQualifiedTable(connection)).insert(this.$attributes);
       } else {
-        const result = await new Builder(connection, connection.qualifyTable(constructor.getTable())).insertGetId(this.$attributes);
+        const result = await new Builder(connection, constructor.getQualifiedTable(connection)).insertGetId(this.$attributes);
         if (result) {
           (this.$attributes as any)[constructor.primaryKey] = result;
           delete this.$castCache[constructor.primaryKey];
@@ -457,7 +457,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
     const now = this.freshTimestamp();
     const pk = this.getAttribute(constructor.primaryKey);
     const connection = this.getConnection();
-    await new Builder(connection, connection.qualifyTable(constructor.getTable()))
+    await new Builder(connection, constructor.getQualifiedTable(connection))
       .where(constructor.primaryKey, pk)
       .update({ updated_at: now } as any);
     (this.$attributes as any)["updated_at"] = now;
@@ -473,7 +473,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
     if (!pk) return this;
 
     const connection = this.getConnection();
-    const builder = new Builder(connection, connection.qualifyTable(constructor.getTable()))
+    const builder = new Builder(connection, constructor.getQualifiedTable(connection))
       .where(constructor.primaryKey, pk);
 
     if (constructor.timestamps) {
@@ -505,7 +505,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
     if (constructor.softDeletes) {
       const deletedAt = this.freshTimestamp();
       const connection = this.getConnection();
-      await new Builder(connection, connection.qualifyTable(constructor.getTable()))
+      await new Builder(connection, constructor.getQualifiedTable(connection))
         .where(constructor.primaryKey, pk)
         .update({ [constructor.deletedAtColumn]: deletedAt } as any);
       (this.$attributes as any)[constructor.deletedAtColumn] = deletedAt;
@@ -514,7 +514,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
       this.$dirtyKeys?.clear();
     } else {
       const connection = this.getConnection();
-      await new Builder(connection, connection.qualifyTable(constructor.getTable()))
+      await new Builder(connection, constructor.getQualifiedTable(connection))
         .where(constructor.primaryKey, pk)
         .delete();
       this.$exists = false;
@@ -538,7 +538,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
     if (constructor.softDeletes) {
       const deletedAt = this.freshTimestamp();
       const connection = this.getConnection();
-      await new Builder(connection, connection.qualifyTable(constructor.getTable()))
+      await new Builder(connection, constructor.getQualifiedTable(connection))
         .where(constructor.primaryKey, pk)
         .update({ [constructor.deletedAtColumn]: deletedAt } as any);
       (this.$attributes as any)[constructor.deletedAtColumn] = deletedAt;
@@ -547,7 +547,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
       this.$dirtyKeys?.clear();
     } else {
       const connection = this.getConnection();
-      await new Builder(connection, connection.qualifyTable(constructor.getTable()))
+      await new Builder(connection, constructor.getQualifiedTable(connection))
         .where(constructor.primaryKey, pk)
         .delete();
       this.$exists = false;
@@ -567,7 +567,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
     if (!pk) return false;
 
     const connection = this.getConnection();
-    await new Builder(connection, connection.qualifyTable(constructor.getTable()))
+    await new Builder(connection, constructor.getQualifiedTable(connection))
       .where(constructor.primaryKey, pk)
       .update({ [constructor.deletedAtColumn]: null } as any);
     (this.$attributes as any)[constructor.deletedAtColumn] = null;
@@ -583,7 +583,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
     const pk = this.getAttribute(constructor.primaryKey);
     if (!pk) return false;
     const connection = this.getConnection();
-    await new Builder(connection, connection.qualifyTable(constructor.getTable()))
+    await new Builder(connection, constructor.getQualifiedTable(connection))
       .where(constructor.primaryKey, pk)
       .delete();
     this.$exists = false;

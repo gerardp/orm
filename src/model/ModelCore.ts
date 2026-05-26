@@ -25,6 +25,7 @@ import { snakeCase } from "../utils.js";
 
 export class ModelCore<T extends Record<string, any> = any> {
   static table: string;
+  static modelSchema?: string;
   static primaryKey = "id";
   static timestamps = true;
   static connection?: Connection;
@@ -100,6 +101,36 @@ export class ModelCore<T extends Record<string, any> = any> {
     return this.table || snakeCase(this.name) + "s";
   }
 
+  static resolveSchema(connection?: Connection): string | undefined {
+    const configured = Object.prototype.hasOwnProperty.call(this, "modelSchema") ? this.modelSchema : undefined;
+    if (configured) {
+      Connection.assertSafeIdentifier(configured, "model schema");
+      return configured;
+    }
+
+    const activeConnection = connection ?? this.getConnection();
+    const fromConnection = activeConnection.getSchema();
+    if (fromConnection) return fromConnection;
+
+    // Keep PostgreSQL landlord reads explicit even when no tenant context is active.
+    if (activeConnection.getDriverName() === "postgres") return "public";
+    return undefined;
+  }
+
+  static getQualifiedTable(connection?: Connection): string {
+    const activeConnection = connection ?? this.getConnection();
+    const table = this.getTable();
+    if (table.includes(".")) {
+      Connection.assertSafeQualifiedIdentifier(table, "qualified table name");
+      return table;
+    }
+    const schema = this.resolveSchema(activeConnection);
+    if (!schema || activeConnection.getDriverName() === "sqlite") {
+      return activeConnection.qualifyTable(table);
+    }
+    return activeConnection.withSchema(schema).qualifyTable(table);
+  }
+
   static schema(): ModelSchemaBuilder {
     return new ModelSchemaBuilder(this.getTable(), this.getConnection(), {
       casts: this.casts,
@@ -138,7 +169,7 @@ export class ModelCore<T extends Record<string, any> = any> {
 
   static on<M extends ModelConstructor>(this: M, connection: string | Connection): Builder<InstanceType<M>> {
     const resolved = typeof connection === "string" ? ConnectionManager.require(connection) : connection;
-    const builder = new Builder<InstanceType<M>>(resolved, resolved.qualifyTable((this as any).getTable()));
+    const builder = new Builder<InstanceType<M>>(resolved, (this as any).getQualifiedTable(resolved));
     builder.setModel(this);
     (this as any).applyGlobalScopes(builder);
     return builder;
@@ -154,7 +185,7 @@ export class ModelCore<T extends Record<string, any> = any> {
 
   static query<M extends ModelConstructor>(this: M): Builder<InstanceType<M>> {
     const connection = (this as any).getConnection();
-    const builder = new Builder<InstanceType<M>>(connection, connection.qualifyTable((this as any).getTable()));
+    const builder = new Builder<InstanceType<M>>(connection, (this as any).getQualifiedTable(connection));
     builder.setModel(this);
     (this as any).applyGlobalScopes(builder);
     return builder;
@@ -185,7 +216,7 @@ export class ModelCore<T extends Record<string, any> = any> {
   }
 
   static getQualifiedDeletedAtColumn(): string {
-    return `${(this as any).getTable()}.${this.deletedAtColumn}`;
+    return `${(this as any).getQualifiedTable()}.${this.deletedAtColumn}`;
   }
 
   // Instance methods

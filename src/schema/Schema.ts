@@ -527,7 +527,15 @@ export class Schema {
   ): Promise<{ name: string; type: string; primary: boolean; autoIncrement: boolean } | null> {
     const connection = this.getConnection();
     const driver = connection.getDriverName();
-    const schema = connection.getSchema() || "public";
+    let schema = connection.getSchema() || "public";
+    let tableName = table;
+    if (driver === "postgres" && table.includes(".")) {
+      const [schemaPart, ...tableParts] = table.split(".");
+      if (schemaPart && tableParts.length > 0) {
+        schema = schemaPart;
+        tableName = tableParts.join(".");
+      }
+    }
     const grammar = this.getGrammar();
     if (driver === "sqlite") {
       const rows = await connection.query(`PRAGMA table_info(${grammar.wrap(table)})`);
@@ -538,7 +546,7 @@ export class Schema {
     if (driver === "mysql") {
       const rows = await connection.query(
         "SELECT column_name AS Field, column_type AS Type, column_key AS `Key`, extra AS Extra FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
-        [table, column]
+        [tableName, column]
       );
       const row = rows[0];
       return row ? { name: row.Field, type: row.Type, primary: row.Key === "PRI", autoIncrement: String(row.Extra || "").toLowerCase().includes("auto_increment") } as any : null;
@@ -557,7 +565,7 @@ export class Schema {
        WHERE c.table_schema = $1
          AND c.table_name = $2
          AND c.column_name = $3`,
-      [schema, table, column]
+      [schema, tableName, column]
     );
     const row = rows[0];
     return row ? { name: row.column_name, type: row.data_type, primary: !!row.primary_key, autoIncrement: false } as any : null;
