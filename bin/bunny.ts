@@ -77,6 +77,10 @@ function isInteractiveTerminal(): boolean {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
+function resolveReplTmpRoot(): string {
+  return process.env.BUNNY_REPL_TMPDIR || process.env.TMPDIR || process.env.TEMP || process.env.TMP || "/tmp";
+}
+
 async function promptYesNo(question: string, defaultYes = true): Promise<boolean> {
   if (!isInteractiveTerminal()) return defaultYes;
   const suffix = defaultYes ? " [Y/n] " : " [y/N] ";
@@ -608,7 +612,7 @@ async function runConfiguredMigrationCommandWithoutSqlLogging(
 }
 
 async function createReplBootstrap(config: BunnyConfig): Promise<string> {
-  const tmpRoot = process.env.BUNNY_REPL_TMPDIR || "/private/tmp";
+  const tmpRoot = resolveReplTmpRoot();
   const dir = join(tmpRoot, "bunny-repl");
   await mkdir(dir, { recursive: true });
   const bootstrapPath = join(dir, `bootstrap-${Date.now()}-${Math.random().toString(36).slice(2)}.ts`);
@@ -825,15 +829,17 @@ async function createReplBootstrap(config: BunnyConfig): Promise<string> {
 }
 
 async function runRepl(config: BunnyConfig, replArgs: string[]): Promise<number> {
+  const tmpRoot = resolveReplTmpRoot();
   const bootstrapPath = await createReplBootstrap(config);
-  await mkdir("/private/tmp/bunny-repl-cache", { recursive: true });
+  const cachePath = join(tmpRoot, "bunny-repl-cache");
+  await mkdir(cachePath, { recursive: true });
   const proc = Bun.spawn(["bun", "repl", ...replArgs], {
     env: {
       ...process.env,
-      TMPDIR: "/private/tmp",
-      TEMP: "/private/tmp",
-      TMP: "/private/tmp",
-      BUN_RUNTIME_TRANSPILER_CACHE_PATH: "/private/tmp/bunny-repl-cache",
+      TMPDIR: tmpRoot,
+      TEMP: tmpRoot,
+      TMP: tmpRoot,
+      BUN_RUNTIME_TRANSPILER_CACHE_PATH: cachePath,
     },
     terminal: {
       cols: process.stdout.columns || 80,
