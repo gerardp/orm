@@ -383,6 +383,49 @@ describe("BelongsToMany", () => {
     expect(tags[0].pivot.id).toBe(pivotId);
   });
 
+  test("attach introspects the pivot on the model's own connection", async () => {
+    // The tables only exist on this connection, never on the default one the
+    // Schema facade points at, so any introspection that ignores the model's
+    // connection comes back empty and skips the generated keys.
+    const other = new Connection({ url: "sqlite://:memory:" });
+    await other.run("CREATE TABLE o_posts (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT)");
+    await other.run("CREATE TABLE o_tags (id TEXT PRIMARY KEY NOT NULL, name TEXT)");
+    await other.run(
+      "CREATE TABLE o_post_tags (id TEXT PRIMARY KEY NOT NULL, o_post_id INTEGER, o_tag_id TEXT, category TEXT)"
+    );
+
+    class OPost extends Model {
+      static table = "o_posts";
+      static connection = other;
+      static timestamps = false;
+      tags() {
+        return this.belongsToMany(OTag, "o_post_tags").withPivot("id", "category");
+      }
+    }
+
+    class OTag extends Model {
+      static table = "o_tags";
+      static connection = other;
+      static timestamps = false;
+    }
+
+    const post = await OPost.create({ title: "Tenant Post" });
+    const tag = await OTag.create({ name: "Tenant Tag" });
+
+    expect(typeof tag.getAttribute("id")).toBe("string");
+
+    const pivotId = await post.tags().attach(tag.getAttribute("id"), { category: "tenant" });
+    expect(typeof pivotId).toBe("string");
+
+    const tags = await post.tags().getResults();
+    expect(tags).toHaveLength(1);
+    expect(tags[0].getAttribute("name")).toBe("Tenant Tag");
+    expect(tags[0].pivot.id).toBe(pivotId);
+    expect(tags[0].pivot.category).toBe("tenant");
+
+    await other.driver.close();
+  });
+
   test("belongsToMany create/save helpers fill constrained fields", async () => {
     const post = await BPost.create({ title: "Helpers" });
     const relation = post.featuredTags();

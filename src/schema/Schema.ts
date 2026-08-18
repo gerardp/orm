@@ -49,8 +49,8 @@ export class Schema {
     return connection;
   }
 
-  private static getGrammar(): Grammar {
-    const driver = this.getConnection().getDriverName();
+  private static getGrammar(connection?: Connection): Grammar {
+    const driver = (connection ?? this.getConnection()).getDriverName();
     switch (driver) {
       case "sqlite":
         return new SQLiteGrammar();
@@ -263,7 +263,7 @@ export class Schema {
   static async getIndexes(table: string, conn?: Connection): Promise<SchemaIndex[]> {
     const connection = conn ?? this.getConnection();
     const driver = connection.getDriverName();
-    const grammar = this.getGrammar();
+    const grammar = this.getGrammar(connection);
     const schema = connection.getSchema() || "public";
 
     if (driver === "sqlite") {
@@ -328,7 +328,7 @@ export class Schema {
   static async getForeignKeys(table: string, conn?: Connection): Promise<SchemaForeignKey[]> {
     const connection = conn ?? this.getConnection();
     const driver = connection.getDriverName();
-    const grammar = this.getGrammar();
+    const grammar = this.getGrammar(connection);
     const schema = connection.getSchema() || "public";
 
     if (driver === "sqlite") {
@@ -464,7 +464,7 @@ export class Schema {
     const conn = connection ?? this.getConnection();
     const driver = conn.getDriverName();
     const schema = conn.getSchema() || "public";
-    const grammar = this.getGrammar();
+    const grammar = this.getGrammar(conn);
 
     if (driver === "sqlite") {
       const rows = await conn.query(`PRAGMA table_info(${grammar.wrap(table)})`);
@@ -523,9 +523,10 @@ export class Schema {
 
   static async getColumn(
     table: string,
-    column: string
+    column: string,
+    conn?: Connection
   ): Promise<{ name: string; type: string; primary: boolean; autoIncrement: boolean } | null> {
-    const connection = this.getConnection();
+    const connection = conn ?? this.getConnection();
     const driver = connection.getDriverName();
     let schema = connection.getSchema() || "public";
     let tableName = table;
@@ -536,7 +537,7 @@ export class Schema {
         tableName = tableParts.join(".");
       }
     }
-    const grammar = this.getGrammar();
+    const grammar = this.getGrammar(connection);
     if (driver === "sqlite") {
       const rows = await connection.query(`PRAGMA table_info(${grammar.wrap(table)})`);
       const row = rows.find((item: any) => item.name === column);

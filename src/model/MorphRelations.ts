@@ -862,7 +862,7 @@ export class MorphToMany<
   get(): Promise<Collection<T>> { return this.getResults(); }
 
   protected async shouldAutoGeneratePivotPrimaryKey(primaryKey: string): Promise<boolean> {
-    const column = await Schema.getColumn(this.qualifiedPivotTable(), primaryKey);
+    const column = await Schema.getColumn(this.qualifiedPivotTable(), primaryKey, this.parent.getConnection());
     return shouldGeneratePrimaryKeyForColumn(column);
   }
 

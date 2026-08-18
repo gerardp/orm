@@ -271,7 +271,7 @@ export class BelongsToMany<T extends Record<string, any> = Model, RelatedFixed e
   }
 
   protected async shouldAutoGeneratePivotPrimaryKey(primaryKey: string): Promise<boolean> {
-    const column = await Schema.getColumn(this.qualifiedPivotTable(), primaryKey);
+    const column = await Schema.getColumn(this.qualifiedPivotTable(), primaryKey, this.parent.getConnection());
     return shouldGeneratePrimaryKeyForColumn(column);
   }
 
