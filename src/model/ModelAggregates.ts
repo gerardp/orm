@@ -2,6 +2,8 @@ import { Builder } from "../query/Builder.js";
 import { Collection } from "../support/Collection.js";
 import type {
   ModelConstructor,
+  ModelColumn,
+  ModelColumnValue,
   EagerLoadConstraint,
   EagerLoadDefinition,
   EagerLoadInput,
@@ -58,6 +60,36 @@ export class ModelAggregates<T extends Record<string, any> = any> extends ModelQ
 
   static async count<M extends ModelConstructor>(this: M): Promise<number> {
     return (this as any).query().count();
+  }
+
+  static async sum<M extends ModelConstructor>(this: M, column: ModelColumn<InstanceType<M>>): Promise<number> {
+    return (this as any).query().sum(column);
+  }
+
+  static async avg<M extends ModelConstructor>(this: M, column: ModelColumn<InstanceType<M>>): Promise<number> {
+    return (this as any).query().avg(column);
+  }
+
+  static async min<M extends ModelConstructor, K extends ModelColumn<InstanceType<M>>>(
+    this: M,
+    column: K
+  ): Promise<ModelColumnValue<InstanceType<M>, K> | null> {
+    return (this as any).query().min(column);
+  }
+
+  static async max<M extends ModelConstructor, K extends ModelColumn<InstanceType<M>>>(
+    this: M,
+    column: K
+  ): Promise<ModelColumnValue<InstanceType<M>, K> | null> {
+    return (this as any).query().max(column);
+  }
+
+  static async exists<M extends ModelConstructor>(this: M): Promise<boolean> {
+    return (this as any).query().exists();
+  }
+
+  static async sole<M extends ModelConstructor>(this: M): Promise<InstanceType<M>> {
+    return (this as any).query().sole();
   }
 
   static async paginate<M extends ModelConstructor>(this: M, perPage?: number, page?: number): Promise<import("../query/Builder.js").Paginator<InstanceType<M>>> {

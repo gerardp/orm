@@ -263,3 +263,80 @@ describe("Model", () => {
     expect(found!.name).toBe("test");
   });
 });
+
+describe("Model query terminators as statics", () => {
+  class TermPost extends Model {
+    static table = "term_posts";
+    comments() {
+      return this.hasMany(TermComment, "term_post_id");
+    }
+  }
+
+  class TermComment extends Model {
+    static table = "term_comments";
+  }
+
+  class TermEmpty extends Model {
+    static table = "term_empty";
+  }
+
+  beforeAll(async () => {
+    setupTestDb();
+    await Schema.create("term_posts", (table) => {
+      table.increments("id");
+      table.string("title");
+      table.integer("views");
+      table.timestamps();
+    });
+    await Schema.create("term_comments", (table) => {
+      table.increments("id");
+      table.integer("term_post_id");
+      table.timestamps();
+    });
+    await Schema.create("term_empty", (table) => {
+      table.increments("id");
+      table.timestamps();
+    });
+
+    const commented = await TermPost.create({ title: "Commented", views: 10 });
+    await TermPost.create({ title: "Standalone", views: 30 });
+    await TermPost.create({ title: "Quiet", views: 20 });
+    await TermComment.create({ term_post_id: commented.getAttribute("id") });
+  });
+
+  test("sum, avg, min and max run off the model", async () => {
+    expect(await TermPost.sum("views")).toBe(60);
+    expect(await TermPost.avg("views")).toBe(20);
+    expect(await TermPost.min("views")).toBe(10);
+    expect(await TermPost.max("views")).toBe(30);
+  });
+
+  test("the static aggregates match the builder ones", async () => {
+    expect(await TermPost.sum("views")).toBe(await TermPost.query().sum("views"));
+    expect(await TermPost.max("views")).toBe(await TermPost.query().max("views"));
+  });
+
+  test("exists reports whether the table has any row", async () => {
+    expect(await TermPost.exists()).toBe(true);
+    expect(await TermEmpty.exists()).toBe(false);
+  });
+
+  test("sole returns the only row and throws when there is more than one", async () => {
+    const only = await TermPost.where("title", "Standalone").sole();
+    expect(only.getAttribute("title")).toBe("Standalone");
+
+    await expect(TermPost.sole()).rejects.toThrow(/Multiple records found/);
+    await expect(TermEmpty.sole()).rejects.toThrow();
+  });
+
+  test("orWhereHas starts a query the same way the builder does", async () => {
+    expect(TermPost.orWhereHas("comments").toSql()).toBe(TermPost.query().orWhereHas("comments").toSql());
+
+    const posts = await TermPost.orWhereHas("comments")
+      .orWhere("title", "Standalone")
+      .orderBy("title")
+      .get();
+
+    expect(posts.map((post) => post.getAttribute("title"))).toEqual(["Commented", "Standalone"]);
+  });
+});
