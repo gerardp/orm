@@ -1,5 +1,5 @@
 import { Grammar } from "./Grammar.js";
-import type { ColumnDefinition } from "../../types/index.js";
+import type { ColumnDefinition, PrimaryKeyDefinition } from "../../types/index.js";
 
 export class SQLiteGrammar extends Grammar {
   protected wrappers = { prefix: '"', suffix: '"' };
@@ -72,6 +72,12 @@ export class SQLiteGrammar extends Grammar {
     throw new Error("Changing existing columns is not supported by the SQLite grammar.");
   }
 
+  compileAddPrimaryKey(_table: string, _primaryKey: PrimaryKeyDefinition): string {
+    throw new Error(
+      "SQLite cannot add a primary key to an existing table. Declare it in Schema.create() instead."
+    );
+  }
+
   compileForeignKeys(blueprint: any, table: string): string[] {
     // SQLite supports foreign keys inside CREATE TABLE only.
     // For simplicity, ALTER TABLE ADD CONSTRAINT is not supported in SQLite.
@@ -80,7 +86,7 @@ export class SQLiteGrammar extends Grammar {
   }
 
   compileCreate(blueprint: any, table: string): string {
-    const columns = this.getColumns(blueprint).map((col) => `    ${col}`).join(",\n");
+    const columns = this.getTableDefinitions(blueprint).map((col) => `    ${col}`).join(",\n");
     const fks = blueprint.foreignKeys
       .map((fk: any) => {
         let sql = `    FOREIGN KEY (${this.wrapArray(fk.columns).join(", ")}) REFERENCES ${this.wrap(fk.onTable)} (${this.wrapArray(fk.references).join(", ")})`;
@@ -96,7 +102,7 @@ export class SQLiteGrammar extends Grammar {
   }
 
   compileCreateIfNotExists(blueprint: any, table: string): string {
-    const columns = this.getColumns(blueprint).map((col) => `    ${col}`).join(",\n");
+    const columns = this.getTableDefinitions(blueprint).map((col) => `    ${col}`).join(",\n");
     const fks = blueprint.foreignKeys
       .map((fk: any) => {
         let sql = `    FOREIGN KEY (${this.wrapArray(fk.columns).join(", ")}) REFERENCES ${this.wrap(fk.onTable)} (${this.wrapArray(fk.references).join(", ")})`;

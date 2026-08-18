@@ -37,6 +37,11 @@ export interface ColumnDefinition {
   defaultUuid?: boolean;
 }
 
+export interface PrimaryKeyDefinition {
+  columns: string[];
+  name?: string;
+}
+
 export interface IndexDefinition {
   name: string;
   columns: string[];

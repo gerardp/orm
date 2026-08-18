@@ -96,14 +96,15 @@ export class MySqlGrammar extends Grammar {
     return `ALTER TABLE ${this.wrap(table)} ADD ${type} ${this.wrap(index.name)} (${this.wrapArray(index.columns).join(", ")})`;
   }
 
+  // MySQL always calls the primary key "PRIMARY": a given name is accepted and ignored.
   compileCreate(blueprint: any, table: string): string {
-    const columns = this.getColumns(blueprint).map((col) => `    ${col}`).join(",\n");
+    const columns = this.getTableDefinitions(blueprint).map((col) => `    ${col}`).join(",\n");
     const sql = `CREATE TABLE ${this.wrap(table)} (\n${columns}\n)`;
     return sql;
   }
 
   compileCreateIfNotExists(blueprint: any, table: string): string {
-    const columns = this.getColumns(blueprint).map((col) => `    ${col}`).join(",\n");
+    const columns = this.getTableDefinitions(blueprint).map((col) => `    ${col}`).join(",\n");
     const sql = `CREATE TABLE IF NOT EXISTS ${this.wrap(table)} (\n${columns}\n)`;
     return sql;
   }
