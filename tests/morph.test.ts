@@ -63,6 +63,13 @@ class MTag extends Model {
   }
 }
 
+class MDocument extends Model {
+  static table = "m_documents";
+  tags() {
+    return this.morphToMany(MTag, "taggable", "uuid_taggables", "taggable_id", "tag_id").withPivot("id", "scope");
+  }
+}
+
 describe("Polymorphic Relations", () => {
   let connection: ReturnType<typeof setupTestDb>;
 
@@ -71,6 +78,7 @@ describe("Polymorphic Relations", () => {
     MorphMap.register("MPost", MPost);
     MorphMap.register("MVideo", MVideo);
     MorphMap.register("MImage", MImage);
+    MorphMap.register("MDocument", MDocument);
 
     await Schema.create("m_posts", (table) => {
       table.increments("id");
@@ -121,6 +129,19 @@ describe("Polymorphic Relations", () => {
     await Schema.create("m_tags", (table) => {
       table.increments("id");
       table.string("name");
+      table.timestamps();
+    });
+    await Schema.create("m_documents", (table) => {
+      table.increments("id");
+      table.string("title");
+      table.timestamps();
+    });
+    await Schema.create("uuid_taggables", (table) => {
+      table.uuid("id").primary();
+      table.integer("tag_id");
+      table.integer("taggable_id");
+      table.string("taggable_type");
+      table.string("scope").nullable();
       table.timestamps();
     });
   });
@@ -512,6 +533,22 @@ describe("Polymorphic Relations", () => {
       // @ts-expect-error collection is fixed by the relation constraint and should not be suggested.
       relation.attach({ collection: "profile_picture" });
     }
+  });
+
+  test("morphToMany attach generates UUID for pivot table with UUID primary key", async () => {
+    const document = await MDocument.create({ title: "Spec" });
+    const tag = await MTag.create({ name: "Reference" });
+
+    const pivotId = await document.tags().attach(tag.getAttribute("id"), { scope: "reference" });
+
+    expect(typeof pivotId).toBe("string");
+    expect(pivotId.length).toBeGreaterThan(0);
+
+    const tags = await document.tags().getResults();
+    expect(tags).toHaveLength(1);
+    expect(tags[0].getAttribute("name")).toBe("Reference");
+    expect(tags[0].pivot.id).toBe(pivotId);
+    expect(tags[0].pivot.scope).toBe("reference");
   });
 
   test("morphToMany existence queries qualify pivot table with PostgreSQL schema", () => {

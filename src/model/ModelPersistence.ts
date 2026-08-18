@@ -6,18 +6,14 @@ import { Collection } from "../support/Collection.js";
 import { findRelationMethod } from "./ModelBase.js";
 import type { ModelConstructor, BulkModelOptions, SaveOptions, ModelAttributeInput } from "./ModelBase.js";
 import { ModelCore } from "./ModelCore.js";
+import { shouldGeneratePrimaryKeyForColumn } from "../utils.js";
 
 export class ModelPersistence<T extends Record<string, any> = any> extends ModelCore<T> {
   static async shouldAutoGeneratePrimaryKey(): Promise<boolean> {
     if ((this as any).usesUuids || this.keyType === "uuid") return true;
     const { Schema } = await import("../schema/Schema.js");
     const column = await Schema.getColumn((this as any).getQualifiedTable(), this.primaryKey);
-    if (!column) return false;
-    if (!column.primary) return false;
-    if (column.autoIncrement) return false;
-    const type = String(column.type || "").toLowerCase();
-    const numericTypes = new Set(["integer", "int", "bigint", "smallint", "tinyint", "real", "float", "double", "decimal", "numeric"]);
-    return !numericTypes.has(type);
+    return shouldGeneratePrimaryKeyForColumn(column);
   }
 
   static async prepareBulkRecords<M extends ModelConstructor>(
