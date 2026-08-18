@@ -101,6 +101,65 @@ describe("Schema Builder", () => {
     await teardownTestDb(connection);
   });
 
+  test("mysql grammar emits the distinct char and text types", () => {
+    const grammar = new MySqlGrammar();
+    const blueprint = new Blueprint("documents");
+    blueprint.char("token", 64);
+    blueprint.char("code");
+    blueprint.text("summary");
+    blueprint.mediumText("body");
+    blueprint.longText("archive");
+    const sql = grammar.compileCreate(blueprint, "documents");
+    expect(sql).toContain("`token` CHAR(64) NOT NULL");
+    expect(sql).toContain("`code` CHAR(255) NOT NULL");
+    expect(sql).toContain("`summary` TEXT NOT NULL");
+    expect(sql).toContain("`body` MEDIUMTEXT NOT NULL");
+    expect(sql).toContain("`archive` LONGTEXT NOT NULL");
+  });
+
+  test("postgres keeps char and collapses the sized text types to TEXT", () => {
+    const grammar = new PostgresGrammar();
+    const blueprint = new Blueprint("documents");
+    blueprint.char("token", 64);
+    blueprint.mediumText("body");
+    blueprint.longText("archive");
+    const sql = grammar.compileCreate(blueprint, "documents");
+    expect(sql).toContain('"token" CHAR(64) NOT NULL');
+    expect(sql).toContain('"body" TEXT NOT NULL');
+    expect(sql).toContain('"archive" TEXT NOT NULL');
+    expect(sql).not.toContain("MEDIUMTEXT");
+    expect(sql).not.toContain("LONGTEXT");
+  });
+
+  test("sqlite declares all of them as TEXT", () => {
+    const grammar = new SQLiteGrammar();
+    const blueprint = new Blueprint("documents");
+    blueprint.char("token", 64);
+    blueprint.mediumText("body");
+    blueprint.longText("archive");
+    const sql = grammar.compileCreate(blueprint, "documents");
+    expect(sql).toContain('"token" TEXT NOT NULL');
+    expect(sql).toContain('"body" TEXT NOT NULL');
+    expect(sql).toContain('"archive" TEXT NOT NULL');
+    expect(sql).not.toContain("CHAR(");
+    expect(sql).not.toContain("MEDIUMTEXT");
+    expect(sql).not.toContain("LONGTEXT");
+  });
+
+  test("char and long text columns round-trip through Schema", async () => {
+    connection = setupTestDb();
+    await Schema.create("text_shapes", (table) => {
+      table.increments("id");
+      table.char("token", 64);
+      table.mediumText("body").nullable();
+      table.longText("archive").nullable();
+    });
+
+    const columns = await Schema.getColumns("text_shapes");
+    expect(columns.map((column) => column.name)).toEqual(["id", "token", "body", "archive"]);
+    await teardownTestDb(connection);
+  });
+
   test("creates and drops table via Schema", async () => {
     connection = setupTestDb();
     await Schema.create("test_table", (table) => {

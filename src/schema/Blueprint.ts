@@ -113,8 +113,20 @@ export class Blueprint {
     return this.addColumn("string", name, length);
   }
 
+  char(name: string, length: number = 255): this {
+    return this.addColumn("char", name, length);
+  }
+
   text(name: string): this {
     return this.addColumn("text", name);
+  }
+
+  mediumText(name: string): this {
+    return this.addColumn("mediumText", name);
+  }
+
+  longText(name: string): this {
+    return this.addColumn("longText", name);
   }
 
   integer(name: string): this {

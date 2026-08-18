@@ -81,6 +81,8 @@ function buildBlueprintFromModel(blueprint: Blueprint, info: ModelInfo): void {
 function dbTypeToColumnType(dbType: string): ColumnType {
   const t = dbType.toLowerCase();
   if (t.startsWith("varchar") || t.startsWith("character varying")) return "string";
+  if (t === "mediumtext") return "mediumText";
+  if (t === "longtext") return "longText";
   if (t === "text" || t.startsWith("text")) return "text";
   if (t === "uuid") return "uuid";
   if (t === "boolean" || t === "bool" || t === "tinyint(1)") return "boolean";

@@ -15,7 +15,12 @@ export class PostgresGrammar extends Grammar {
     switch (column.type) {
       case "string":
         return `VARCHAR(${column.length || 255})`;
+      case "char":
+        return `CHAR(${column.length || 255})`;
       case "text":
+      // Postgres has a single unbounded text type; TEXT holds ~1GB, past both.
+      case "mediumText":
+      case "longText":
         return "TEXT";
       case "integer":
         return "INTEGER";
