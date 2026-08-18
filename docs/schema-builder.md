@@ -275,11 +275,22 @@ await Schema.create("posts", (table) => {
 });
 ```
 
+`constrained(table?, column?, name?)` takes the referenced table, the referenced column, and the constraint name — all optional:
+
+```ts
+table.foreignId("author_id").constrained("users");             // → users.id
+table.foreignId("author_id").constrained("users", "uuid");     // → users.uuid
+table.foreignId("author_id").constrained("users", "id", "posts_author_fk");
+```
+
+Without a name the database picks one. Name it when you need to reference it later, or when the generated name would exceed the identifier limit — MySQL cuts off at 64 characters, which long table and column names reach faster than you would expect. SQLite names the constraint inline in `CREATE TABLE`; it cannot be dropped there afterwards, but the name still shows up in the schema.
+
 Cascade helpers chain naturally:
 
 ```ts
 table.foreignId("user_id").constrained().cascadeOnDelete();
 table.foreign("user_id").references("id").on("users").onDelete("set null");
+table.foreign("user_id", "posts_user_fk").references("id").on("users");
 ```
 
 `onDelete` accepts `"cascade"`, `"restrict"`, `"set null"`, `"no action"`, or `"set default"`. The same options apply to `onUpdate`.

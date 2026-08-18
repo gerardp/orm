@@ -45,6 +45,54 @@ describe("Schema Builder", () => {
     expect(sql).toContain('"active" BOOLEAN NOT NULL DEFAULT FALSE');
   });
 
+  test("constrained() names the constraint when asked", () => {
+    const blueprint = new Blueprint("practicum_specialties");
+    blueprint.foreignId("practicum_id").constrained("practicums", "id", "practicum_fk").cascadeOnDelete();
+
+    const [sql] = new MySqlGrammar().compileForeignKeys(blueprint, "practicum_specialties");
+    expect(sql).toBe(
+      "ALTER TABLE `practicum_specialties` ADD CONSTRAINT `practicum_fk` FOREIGN KEY (`practicum_id`) REFERENCES `practicums` (`id`) ON DELETE cascade"
+    );
+  });
+
+  test("constrained() without a name leaves the constraint unnamed", () => {
+    const blueprint = new Blueprint("posts");
+    blueprint.foreignId("user_id").constrained();
+
+    const [sql] = new PostgresGrammar().compileForeignKeys(blueprint, "posts");
+    expect(sql).toBe(
+      'ALTER TABLE "posts" ADD FOREIGN KEY ("user_id") REFERENCES "users" ("id")'
+    );
+    expect(sql).not.toContain("CONSTRAINT");
+  });
+
+  test("sqlite names its inline foreign keys", () => {
+    const blueprint = new Blueprint("practicum_specialties");
+    blueprint.foreignId("practicum_id").constrained("practicums", "id", "practicum_fk").cascadeOnDelete();
+    blueprint.foreignId("specialty_id").constrained("specialties");
+
+    const sql = new SQLiteGrammar().compileCreate(blueprint, "practicum_specialties");
+    expect(sql).toContain('CONSTRAINT "practicum_fk" FOREIGN KEY ("practicum_id") REFERENCES "practicums" ("id") ON DELETE cascade');
+    expect(sql).toContain('FOREIGN KEY ("specialty_id") REFERENCES "specialties" ("id")');
+  });
+
+  test("a named constrained() foreign key is accepted by the database", async () => {
+    connection = setupTestDb();
+    await Schema.create("fk_practicums", (table) => {
+      table.increments("id");
+    });
+    await Schema.create("fk_practicum_specialties", (table) => {
+      table.increments("id");
+      table.foreignId("practicum_id").constrained("fk_practicums", "id", "practicum_named_fk").cascadeOnDelete();
+    });
+
+    const foreignKeys = await Schema.getForeignKeys("fk_practicum_specialties");
+    expect(foreignKeys).toHaveLength(1);
+    expect(foreignKeys[0]!.columns).toEqual(["practicum_id"]);
+    expect(foreignKeys[0]!.onTable).toBe("fk_practicums");
+    await teardownTestDb(connection);
+  });
+
   test("creates and drops table via Schema", async () => {
     connection = setupTestDb();
     await Schema.create("test_table", (table) => {
