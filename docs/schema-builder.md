@@ -181,7 +181,7 @@ table.string("phone").after("email");        // Column position (MySQL)
 | `.default(value)` | Default literal (or `Schema.raw(...)` for expressions) |
 | `.unique()` | Add a single-column UNIQUE constraint |
 | `.index()` | Add a single-column index |
-| `.primary()` | Mark column as part of the primary key |
+| `.primary()` | Make the column the primary key (see [Primary keys](#primary-keys) for composite ones) |
 | `.unsigned()` | Unsigned numeric (MySQL) |
 | `.comment(text)` | Column comment (MySQL / Postgres) |
 | `.after(column)` | Place a newly added column after another one (MySQL) |
@@ -223,6 +223,45 @@ table.nullableUuidMorphs("subject");
 ```
 
 Use these on tables holding [`MorphTo`](./relationships.md#polymorphic-relations) targets — `comments`, `activities`, `attachments`, etc.
+
+## Primary keys
+
+A single-column key is a modifier on the column:
+
+```ts
+table.increments("id");        // implicit primary key
+table.uuid("id").primary();    // explicit
+```
+
+A composite key belongs to the table, not to any one column, so it takes the columns as an argument — the same shape as `index()`:
+
+```ts
+await Schema.create("role_user", (table) => {
+  table.foreignId("user_id").constrained();
+  table.foreignId("role_id").constrained();
+  table.primary(["user_id", "role_id"]);      // PRIMARY KEY (user_id, role_id)
+});
+```
+
+Pivot tables are the usual case: the pair is the identity of the row, and the key both enforces it and indexes the lookups that lead with the first column.
+
+A second argument names the constraint:
+
+```ts
+table.primary(["user_id", "role_id"], "role_user_pk");
+```
+
+PostgreSQL and SQLite honor the name. MySQL always calls the primary key `PRIMARY` and ignores what you pass.
+
+`Schema.table()` can add one to a table that has none, as long as the columns are `NOT NULL`:
+
+```ts
+await Schema.table("role_user", (table) => {
+  table.primary(["user_id", "role_id"]);
+});
+```
+
+SQLite cannot do this — it has no `ALTER TABLE ... ADD PRIMARY KEY` — and throws rather than silently skipping. Declare the key in `Schema.create()` there.
 
 ## Indexes
 

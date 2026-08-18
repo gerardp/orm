@@ -41,6 +41,11 @@ export interface ColumnDefinition {
   after?: string;
 }
 
+export interface PrimaryKeyDefinition {
+  columns: string[];
+  name?: string;
+}
+
 export interface IndexDefinition {
   name: string;
   columns: string[];

@@ -122,13 +122,13 @@ export class PostgresGrammar extends Grammar {
   }
 
   compileCreate(blueprint: any, table: string): string {
-    const columns = this.getColumns(blueprint).map((col) => `    ${col}`).join(",\n");
+    const columns = this.getTableDefinitions(blueprint).map((col) => `    ${col}`).join(",\n");
     const sql = `CREATE TABLE ${this.wrap(table)} (\n${columns}\n)`;
     return sql;
   }
 
   compileCreateIfNotExists(blueprint: any, table: string): string {
-    const columns = this.getColumns(blueprint).map((col) => `    ${col}`).join(",\n");
+    const columns = this.getTableDefinitions(blueprint).map((col) => `    ${col}`).join(",\n");
     const sql = `CREATE TABLE IF NOT EXISTS ${this.wrap(table)} (\n${columns}\n)`;
     return sql;
   }

@@ -1,5 +1,5 @@
 import { Blueprint } from "../Blueprint.js";
-import type { ColumnDefinition, IndexDefinition, ForeignKeyDefinition } from "../../types/index.js";
+import type { ColumnDefinition, IndexDefinition, ForeignKeyDefinition, PrimaryKeyDefinition } from "../../types/index.js";
 
 export abstract class Grammar {
   protected wrappers: Record<string, string> = { prefix: '"', suffix: '"' };
@@ -17,13 +17,13 @@ export abstract class Grammar {
   }
 
   compileCreate(blueprint: Blueprint, table: string): string {
-    const columns = this.getColumns(blueprint).map((col) => `    ${col}`).join(",\n");
+    const columns = this.getTableDefinitions(blueprint).map((col) => `    ${col}`).join(",\n");
     const sql = `CREATE TABLE ${this.wrap(table)} (\n${columns}\n)`;
     return sql;
   }
 
   compileCreateIfNotExists(blueprint: Blueprint, table: string): string {
-    const columns = this.getColumns(blueprint).map((col) => `    ${col}`).join(",\n");
+    const columns = this.getTableDefinitions(blueprint).map((col) => `    ${col}`).join(",\n");
     return `CREATE TABLE IF NOT EXISTS ${this.wrap(table)} (\n${columns}\n)`;
   }
 
@@ -46,6 +46,25 @@ export abstract class Grammar {
 
   protected getColumns(blueprint: Blueprint): string[] {
     return blueprint.columns.map((col) => this.getColumn(blueprint, col));
+  }
+
+  /** Everything that goes inside CREATE TABLE (...): columns, then table-level constraints. */
+  protected getTableDefinitions(blueprint: Blueprint): string[] {
+    const definitions = this.getColumns(blueprint);
+    const primaryKey = this.compilePrimaryKey(blueprint.primaryKey);
+    if (primaryKey) definitions.push(primaryKey);
+    return definitions;
+  }
+
+  protected compilePrimaryKey(primaryKey?: PrimaryKeyDefinition): string | null {
+    if (!primaryKey) return null;
+    const constraint = primaryKey.name ? `CONSTRAINT ${this.wrap(primaryKey.name)} ` : "";
+    return `${constraint}PRIMARY KEY (${this.wrapArray(primaryKey.columns).join(", ")})`;
+  }
+
+  compileAddPrimaryKey(table: string, primaryKey: PrimaryKeyDefinition): string {
+    const constraint = primaryKey.name ? ` CONSTRAINT ${this.wrap(primaryKey.name)}` : "";
+    return `ALTER TABLE ${this.wrap(table)} ADD${constraint} PRIMARY KEY (${this.wrapArray(primaryKey.columns).join(", ")})`;
   }
 
   protected getColumn(_blueprint: Blueprint, column: ColumnDefinition): string {

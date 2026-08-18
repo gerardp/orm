@@ -187,6 +187,10 @@ export class Schema {
       await this.getConnection().run(sql);
     }
 
+    if (blueprint.primaryKey) {
+      await this.getConnection().run(grammar.compileAddPrimaryKey(qualifiedTable, blueprint.primaryKey));
+    }
+
     const indexes = grammar.compileIndexes(blueprint, qualifiedTable);
     for (const indexSql of indexes) {
       await this.getConnection().run(indexSql);

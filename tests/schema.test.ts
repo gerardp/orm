@@ -213,6 +213,70 @@ describe("Schema Builder", () => {
     await teardownTestDb(connection);
   });
 
+  test("grammars compile a composite primary key", () => {
+    const build = () => {
+      const blueprint = new Blueprint("role_user");
+      blueprint.integer("user_id");
+      blueprint.integer("role_id");
+      blueprint.primary(["user_id", "role_id"]);
+      return blueprint;
+    };
+
+    expect(new SQLiteGrammar().compileCreate(build(), "role_user")).toContain('PRIMARY KEY ("user_id", "role_id")');
+    expect(new MySqlGrammar().compileCreate(build(), "role_user")).toContain("PRIMARY KEY (`user_id`, `role_id`)");
+    expect(new PostgresGrammar().compileCreate(build(), "role_user")).toContain('PRIMARY KEY ("user_id", "role_id")');
+  });
+
+  test("a named composite primary key becomes a named constraint", () => {
+    const blueprint = new Blueprint("role_user");
+    blueprint.integer("user_id");
+    blueprint.integer("role_id");
+    blueprint.primary(["user_id", "role_id"], "role_user_pk");
+
+    const sql = new PostgresGrammar().compileCreate(blueprint, "role_user");
+    expect(sql).toContain('CONSTRAINT "role_user_pk" PRIMARY KEY ("user_id", "role_id")');
+  });
+
+  test("primary() with no arguments still marks the current column", () => {
+    const blueprint = new Blueprint("users");
+    blueprint.uuid("id").primary();
+    blueprint.string("name");
+
+    expect(blueprint.primaryKey).toBeUndefined();
+    expect(new SQLiteGrammar().compileCreate(blueprint, "users")).toContain('"id" TEXT PRIMARY KEY NOT NULL');
+  });
+
+  test("composite primary key is enforced by the database", async () => {
+    connection = setupTestDb();
+    await Schema.create("pk_role_user", (table) => {
+      table.integer("user_id");
+      table.integer("role_id");
+      table.primary(["user_id", "role_id"]);
+    });
+
+    const columns = await Schema.getColumns("pk_role_user");
+    expect(columns.filter((column) => column.primary).map((column) => column.name)).toEqual(["user_id", "role_id"]);
+
+    await connection.run("INSERT INTO pk_role_user (user_id, role_id) VALUES (1, 1)");
+    await connection.run("INSERT INTO pk_role_user (user_id, role_id) VALUES (1, 2)");
+    await expect(connection.run("INSERT INTO pk_role_user (user_id, role_id) VALUES (1, 1)")).rejects.toThrow();
+
+    await teardownTestDb(connection);
+  });
+
+  test("Schema.table compiles an ALTER for a composite primary key", () => {
+    const primaryKey = { columns: ["user_id", "document_id"] };
+    expect(new MySqlGrammar().compileAddPrimaryKey("favorites", primaryKey)).toBe(
+      "ALTER TABLE `favorites` ADD PRIMARY KEY (`user_id`, `document_id`)"
+    );
+    expect(new PostgresGrammar().compileAddPrimaryKey("favorites", { ...primaryKey, name: "favorites_pk" })).toBe(
+      'ALTER TABLE "favorites" ADD CONSTRAINT "favorites_pk" PRIMARY KEY ("user_id", "document_id")'
+    );
+    expect(() => new SQLiteGrammar().compileAddPrimaryKey("favorites", primaryKey)).toThrow(
+      /SQLite cannot add a primary key/
+    );
+  });
+
   test("creates and drops table via Schema", async () => {
     connection = setupTestDb();
     await Schema.create("test_table", (table) => {

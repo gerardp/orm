@@ -1,6 +1,7 @@
 import type {
   ColumnDefinition,
   IndexDefinition,
+  PrimaryKeyDefinition,
   ColumnType,
 } from "../types/index.js";
 
@@ -62,6 +63,7 @@ export class Blueprint {
   readonly table: string;
   columns: ColumnDefinition[] = [];
   indexes: IndexDefinition[] = [];
+  primaryKey?: PrimaryKeyDefinition;
   foreignKeys: any[] = [];
   commands: { name: string; parameters?: Record<string, any> }[] = [];
 
@@ -262,10 +264,20 @@ export class Blueprint {
     return this;
   }
 
-  primary(): this {
-    if (this.currentColumn) {
-      this.currentColumn.primary = true;
+  primary(): this;
+  primary(columns: string | string[], name?: string): this;
+  primary(columns?: string | string[], name?: string): this {
+    if (columns === undefined) {
+      if (this.currentColumn) {
+        this.currentColumn.primary = true;
+      }
+      return this;
     }
+
+    this.primaryKey = {
+      columns: Array.isArray(columns) ? columns : [columns],
+      name,
+    };
     return this;
   }
 
