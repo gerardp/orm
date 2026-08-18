@@ -45,6 +45,7 @@ Every method on the blueprint adds a column. The first argument is always the co
 
 | Method | SQL type |
 |---|---|
+| `id(name = "id")` | `BIGINT PRIMARY KEY AUTOINCREMENT` — alias of `bigIncrements` |
 | `increments(name = "id")` | `INTEGER PRIMARY KEY AUTOINCREMENT` |
 | `bigIncrements(name = "id")` | `BIGINT PRIMARY KEY AUTOINCREMENT` |
 | `tinyInteger(name)` | `TINYINT` |
@@ -53,6 +54,7 @@ Every method on the blueprint adds a column. The first argument is always the co
 | `bigInteger(name)` | `BIGINT` |
 
 ```ts
+table.id();                  // the primary key nearly every table wants
 table.integer("views").unsigned().default(0);
 table.bigInteger("file_size").nullable();
 ```

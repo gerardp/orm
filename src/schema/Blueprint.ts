@@ -96,6 +96,11 @@ export class Blueprint {
     return this;
   }
 
+  /** The conventional auto-incrementing big integer primary key. Alias of bigIncrements(). */
+  id(name: string = "id"): this {
+    return this.bigIncrements(name);
+  }
+
   bigIncrements(name: string = "id"): this {
     const col = this.addColumn("bigInteger", name);
     col.currentColumn!.autoIncrement = true;
