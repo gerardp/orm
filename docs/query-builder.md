@@ -692,6 +692,8 @@ await Product.max("price");
 
 `exists()` runs a tiny `SELECT 1` and short-circuits — prefer it to `count() > 0` when you only need a boolean.
 
+`count`, `sum`, `avg`, `min`, `max`, `exists`, `sole` and `pluck` all run either straight off the model, as above, or off a constrained query — `User.sum("credits")` and `User.where("active", true).sum("credits")` are the same call with a different starting point.
+
 ## Eager loading
 
 The fastest way to avoid N+1 query bugs. Always pre-load relations you intend to read.

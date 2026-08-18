@@ -407,6 +407,10 @@ export class ModelQuerying<T extends Record<string, any> = any> extends ModelRel
     return (this as any).query().whereHas(relationName as any, callback as any, operator as any, count as any);
   }
 
+  static orWhereHas<M extends ModelConstructor>(this: M, relationName: string, callback?: (query: Builder<any>) => void | Builder<any>, operator?: string, count?: number): Builder<InstanceType<M>> {
+    return (this as any).query().orWhereHas(relationName as any, callback as any, operator as any, count as any);
+  }
+
   static doesntHave<M extends ModelConstructor>(this: M, relationName: string): Builder<InstanceType<M>> {
     return (this as any).query().doesntHave(relationName as any);
   }
