@@ -45,6 +45,28 @@ describe("Schema Builder", () => {
     expect(sql).toContain('"active" BOOLEAN NOT NULL DEFAULT FALSE');
   });
 
+  test("id() is the conventional big integer primary key", () => {
+    const withId = new Blueprint("posts");
+    withId.id();
+    const withBigIncrements = new Blueprint("posts");
+    withBigIncrements.bigIncrements("id");
+
+    expect(withId.columns).toEqual(withBigIncrements.columns);
+    expect(new MySqlGrammar().compileCreate(withId, "posts")).toContain(
+      "`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+    );
+  });
+
+  test("id() takes a column name", () => {
+    const blueprint = new Blueprint("posts");
+    blueprint.id("post_id");
+
+    const column = blueprint.columns[0]!;
+    expect(column.name).toBe("post_id");
+    expect(column.autoIncrement).toBe(true);
+    expect(column.primary).toBe(true);
+  });
+
   test("creates and drops table via Schema", async () => {
     connection = setupTestDb();
     await Schema.create("test_table", (table) => {
