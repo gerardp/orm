@@ -55,6 +55,35 @@ describe("Model", () => {
     expect(user.getAttribute("id")).toBeDefined();
   });
 
+  test("pluck reads one column from the model", async () => {
+    const pluckUser = await TestUser.create({ name: "Pluck One", email: "pluck-one@example.com" });
+
+    const emails = await TestUser.where("id", pluckUser.getAttribute("id")).pluck("email");
+    expect(emails).toEqual(["pluck-one@example.com"]);
+  });
+
+  test("pluck keyed by a column returns a map", async () => {
+    const first = await TestUser.create({ name: "Pluck Keyed A", email: "keyed-a@example.com" });
+    const second = await TestUser.create({ name: "Pluck Keyed B", email: "keyed-b@example.com" });
+
+    const byId = await TestUser.whereIn("id", [first.getAttribute("id"), second.getAttribute("id")])
+      .pluck("email", "id");
+
+    expect(byId).toEqual({
+      [first.getAttribute("id")]: "keyed-a@example.com",
+      [second.getAttribute("id")]: "keyed-b@example.com",
+    });
+  });
+
+  test("pluck works straight off the model, with and without a key", async () => {
+    const emails = await TestUser.pluck("email");
+    expect(Array.isArray(emails)).toBe(true);
+
+    const byId = await TestUser.pluck("email", "id");
+    expect(Array.isArray(byId)).toBe(false);
+    expect(Object.keys(byId).length).toBe(emails.length);
+  });
+
   test("find retrieves existing model", async () => {
     const created = await TestUser.create({ name: "Bob" });
     const found = await TestUser.find(created.getAttribute("id"));

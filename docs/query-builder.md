@@ -172,6 +172,8 @@ const emails = await User.pluck("email");                  // string[] — one c
 const idsByEmail = await User.pluck("email", "id");        // Record<id, email>
 ```
 
+With a second argument, `pluck` returns a map keyed by that column instead of a list: `pluck("email", "id")` gives `{ 1: "alice@example.com", 2: "bob@example.com" }`. Both columns come back in a single query. If the key column repeats, the last row wins.
+
 ## Where clauses
 
 ### Equality and operators

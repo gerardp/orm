@@ -123,6 +123,46 @@ describe("Query Builder", () => {
     expect(names).toEqual(["a", "b"]);
   });
 
+  test("pluck keyed by a second column returns a map", async () => {
+    const connection = setupTestDb();
+    await connection.run("CREATE TABLE plk_keyed (id INTEGER PRIMARY KEY, email TEXT)");
+    await connection.run("INSERT INTO plk_keyed (id, email) VALUES (1, 'a@example.com'), (2, 'b@example.com')");
+    const builder = new Builder(connection, "plk_keyed");
+
+    expect(await builder.pluck("email", "id")).toEqual({
+      1: "a@example.com",
+      2: "b@example.com",
+    });
+  });
+
+  test("pluck keyed by a column keeps the last row of a repeated key", async () => {
+    const connection = setupTestDb();
+    await connection.run("CREATE TABLE plk_dupes (team TEXT, name TEXT)");
+    await connection.run("INSERT INTO plk_dupes (team, name) VALUES ('red', 'Ada'), ('red', 'Grace'), ('blue', 'Linus')");
+    const builder = new Builder(connection, "plk_dupes");
+
+    expect(await builder.pluck("name", "team")).toEqual({ red: "Grace", blue: "Linus" });
+  });
+
+  test("pluck resolves qualified columns and aliases", async () => {
+    const connection = setupTestDb();
+    await connection.run("CREATE TABLE plk_q (id INTEGER PRIMARY KEY, name TEXT)");
+    await connection.run("INSERT INTO plk_q (id, name) VALUES (1, 'Ada')");
+
+    expect(await new Builder(connection, "plk_q").pluck("plk_q.name")).toEqual(["Ada"]);
+    expect(await new Builder(connection, "plk_q").pluck("plk_q.name", "plk_q.id")).toEqual({ 1: "Ada" });
+    expect(await new Builder(connection, "plk_q").pluck("name as label")).toEqual(["Ada"]);
+  });
+
+  test("pluck with a key is still a single query over two columns", async () => {
+    const connection = setupTestDb();
+    await connection.run("CREATE TABLE plk_sql (id INTEGER PRIMARY KEY, email TEXT)");
+    const builder = new Builder(connection, "plk_sql");
+    await builder.pluck("email", "id");
+
+    expect(builder.toSql()).toBe('SELECT "email", "id" FROM "plk_sql"');
+  });
+
   test("exists returns boolean", async () => {
     const connection = setupTestDb();
     await connection.run("CREATE TABLE ex (id INTEGER PRIMARY KEY)");
