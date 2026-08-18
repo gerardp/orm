@@ -12,7 +12,8 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
   static async shouldAutoGeneratePrimaryKey(): Promise<boolean> {
     if ((this as any).usesUuids || this.keyType === "uuid") return true;
     const { Schema } = await import("../schema/Schema.js");
-    const column = await Schema.getColumn((this as any).getQualifiedTable(), this.primaryKey);
+    const connection = (this as any).getConnection();
+    const column = await Schema.getColumn((this as any).getQualifiedTable(connection), this.primaryKey, connection);
     return shouldGeneratePrimaryKeyForColumn(column);
   }
 
