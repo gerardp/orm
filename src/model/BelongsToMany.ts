@@ -1,7 +1,7 @@
 import { Builder } from "../query/Builder.js";
 import { Schema } from "../schema/Schema.js";
 import { Collection } from "../support/Collection.js";
-import { snakeCase } from "../utils.js";
+import { shouldGeneratePrimaryKeyForColumn, snakeCase } from "../utils.js";
 import type { Model, ModelAttributeInputWithout, ModelConstructor, PivotQueryBuilder, StripTablePrefix } from "./Model.js";
 
 function getModelConstructor(model: Model): typeof Model {
@@ -272,12 +272,7 @@ export class BelongsToMany<T extends Record<string, any> = Model, RelatedFixed e
 
   protected async shouldAutoGeneratePivotPrimaryKey(primaryKey: string): Promise<boolean> {
     const column = await Schema.getColumn(this.qualifiedPivotTable(), primaryKey);
-    if (!column) return false;
-    if (!column.primary) return false;
-    if (column.autoIncrement) return false;
-
-    const type = String(column.type || "").toLowerCase().replace(/\s+/g, "");
-    return type === "uuid" || type === "char(36)";
+    return shouldGeneratePrimaryKeyForColumn(column);
   }
 
   protected attachPivotToResults(results: Collection<any>): void {
