@@ -1,6 +1,9 @@
 export type ColumnType =
   | "string"
+  | "char"
   | "text"
+  | "mediumText"
+  | "longText"
   | "integer"
   | "bigInteger"
   | "smallInteger"

@@ -8,7 +8,12 @@ export class SQLiteGrammar extends Grammar {
     switch (column.type) {
       case "string":
         return "TEXT";
+      // SQLite accepts CHAR(n)/MEDIUMTEXT/LONGTEXT as names but gives them all
+      // TEXT affinity and enforces no width, so declare what it actually is.
+      case "char":
       case "text":
+      case "mediumText":
+      case "longText":
         return "TEXT";
       case "integer":
         return "INTEGER";

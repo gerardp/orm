@@ -79,12 +79,21 @@ Always store currency as `decimal`, not `float`/`double`. Floats lose precision 
 | Method | Notes |
 |---|---|
 | `string(name, length = 255)` | `VARCHAR(length)` |
+| `char(name, length = 255)` | `CHAR(length)` — fixed width |
 | `text(name)` | Unbounded `TEXT` |
+| `mediumText(name)` | `MEDIUMTEXT` on MySQL (~16MB); `TEXT` elsewhere |
+| `longText(name)` | `LONGTEXT` on MySQL (~4GB); `TEXT` elsewhere |
 
 ```ts
 table.string("email", 191).unique(); // 191 = MySQL utf8mb4 index cap
+table.char("country_code", 2);       // always exactly 2 characters
 table.text("body").nullable();
+table.longText("payload");
 ```
+
+Only MySQL/MariaDB has separate storage classes for text, so it is the only driver where `mediumText` and `longText` differ from `text`. PostgreSQL has a single unbounded `TEXT` (~1GB, past both) and SQLite gives everything TEXT affinity, so both collapse to `TEXT` there rather than declaring a type the engine does not really implement.
+
+`char` is real on MySQL and PostgreSQL — blank-padded to the declared width. SQLite accepts the name but enforces no width, so it is declared as `TEXT`; do not rely on fixed-width semantics there.
 
 ### Booleans and dates
 

@@ -8,8 +8,14 @@ export class MySqlGrammar extends Grammar {
     switch (column.type) {
       case "string":
         return `VARCHAR(${column.length || 255})`;
+      case "char":
+        return `CHAR(${column.length || 255})`;
       case "text":
         return "TEXT";
+      case "mediumText":
+        return "MEDIUMTEXT";
+      case "longText":
+        return "LONGTEXT";
       case "integer":
         return "INT";
       case "bigInteger":
