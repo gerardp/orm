@@ -94,7 +94,8 @@ export class SQLiteGrammar extends Grammar {
     const columns = this.getTableDefinitions(blueprint).map((col) => `    ${col}`).join(",\n");
     const fks = blueprint.foreignKeys
       .map((fk: any) => {
-        let sql = `    FOREIGN KEY (${this.wrapArray(fk.columns).join(", ")}) REFERENCES ${this.wrap(fk.onTable)} (${this.wrapArray(fk.references).join(", ")})`;
+        const constraint = fk.name ? `CONSTRAINT ${this.wrap(fk.name)} ` : "";
+        let sql = `    ${constraint}FOREIGN KEY (${this.wrapArray(fk.columns).join(", ")}) REFERENCES ${this.wrap(fk.onTable)} (${this.wrapArray(fk.references).join(", ")})`;
         if (fk.onDelete) sql += ` ON DELETE ${fk.onDelete}`;
         if (fk.onUpdate) sql += ` ON UPDATE ${fk.onUpdate}`;
         return sql;
@@ -110,7 +111,8 @@ export class SQLiteGrammar extends Grammar {
     const columns = this.getTableDefinitions(blueprint).map((col) => `    ${col}`).join(",\n");
     const fks = blueprint.foreignKeys
       .map((fk: any) => {
-        let sql = `    FOREIGN KEY (${this.wrapArray(fk.columns).join(", ")}) REFERENCES ${this.wrap(fk.onTable)} (${this.wrapArray(fk.references).join(", ")})`;
+        const constraint = fk.name ? `CONSTRAINT ${this.wrap(fk.name)} ` : "";
+        let sql = `    ${constraint}FOREIGN KEY (${this.wrapArray(fk.columns).join(", ")}) REFERENCES ${this.wrap(fk.onTable)} (${this.wrapArray(fk.references).join(", ")})`;
         if (fk.onDelete) sql += ` ON DELETE ${fk.onDelete}`;
         if (fk.onUpdate) sql += ` ON UPDATE ${fk.onUpdate}`;
         return sql;

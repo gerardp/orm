@@ -371,7 +371,7 @@ export class Blueprint {
     return new ForeignKeyBuilder(this, cols, name);
   }
 
-  constrained(table?: string, column: string = "id"): ForeignKeyBuilder {
+  constrained(table?: string, column: string = "id", name?: string): ForeignKeyBuilder {
     if (!this.currentColumn) {
       throw new Error(
         "constrained() must be called after a column definition.",
@@ -379,7 +379,7 @@ export class Blueprint {
     }
     const localColumn = this.currentColumn.name;
     const foreignTable = table || this.guessConstrainedTable(localColumn);
-    return this.foreign(localColumn).references(column).on(foreignTable);
+    return this.foreign(localColumn, name).references(column).on(foreignTable);
   }
 
   cascadeOnDelete(): ForeignKeyBuilder {
