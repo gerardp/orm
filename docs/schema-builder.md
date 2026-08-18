@@ -161,6 +161,7 @@ table.integer("role").default(1);            // DEFAULT 1
 table.string("code").comment("SKU code");    // COMMENT
 table.integer("user_id").unsigned();         // UNSIGNED (MySQL)
 table.string("uuid").primary();              // Composite/custom primary key column
+table.string("phone").after("email");        // Column position (MySQL)
 ```
 
 | Modifier | Effect |
@@ -172,6 +173,7 @@ table.string("uuid").primary();              // Composite/custom primary key col
 | `.primary()` | Mark column as part of the primary key |
 | `.unsigned()` | Unsigned numeric (MySQL) |
 | `.comment(text)` | Column comment (MySQL / Postgres) |
+| `.after(column)` | Place a newly added column after another one (MySQL) |
 
 Modifiers are chainable in any order before the next column is added.
 
@@ -294,6 +296,16 @@ await Schema.table("users", (table) => {
   table.timestamp("last_login").nullable();
 });
 ```
+
+New columns land at the end of the table. On MySQL, `after()` places one where you want it:
+
+```ts
+await Schema.table("users", (table) => {
+  table.string("phone").nullable().after("email");
+});
+```
+
+PostgreSQL and SQLite cannot reorder columns — they always append, and `after()` is ignored there rather than failing, so the same migration runs on all three drivers.
 
 Modify an existing column (MySQL / PostgreSQL):
 

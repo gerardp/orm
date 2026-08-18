@@ -45,6 +45,59 @@ describe("Schema Builder", () => {
     expect(sql).toContain('"active" BOOLEAN NOT NULL DEFAULT FALSE');
   });
 
+  test("mysql grammar compileAdd places the column with after()", () => {
+    const grammar = new MySqlGrammar();
+    const blueprint = new Blueprint("groups");
+    blueprint.tinyInteger("course").unsigned().nullable().after("level");
+    const [sql] = grammar.compileAdd(blueprint, "groups");
+    expect(sql).toBe("ALTER TABLE `groups` ADD COLUMN `course` TINYINT UNSIGNED AFTER `level`");
+  });
+
+  test("mysql grammar compileAdd omits AFTER when the column has no position", () => {
+    const grammar = new MySqlGrammar();
+    const blueprint = new Blueprint("groups");
+    blueprint.tinyInteger("course").nullable();
+    const [sql] = grammar.compileAdd(blueprint, "groups");
+    expect(sql).toBe("ALTER TABLE `groups` ADD COLUMN `course` TINYINT");
+    expect(sql).not.toContain("AFTER");
+  });
+
+  test("after() is ignored by grammars that cannot reorder columns", () => {
+    const blueprint = new Blueprint("groups");
+    blueprint.string("course").nullable().after("level");
+
+    const sqlite = new SQLiteGrammar().compileAdd(blueprint, "groups");
+    const postgres = new PostgresGrammar().compileAdd(blueprint, "groups");
+
+    expect(sqlite[0]).toBe('ALTER TABLE "groups" ADD COLUMN "course" TEXT');
+    expect(postgres[0]).toBe('ALTER TABLE "groups" ADD COLUMN "course" VARCHAR(255)');
+  });
+
+  test("after() does not leak into CREATE TABLE", () => {
+    const grammar = new MySqlGrammar();
+    const blueprint = new Blueprint("groups");
+    blueprint.increments("id");
+    blueprint.string("level");
+    blueprint.tinyInteger("course").nullable().after("level");
+    expect(grammar.compileCreate(blueprint, "groups")).not.toContain("AFTER");
+  });
+
+  test("Schema.table adds a column declared with after()", async () => {
+    connection = setupTestDb();
+    await Schema.create("after_groups", (table) => {
+      table.increments("id");
+      table.string("level").nullable();
+    });
+
+    await Schema.table("after_groups", (table) => {
+      table.tinyInteger("course").unsigned().nullable().after("level");
+    });
+
+    const columns = await Schema.getColumns("after_groups");
+    expect(columns.map((column) => column.name)).toContain("course");
+    await teardownTestDb(connection);
+  });
+
   test("creates and drops table via Schema", async () => {
     connection = setupTestDb();
     await Schema.create("test_table", (table) => {

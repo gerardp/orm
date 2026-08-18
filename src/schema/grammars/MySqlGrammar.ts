@@ -78,6 +78,14 @@ export class MySqlGrammar extends Grammar {
     return sql;
   }
 
+  compileAdd(blueprint: any, table: string): string[] {
+    return blueprint.columns.map((column: ColumnDefinition) => {
+      let sql = `ALTER TABLE ${this.wrap(table)} ADD COLUMN ${this.getColumn(blueprint, column)}`;
+      if (column.after) sql += ` AFTER ${this.wrap(column.after)}`;
+      return sql;
+    });
+  }
+
   compileColumnRename(table: string, from: string, to: string): string {
     // MySQL requires full column definition for rename; simplified here.
     return `ALTER TABLE ${this.wrap(table)} RENAME COLUMN ${this.wrap(from)} TO ${this.wrap(to)}`;

@@ -266,6 +266,17 @@ export class Blueprint {
     return this;
   }
 
+  /**
+   * Place the column right after an existing one when adding it to a table.
+   * Only MySQL can reorder columns; Postgres and SQLite append and ignore this.
+   */
+  after(column: string): this {
+    if (this.currentColumn) {
+      this.currentColumn.after = column;
+    }
+    return this;
+  }
+
   change(): void {
     if (!this.currentColumn) {
       throw new Error("change() must be called after a column definition.");

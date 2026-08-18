@@ -35,6 +35,7 @@ export interface ColumnDefinition {
   values?: string[]; // for enum
   comment?: string;
   defaultUuid?: boolean;
+  after?: string;
 }
 
 export interface IndexDefinition {
