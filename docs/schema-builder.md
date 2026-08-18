@@ -180,9 +180,16 @@ Modifiers are chainable in any order before the next column is added.
 ```ts
 table.timestamps();        // adds nullable created_at + updated_at TIMESTAMP columns
 table.softDeletes();       // adds nullable deleted_at TIMESTAMP
+table.rememberToken();     // adds nullable remember_token VARCHAR(100)
 ```
 
-These produce the same columns Bunny's [soft delete model trait](./models.md#soft-deletes) and [auto-timestamps](./models.md#timestamps) expect, so they're worth using on every table that needs them.
+`timestamps()` and `softDeletes()` produce the same columns Bunny's [soft delete model trait](./models.md#soft-deletes) and [auto-timestamps](./models.md#timestamps) expect, so they're worth using on every table that needs them.
+
+`rememberToken()` is the "remember me" column: a session cookie carries the token and the login lookup matches it. It is `string("remember_token", 100).nullable()`, and returns the blueprint with that column current, so modifiers still chain:
+
+```ts
+table.rememberToken().index();
+```
 
 ### Polymorphic columns
 

@@ -45,6 +45,40 @@ describe("Schema Builder", () => {
     expect(sql).toContain('"active" BOOLEAN NOT NULL DEFAULT FALSE');
   });
 
+  test("rememberToken() adds the nullable 100-character column", () => {
+    const blueprint = new Blueprint("users");
+    blueprint.increments("id");
+    blueprint.rememberToken();
+
+    const token = blueprint.columns.at(-1)!;
+    expect(token.name).toBe("remember_token");
+    expect(token.type).toBe("string");
+    expect(token.length).toBe(100);
+    expect(token.nullable).toBe(true);
+    expect(new MySqlGrammar().compileCreate(blueprint, "users")).toContain("`remember_token` VARCHAR(100)\n");
+  });
+
+  test("rememberToken() leaves the column open to further modifiers", () => {
+    const blueprint = new Blueprint("users");
+    blueprint.rememberToken().index();
+
+    expect(blueprint.indexes.map((index) => index.name)).toEqual(["users_remember_token_index"]);
+  });
+
+  test("rememberToken() round-trips through Schema", async () => {
+    connection = setupTestDb();
+    await Schema.create("token_users", (table) => {
+      table.increments("id");
+      table.rememberToken();
+    });
+
+    const columns = await Schema.getColumns("token_users");
+    const token = columns.find((column) => column.name === "remember_token");
+    expect(token).toBeDefined();
+    expect(token!.nullable).toBe(true);
+    await teardownTestDb(connection);
+  });
+
   test("creates and drops table via Schema", async () => {
     connection = setupTestDb();
     await Schema.create("test_table", (table) => {
