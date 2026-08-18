@@ -290,6 +290,11 @@ export class Blueprint {
     this.timestamp("deleted_at").nullable();
   }
 
+  /** The 100-character nullable remember_token column session cookies are matched against. */
+  rememberToken(): this {
+    return this.string("remember_token", 100).nullable();
+  }
+
   morphs(name: string): void {
     this.string(`${name}_type`);
     this.bigInteger(`${name}_id`).unsigned();
