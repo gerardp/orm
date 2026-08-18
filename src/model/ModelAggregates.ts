@@ -92,6 +92,21 @@ export class ModelAggregates<T extends Record<string, any> = any> extends ModelQ
     return (this as any).query().sole();
   }
 
+  static async pluck<M extends ModelConstructor, K extends ModelColumn<InstanceType<M>>>(
+    this: M,
+    column: K
+  ): Promise<ModelColumnValue<InstanceType<M>, K>[]>;
+  static async pluck<M extends ModelConstructor, K extends ModelColumn<InstanceType<M>>>(
+    this: M,
+    column: K,
+    key: ModelColumn<InstanceType<M>>
+  ): Promise<Record<string, ModelColumnValue<InstanceType<M>, K>>>;
+  static async pluck<M extends ModelConstructor>(this: M, column: any, key?: any): Promise<any> {
+    return key === undefined
+      ? (this as any).query().pluck(column)
+      : (this as any).query().pluck(column, key);
+  }
+
   static async paginate<M extends ModelConstructor>(this: M, perPage?: number, page?: number): Promise<import("../query/Builder.js").Paginator<InstanceType<M>>> {
     return (this as any).query().paginate(perPage, page);
   }

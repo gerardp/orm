@@ -10,6 +10,16 @@ import { ModelNotFoundError } from "../model/ModelNotFoundError.js";
 import { IdentityMap } from "../model/IdentityMap.js";
 import { Collection, type CollectionJson } from "../support/Collection.js";
 
+/**
+ * The field a driver returns a selected column under: "users.email" comes back
+ * as "email", and "email as contact" as "contact".
+ */
+function resultFieldFor(column: string): string {
+  const aliased = /\s+as\s+(.+)$/i.exec(column);
+  const name = (aliased ? aliased[1]! : column).trim().replace(/^["`\[]|["`\]]$/g, "");
+  return name.includes(".") ? name.split(".").pop()! : name;
+}
+
 type RelationConstraint<TModel = any, TRelation extends string = string> = (query: RelationConstraintQuery<TModel, TRelation>) => void | Builder<any> | RelationConstraintQuery<TModel, TRelation>;
 type ExistsConstraintMap<TResult> = Record<string, RelationConstraint<TResult, any> | undefined>;
 type RelatedColumn<TResult, R extends string> = ModelColumn<RelationRelatedModel<TResult, R>>;
@@ -1850,16 +1860,33 @@ export class Builder<T = Record<string, any>, TResult = T> {
     return instance;
   }
 
-  async pluck<K extends ModelColumn<T>>(column: K): Promise<ModelColumnValue<T, K>[]> {
+  async pluck<K extends ModelColumn<T>>(column: K): Promise<ModelColumnValue<T, K>[]>;
+  async pluck<K extends ModelColumn<T>>(
+    column: K,
+    key: ModelColumn<T>
+  ): Promise<Record<string, ModelColumnValue<T, K>>>;
+  async pluck(column: any, key?: any): Promise<any> {
     const model = this.model;
     this.model = undefined as any;
     this.bindings = [];
     this.parameterize = true;
-    const sql = this.select(column as any).toSql();
+    const columns = key === undefined ? [column] : [column, key];
+    const sql = this.select(...(columns as any)).toSql();
     this.parameterize = false;
     const rows = await this.connection.query(sql, this.bindings);
     this.model = model;
-    return Array.from(rows).map((row: any) => row[column as string]);
+
+    const valueField = resultFieldFor(column);
+    if (key === undefined) {
+      return Array.from(rows).map((row: any) => row[valueField]);
+    }
+
+    const keyField = resultFieldFor(key);
+    const plucked: Record<string, any> = {};
+    for (const row of rows as any[]) {
+      plucked[row[keyField]] = row[valueField];
+    }
+    return plucked;
   }
 
   async findMany(ids: any[], column?: ModelColumn<T>): Promise<Collection<TResult>> {

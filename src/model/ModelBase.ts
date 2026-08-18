@@ -642,7 +642,11 @@ export abstract class Relation<T extends ModelType = ModelType> {
     return this;
   }
   count(): Promise<number> { return this.builder.count(); }
-  pluck(column: string): Promise<any[]> { return this.builder.pluck(column); }
+  pluck(column: string): Promise<any[]>;
+  pluck(column: string, key: string): Promise<Record<string, any>>;
+  pluck(column: string, key?: string): Promise<any> {
+    return key === undefined ? this.builder.pluck(column) : this.builder.pluck(column, key as any);
+  }
 
   getRelatedModelConstructor(): any { return this.related; }
 
