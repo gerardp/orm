@@ -23,6 +23,18 @@ import type {
 } from "./ModelBase.js";
 import { snakeCase } from "../utils.js";
 
+/**
+ * The old `encrypted` cast only Base64-encoded values, so it read as a security
+ * guarantee it never provided. Failing loudly beats silently storing secrets in
+ * plain sight.
+ */
+function removedEncryptedCast(model: object, key: string): Error {
+  return new Error(
+    `The "encrypted" cast was removed (${model.constructor.name}.${key}): it only Base64-encoded values, it never encrypted them. ` +
+      `Use the "base64" cast for encoding, or a custom CastsAttributes class backed by a real cipher for secrets.`
+  );
+}
+
 export class ModelCore<T extends Record<string, any> = any> {
   static table: string;
   static modelSchema?: string;
@@ -331,8 +343,10 @@ export class ModelCore<T extends Record<string, any> = any> {
         return typeof value === "string" ? JSON.parse(value) : value;
       case "enum":
         return value;
-      case "encrypted":
+      case "base64":
         return typeof value === "string" ? Buffer.from(value, "base64").toString("utf8") : value;
+      case "encrypted":
+        throw removedEncryptedCast(this, key);
       default:
         return value;
     }
@@ -368,8 +382,10 @@ export class ModelCore<T extends Record<string, any> = any> {
         return typeof value === "string" ? value : JSON.stringify(value);
       case "enum":
         return typeof value === "object" && "value" in value ? value.value : value;
-      case "encrypted":
+      case "base64":
         return Buffer.from(String(value), "utf8").toString("base64");
+      case "encrypted":
+        throw removedEncryptedCast(this, key);
       default:
         return value;
     }

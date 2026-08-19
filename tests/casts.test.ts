@@ -34,7 +34,7 @@ class CastedModel extends Model {
     score: "number",
     tags: "json",
     price: "decimal:2",
-    secret: "encrypted",
+    secret: "base64",
     code: UppercaseCast,
   };
 }
@@ -106,7 +106,7 @@ describe("Attribute Casting", () => {
     expect(record.metadata).toEqual({ foo: "bar" });
   });
 
-  test("supports decimal, encrypted, runtime, and custom casts", async () => {
+  test("supports decimal, base64, runtime, and custom casts", async () => {
     const record = new CastedModel({ price: 12.5, secret: "hidden", code: "abc", is_active: 0, count: 0, score: 0 });
     record.mergeCasts({ count: "string" });
 
@@ -117,6 +117,22 @@ describe("Attribute Casting", () => {
     expect(record.$attributes.code).toBe("ABC");
     expect(record.code).toBe("abc");
     expect(record.count).toBe("0");
+  });
+
+  test("rejects the removed encrypted cast instead of pretending to encrypt", () => {
+    class LegacyEncryptedModel extends Model {
+      static override table = "legacy_encrypted";
+      static override casts = { secret: "encrypted" };
+    }
+
+    const record = new LegacyEncryptedModel();
+    expect(() => {
+      record.secret = "hidden";
+    }).toThrow(/"encrypted" cast was removed/);
+
+    // Reading rows already stored with the old cast fails just as loudly.
+    record.$attributes.secret = "aGlkZGVu";
+    expect(() => record.secret).toThrow(/base64/);
   });
 
   test("caches casted values until the attribute or casts change", () => {

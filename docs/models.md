@@ -143,7 +143,7 @@ class User extends Model {
     login_count: "integer",
     price: "decimal:2",
     settings: "json",
-    secret: "encrypted",
+    secret: "base64",
   };
 }
 
@@ -164,7 +164,13 @@ user.settings.theme;       // "dark" (parsed JSON)
 | `date`, `datetime` | Reads as `Date`, stores ISO string from `Date` input |
 | `json`, `array`, `object` | Stores JSON string, reads parsed value |
 | `enum` | Stores `.value` of enum members |
-| `encrypted` | Base64-encoded on write, decoded on read |
+| `base64` | Base64-encoded on write, decoded on read. Encoding, not encryption |
+
+> **`encrypted` was removed in favour of `base64`.** It only Base64-encoded
+> values — anyone could decode them — so the name promised a guarantee it never
+> delivered. Models still declaring `encrypted` now throw instead of silently
+> encoding. For real secrets, write a custom cast backed by an actual cipher
+> (`node:crypto`) and keep the key outside the database.
 
 ### Custom cast classes
 
