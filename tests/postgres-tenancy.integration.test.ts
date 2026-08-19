@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, rm } from "fs/promises";
 import { join } from "path";
+import { pathToFileURL } from "url";
 import { Connection, ConnectionManager, Migrator, Model, Schema, TenantContext } from "../src/index.js";
 
 class PgTenantUser extends Model {
@@ -96,9 +97,45 @@ describe.serial("PostgreSQL tenant integration", () => {
   });
 
   runIfPostgres("runs migration batches through Bun PostgreSQL transactions", async () => {
-    // Note: This test is skipped because it tests mode: "qualify" with schema-per-tenant.
-    // For mode: "search_path" with PostgreSQL, use TenantContext.run(tenantId, ...) instead.
-    // The withSearchPath() approach conflicts with Migrator's internal transaction nesting.
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const schema = `fluent_migration_tx_${suffix}`;
+    const migrations = join(process.cwd(), "tests", `.tmp-pg-migrations-${suffix}`);
+    const connection = new Connection({ url: postgresUrl!, schema, max: 1 });
+    const grammar = connection.getGrammar();
+    const ormUrl = pathToFileURL(join(process.cwd(), "src", "index.ts")).href;
+
+    try {
+      await Schema.createSchema(schema, connection);
+      await mkdir(migrations, { recursive: true });
+      await Bun.write(join(migrations, "20260819000000_create_batch_first.ts"), `
+import { Migration, Schema } from ${JSON.stringify(ormUrl)};
+export default class CreateBatchFirst extends Migration {
+  async up() { await Schema.create("batch_first", (table) => table.increments("id")); }
+  async down() { await Schema.dropIfExists("batch_first"); }
+}
+`);
+      await Bun.write(join(migrations, "20260819000001_fail_batch_second.ts"), `
+import { Migration, Schema } from ${JSON.stringify(ormUrl)};
+export default class FailBatchSecond extends Migration {
+  async up() {
+    await Schema.create("batch_second", (table) => table.increments("id"));
+    throw new Error("rollback the migration batch");
+  }
+  async down() { await Schema.dropIfExists("batch_second"); }
+}
+`);
+
+      const migrator = new Migrator(connection, migrations);
+      await expect(migrator.run()).rejects.toThrow("rollback the migration batch");
+      expect(await Schema.hasTable("batch_first", connection)).toBe(false);
+      expect(await Schema.hasTable("batch_second", connection)).toBe(false);
+      const rows = await connection.query(`SELECT COUNT(*)::int AS count FROM ${grammar.wrap(`${schema}.migrations`)}`);
+      expect(rows[0]?.count).toBe(0);
+    } finally {
+      await connection.run(`DROP SCHEMA IF EXISTS ${grammar.wrap(schema)} CASCADE`).catch(() => null);
+      await connection.close();
+      await rm(migrations, { recursive: true, force: true });
+    }
   });
 
   runIfPostgres("supports manual transactions on pooled PostgreSQL connections", async () => {

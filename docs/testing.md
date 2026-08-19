@@ -171,7 +171,7 @@ afterEach(() => {
 
 See [Observers — Testing](./observers.md#testing-observers).
 
-## Integration tests against PostgreSQL / MySQL
+## Integration tests against PostgreSQL, MySQL, and Redis
 
 For full-fidelity tests on Postgres or MySQL, point `setupTestDb()` at a real database. The repo's own integration suite uses an environment variable:
 
@@ -185,13 +185,17 @@ runIfPostgres("integration against Postgres", async () => {
 });
 ```
 
-Run with:
+The repository uses `POSTGRES_TEST_URL`, `MYSQL_TEST_URL`, and
+`REDIS_TEST_URL` for its live integration suites. For example:
 
 ```bash
 POSTGRES_TEST_URL=postgres://localhost/test_db bun test
+MYSQL_TEST_URL=mysql://localhost/test_db bun test
+REDIS_TEST_URL=redis://127.0.0.1:6379 bun test tests/redis.integration.test.ts
 ```
 
-Skipping by default keeps `bun test` fast on developer machines and CI agents that don't have Postgres available.
+Each live suite is skipped when its URL is absent, so `bun test` remains usable
+on machines that only have SQLite available.
 
 ## Common pitfalls
 

@@ -302,6 +302,31 @@ describe("post-retrieval aggregate loaders", () => {
     const users = await Lf3User.where("id", user.getAttribute("id")).get();
     await users.loadCount("posts");
     expect(users[0].posts_count).toBe(3);
+
+    await users.loadSum("posts", "id");
+    expect(users[0].posts_sum_id).toBe(
+      post1.getAttribute("id") + post2.getAttribute("id") + post3.getAttribute("id")
+    );
+    await users.loadAvg("posts", "id", "average_post_id");
+    expect(users[0].average_post_id).toBe(
+      (post1.getAttribute("id") + post2.getAttribute("id") + post3.getAttribute("id")) / 3
+    );
+    await users.loadMin("posts", "id", "first_post_id");
+    expect(users[0].first_post_id).toBe(post1.getAttribute("id"));
+    await users.loadMax("posts", "id", "last_post_id");
+    expect(users[0].last_post_id).toBe(post3.getAttribute("id"));
+
+    await users.loadSum("posts", "id", "filtered_post_ids", (query) => {
+      query.where("id", "!=", post2.getAttribute("id"));
+    });
+    expect(users[0].filtered_post_ids).toBe(post1.getAttribute("id") + post3.getAttribute("id"));
+
+    const empty = await Lf3User.where("id", -1).get();
+    expect(await empty.loadCount("posts")).toBe(empty);
+    expect(await empty.loadSum("posts", "id")).toBe(empty);
+    expect(await empty.loadAvg("posts", "id")).toBe(empty);
+    expect(await empty.loadMin("posts", "id")).toBe(empty);
+    expect(await empty.loadMax("posts", "id")).toBe(empty);
   });
 
   test("aggregate loaders expose IntelliSense for relation names, columns, and result keys", async () => {

@@ -16,7 +16,7 @@ An **Eloquent-inspired ORM** built specifically for [Bun](https://bun.sh)'s nati
 
 ## Features
 
-- 🔥 **Bun-native** — Built on top of `bun:sql` for maximum performance
+- 🔥 **Bun-native** — Built directly on top of `bun:sql`
 - 🪶 **Zero runtime dependencies** — No package lock-in beyond Bun itself
 - 📦 **Multi-database** — SQLite, MySQL, and PostgreSQL support
 - 🔷 **Fully Typed** — `Model.define<T>()` gives attribute access, typed `with()` autocomplete, and typed eager-load results with zero codegen
