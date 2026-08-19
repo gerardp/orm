@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.0 - 2026-08-19
+
+### Changed
+
+- Model hydration and serialization avoid redundant Proxy work, visibility
+  rebuilding, and no-op cast dispatch. `DB.table()` is documented as the
+  plain-row path for read-only endpoints that do not need model behavior.
+
+### Fixed
+
+- In-place mutations to `date` and `datetime` casts are detected by dirty
+  tracking and persisted without corrupting the original database snapshot.
+- Hydration preserves `setConnection` overrides declared either as prototype
+  methods or instance fields, while retaining the direct fast path for the
+  default implementation.
+- Mutable-cast metadata remains isolated from later changes to a model's public
+  static cast map.
+
 ## 0.6.5 - 2026-08-19
 
 ### Breaking changes
