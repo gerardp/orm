@@ -2,6 +2,12 @@
 
 Use the SvelteKit helper to bind route params to Bunny models and (for actions) validate incoming form/request data.
 
+> **Server-only.** Bunny links against `bun:sql`, so every import of it — this
+> helper included — belongs in a server module: `+page.server.ts`, `+server.ts`,
+> `hooks.server.ts`, or `$lib/server/`. Importing it from client code fails the
+> build. If you install from git, see the Vite note in
+> [Installation](./installation.md).
+
 Import:
 
 ```ts
