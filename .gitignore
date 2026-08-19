@@ -12,6 +12,9 @@ yarn-error.log*
 
 .DS_Store
 
+.agents/
+.claude/
+
 coverage/
 .nyc_output/
 
