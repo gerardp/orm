@@ -135,6 +135,43 @@ describe("Query Builder", () => {
     });
   });
 
+  test("pluck keeps a __proto__ key instead of dropping it", async () => {
+    const connection = setupTestDb();
+    await connection.run("CREATE TABLE plk_proto (k TEXT, v TEXT)");
+    await connection.run("INSERT INTO plk_proto (k, v) VALUES ('__proto__', 'ghost'), ('normal', 'ok')");
+    const builder = new Builder(connection, "plk_proto");
+
+    const plucked = await builder.pluck("v", "k");
+
+    expect(Object.keys(plucked).sort()).toEqual(["__proto__", "normal"]);
+    expect(plucked["__proto__"]).toBe("ghost");
+    expect(plucked["normal"]).toBe("ok");
+    // Nothing a row carries can reach the prototype chain.
+    expect(Object.getPrototypeOf(plucked)).toBeNull();
+    expect(({} as any).ghost).toBeUndefined();
+  });
+
+  test("pluck resolves an alias the driver folded to lower case", async () => {
+    const connection = setupTestDb();
+    await connection.run("CREATE TABLE plk_alias (id INTEGER PRIMARY KEY, name TEXT)");
+    await connection.run("INSERT INTO plk_alias (id, name) VALUES (1, 'Ada'), (2, 'Grace')");
+
+    // PostgreSQL folds unquoted identifiers, so "AS Label" comes back as "label".
+    const query = connection.query.bind(connection);
+    (connection as any).query = async (sql: string, bindings?: any[]) => {
+      const rows = await query(sql, bindings);
+      return (rows as any[]).map((row) =>
+        Object.fromEntries(Object.entries(row).map(([key, value]) => [key.toLowerCase(), value]))
+      );
+    };
+
+    expect(await new Builder(connection, "plk_alias").pluck("name as Label")).toEqual(["Ada", "Grace"]);
+    expect(await new Builder(connection, "plk_alias").pluck("name as Label", "id as Key")).toEqual({
+      1: "Ada",
+      2: "Grace",
+    });
+  });
+
   test("pluck keyed by a column keeps the last row of a repeated key", async () => {
     const connection = setupTestDb();
     await connection.run("CREATE TABLE plk_dupes (team TEXT, name TEXT)");

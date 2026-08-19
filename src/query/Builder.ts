@@ -20,6 +20,20 @@ function resultFieldFor(column: string): string {
   return name.includes(".") ? name.split(".").pop()! : name;
 }
 
+/**
+ * The key a row actually carries for a field. PostgreSQL folds unquoted
+ * identifiers to lower case, so `select("name as Label")` comes back as
+ * `label`; matching the casing we wrote would read undefined off every row.
+ */
+function resolveResultField(row: Record<string, any> | undefined, field: string): string {
+  if (!row || Object.prototype.hasOwnProperty.call(row, field)) return field;
+  const lowered = field.toLowerCase();
+  for (const key of Object.keys(row)) {
+    if (key.toLowerCase() === lowered) return key;
+  }
+  return field;
+}
+
 type RelationConstraint<TModel = any, TRelation extends string = string> = (query: RelationConstraintQuery<TModel, TRelation>) => void | Builder<any> | RelationConstraintQuery<TModel, TRelation>;
 type ExistsConstraintMap<TResult> = Record<string, RelationConstraint<TResult, any> | undefined>;
 type RelatedColumn<TResult, R extends string> = ModelColumn<RelationRelatedModel<TResult, R>>;
@@ -1876,13 +1890,15 @@ export class Builder<T = Record<string, any>, TResult = T> {
     const rows = await this.connection.query(sql, this.bindings);
     this.model = model;
 
-    const valueField = resultFieldFor(column);
+    const valueField = resolveResultField((rows as any[])[0], resultFieldFor(column));
     if (key === undefined) {
       return Array.from(rows).map((row: any) => row[valueField]);
     }
 
-    const keyField = resultFieldFor(key);
-    const plucked: Record<string, any> = {};
+    const keyField = resolveResultField((rows as any[])[0], resultFieldFor(key));
+    // Null prototype: a row keyed "__proto__" is data like any other, and on a
+    // plain object it would vanish or rewrite the prototype instead.
+    const plucked: Record<string, any> = Object.create(null);
     for (const row of rows as any[]) {
       plucked[row[keyField]] = row[valueField];
     }
