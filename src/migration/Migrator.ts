@@ -3,9 +3,8 @@ import { existsSync } from "fs";
 import { mkdir, readdir, readFile, writeFile } from "fs/promises";
 import { basename, join, relative, resolve } from "path";
 import { Connection } from "../connection/Connection.js";
-import { ConnectionManager } from "../connection/ConnectionManager.js";
 import { TenantContext } from "../connection/TenantContext.js";
-import { Model } from "../model/Model.js";
+import { TransactionContext } from "../connection/TransactionContext.js";
 import { Schema } from "../schema/Schema.js";
 import { Blueprint } from "../schema/Blueprint.js";
 import { Builder } from "../query/Builder.js";
@@ -13,6 +12,7 @@ import { TypeGenerator } from "../typegen/TypeGenerator.js";
 import type { TypeGeneratorOptions } from "../typegen/TypeGenerator.js";
 import { discoverModelTables } from "../typegen/discoverModelTables.js";
 import type { Migration } from "./Migration.js";
+import { acquireMigrationLock, type MigrationLockHandle } from "./MigrationLock.js";
 import { normalizePathList, toPosixPath } from "../utils.js";
 import type { ConnectionConfig } from "../types/index.js";
 
@@ -36,6 +36,8 @@ export interface MigratorOptions {
   tenantId?: string | null;
   lock?: boolean;
   lockTimeoutMs?: number;
+  /** SQLite only: age at which a lock row left behind by a dead process is taken over. Default 15 minutes. */
+  lockMaxAgeMs?: number;
   createIfMissing?: boolean | {
     database?: boolean;
     schema?: boolean;
@@ -67,36 +69,56 @@ export class Migrator {
     private typesOutDir?: string,
     private typeGeneratorOptions: Omit<TypeGeneratorOptions, "outDir"> = {},
     private options: MigratorOptions = {}
-  ) {
-    (Schema as any).connection = connection;
-  }
+  ) {}
 
   private getPaths(): string[] {
     return normalizePathList(this.path);
   }
 
+  /**
+   * The migrations table is shared by every tenant, so creating it — and its
+   * index — is not covered by the per-tenant lock: two tenants bootstrapping at
+   * once race, and the loser dies on "index migrations_tenant_index already
+   * exists". A tenant-independent lock serialises just that.
+   */
   private async ensureMigrationsTable(): Promise<void> {
-    const exists = await Schema.hasTable("migrations");
+    if (this.migrationsTableReady) return;
+    const lock = this.shouldLock()
+      ? await acquireMigrationLock(this.connection, "migrations:bootstrap", {
+          timeoutMs: this.options.lockTimeoutMs,
+          maxAgeMs: this.options.lockMaxAgeMs,
+        })
+      : null;
+    try {
+      await this.prepareMigrationsTable();
+    } finally {
+      await lock?.release();
+    }
+    this.migrationsTableReady = true;
+  }
+
+  private async prepareMigrationsTable(): Promise<void> {
+    const exists = await Schema.hasTable("migrations", this.connection);
     if (!exists) {
-      await Schema.create("migrations", (table: Blueprint) => {
+      await Schema.createIfNotExists("migrations", (table: Blueprint) => {
         table.increments("id");
         table.string("migration");
         table.string("tenant").nullable().index();
         table.string("checksum").nullable();
         table.integer("batch");
-      });
+      }, this.connection);
       return;
     }
 
-    if (!(await Schema.hasColumn("migrations", "tenant"))) {
+    if (!(await Schema.hasColumn("migrations", "tenant", this.connection))) {
       await Schema.table("migrations", (table: Blueprint) => {
         table.string("tenant").nullable().index();
-      });
+      }, this.connection);
     }
-    if (!(await Schema.hasColumn("migrations", "checksum"))) {
+    if (!(await Schema.hasColumn("migrations", "checksum", this.connection))) {
       await Schema.table("migrations", (table: Blueprint) => {
         table.string("checksum").nullable();
-      });
+      }, this.connection);
     }
   }
 
@@ -175,7 +197,7 @@ export class Migrator {
     if (!schema) return;
     const driver = this.connection.getDriverName();
     if (driver === "sqlite") return;
-    await Schema.createSchema(schema);
+    await Schema.createSchema(schema, this.connection);
   }
 
   private async ensureCreateIfMissing(): Promise<void> {
@@ -187,23 +209,10 @@ export class Migrator {
     return connection.qualifyTable("migrations");
   }
 
-  private migrationLocksTable(connection: Connection = this.connection): string {
-    return connection.qualifyTable("migration_locks");
-  }
-
   private scopedMigrations(): Builder<any> {
     const builder = new Builder<any>(this.connection, this.migrationsTable());
     const tenantId = this.getTenantId();
     return tenantId === null ? builder.whereNull("tenant") : builder.where("tenant", tenantId);
-  }
-
-  private async ensureMigrationLocksTable(): Promise<void> {
-    if (await Schema.hasTable("migration_locks")) return;
-    await Schema.create("migration_locks", (table: Blueprint) => {
-      table.string("name").primary();
-      table.string("owner");
-      table.string("created_at");
-    });
   }
 
   private getLockName(): string {
@@ -215,36 +224,14 @@ export class Migrator {
     return this.options.lock !== false;
   }
 
-  private async acquireLock(): Promise<boolean> {
-    if (!this.shouldLock()) return false;
-    await this.ensureMigrationLocksTable();
-    const lockName = this.getLockName();
-    const timeoutMs = this.options.lockTimeoutMs ?? 30000;
-    const owner = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-    const started = Date.now();
+  private migrationsTableReady = false;
 
-    while (true) {
-      try {
-        await new Builder(this.connection, this.migrationLocksTable()).insert({
-          name: lockName,
-          owner,
-          created_at: new Date().toISOString(),
-        });
-        return true;
-      } catch {
-        if (Date.now() - started >= timeoutMs) {
-          throw new Error(`Could not acquire migration lock "${lockName}" within ${timeoutMs}ms.`);
-        }
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-    }
-  }
-
-  private async releaseLock(): Promise<void> {
-    if (!this.shouldLock()) return;
-    await new Builder(this.connection, this.migrationLocksTable())
-      .where("name", this.getLockName())
-      .delete();
+  private async acquireLock(): Promise<MigrationLockHandle | null> {
+    if (!this.shouldLock()) return null;
+    return await acquireMigrationLock(this.connection, this.getLockName(), {
+      timeoutMs: this.options.lockTimeoutMs,
+      maxAgeMs: this.options.lockMaxAgeMs,
+    });
   }
 
   static on(event: MigrationEvent, listener: MigrationEventListener): () => void {
@@ -300,46 +287,23 @@ export class Migrator {
   }
 
   private async withRuntimeConnection<T>(connection: Connection, callback: () => T | Promise<T>): Promise<T> {
-    const previousSchemaConnection = (Schema as any).connection as Connection | undefined;
-    const previousModelConnection = (Model as any).connection as Connection | undefined;
-    const previousDefaultConnection = ConnectionManager.getDefault();
     const previousLogQueries = connection.logQueries;
 
-    Schema.setConnection(connection);
-    Model.setConnection(connection);
     connection.logQueries = false;
     try {
-      return await TenantContext.withConnection(connection, callback);
+      return await TransactionContext.run(connection, () => TenantContext.withConnection(connection, callback));
     } finally {
       connection.logQueries = previousLogQueries;
-      if (previousSchemaConnection) {
-        Schema.setConnection(previousSchemaConnection);
-      } else {
-        delete (Schema as any).connection;
-      }
-      if (previousModelConnection) {
-        Model.setConnection(previousModelConnection);
-      } else {
-        delete (Model as any).connection;
-      }
-      if (previousDefaultConnection) {
-        ConnectionManager.setDefault(previousDefaultConnection);
-      } else {
-        ConnectionManager.clearDefault();
-      }
     }
   }
 
   private async withoutSqlLogging<T>(callback: () => T | Promise<T>): Promise<T> {
     const previousConnectionLogQueries = this.connection.logQueries;
-    const previousGlobalLogQueries = Connection.logQueries;
     this.connection.logQueries = false;
-    Connection.logQueries = false;
     try {
       return await callback();
     } finally {
       this.connection.logQueries = previousConnectionLogQueries;
-      Connection.logQueries = previousGlobalLogQueries;
     }
   }
 
@@ -355,9 +319,12 @@ export class Migrator {
 
   private async runWithoutSqlLogging(): Promise<void> {
     await this.ensureCreateIfMissing();
-    await this.ensureMigrationsTable();
-    const locked = await this.acquireLock();
+    // The lock comes before the migrations table: creating it is itself a write
+    // two concurrent deploys would race on, and the loser dies with
+    // "table migrations already exists" before any migration runs.
+    const lock = await this.acquireLock();
     try {
+      await this.ensureMigrationsTable();
       const ran = await this.getRan();
       const files = await this.getMigrationFiles();
       const pending = files.filter((f) => !ran.has(f.id) && !ran.has(f.fileName));
@@ -389,7 +356,7 @@ export class Migrator {
     } catch (error) {
       throw error;
     } finally {
-      if (locked) await this.releaseLock();
+      await lock?.release();
     }
   }
 
@@ -399,9 +366,9 @@ export class Migrator {
 
   private async rollbackWithoutSqlLogging(steps: number = 1): Promise<void> {
     await this.ensureCreateIfMissing();
-    await this.ensureMigrationsTable();
-    const locked = await this.acquireLock();
+    const lock = await this.acquireLock();
     try {
+      await this.ensureMigrationsTable();
       const batches = await this.getRollbackBatches(steps);
       if (batches.length === 0) {
         console.log("Nothing to rollback.");
@@ -435,7 +402,7 @@ export class Migrator {
     } catch (error) {
       throw error;
     } finally {
-      if (locked) await this.releaseLock();
+      await lock?.release();
     }
   }
 
@@ -543,11 +510,12 @@ export class Migrator {
     await this.ensureCreateIfMissing();
     const sql = await this.dumpSchemaWithoutSqlLogging(path);
     const files = await this.getMigrationFiles();
-    await this.ensureMigrationsTable();
-    const batch = (await this.getLastBatchNumber()) + 1;
 
-    const locked = await this.acquireLock();
+    let batch = 0;
+    const lock = await this.acquireLock();
     try {
+      await this.ensureMigrationsTable();
+      batch = (await this.getLastBatchNumber()) + 1;
       await this.scopedMigrations().delete();
       for (const file of files) {
         await new Builder(this.connection, this.migrationsTable()).insert({
@@ -558,7 +526,7 @@ export class Migrator {
         });
       }
     } finally {
-      if (locked) await this.releaseLock();
+      await lock?.release();
     }
 
     await this.emit("schemaSquashed", { path, batch });
@@ -639,6 +607,8 @@ export class Migrator {
   }
 
   private async dropAllTables(): Promise<void> {
+    // Whatever we cached about the migrations table stops being true here.
+    this.migrationsTableReady = false;
     const driver = this.connection.getDriverName();
     const grammar = this.connection.getGrammar();
 

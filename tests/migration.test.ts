@@ -44,7 +44,7 @@ describe("Migrator", () => {
   test("creates migrations table on first run", async () => {
     const migrator = new Migrator(connection, TEST_MIGRATIONS_DIR);
     await migrator.run();
-    expect(await Schema.hasTable("migrations")).toBe(true);
+    expect(await Schema.hasTable("migrations", connection)).toBe(true);
   });
 
   test("Migrator restores global bindings when no default existed", async () => {
@@ -123,7 +123,7 @@ export default class CreateTestItems extends Migration {
 
     const migrator = new Migrator(connection, TEST_MIGRATIONS_DIR);
     await migrator.run();
-    expect(await Schema.hasTable("test_items")).toBe(true);
+    expect(await Schema.hasTable("test_items", connection)).toBe(true);
   });
 
   test("disables query logging while running migrations", async () => {
@@ -227,7 +227,7 @@ export default class CreateNoQueryLogItems extends Migration {
   test("rollback undoes last batch", async () => {
     const migrator = new Migrator(connection, TEST_MIGRATIONS_DIR);
     await migrator.rollback();
-    expect(await Schema.hasTable("test_items")).toBe(false);
+    expect(await Schema.hasTable("test_items", connection)).toBe(false);
   });
 
   test("status shows pending after rollback", async () => {
@@ -414,8 +414,8 @@ export default class CreateBetaTable extends Migration {
     const migrator = new Migrator(connection, [TEST_MIGRATIONS_DIR_A, TEST_MIGRATIONS_DIR_B]);
     await migrator.run();
 
-    expect(await Schema.hasTable("alpha_table")).toBe(true);
-    expect(await Schema.hasTable("beta_table")).toBe(true);
+    expect(await Schema.hasTable("alpha_table", connection)).toBe(true);
+    expect(await Schema.hasTable("beta_table", connection)).toBe(true);
 
     const status = await migrator.status();
     expect(status.filter((row) => row.status === "Ran").length).toBeGreaterThanOrEqual(2);
@@ -463,8 +463,8 @@ export default class CreateTenantNotesTable extends Migration {
     await landlordMigrator.run();
     await tenantMigrator.run();
 
-    expect(await Schema.hasTable("landlord_settings")).toBe(true);
-    expect(await Schema.hasTable("tenant_notes")).toBe(true);
+    expect(await Schema.hasTable("landlord_settings", connection)).toBe(true);
+    expect(await Schema.hasTable("tenant_notes", connection)).toBe(true);
   });
 
   test("scopes migration status and records by tenant", async () => {
@@ -517,6 +517,49 @@ export default class CreateTenantStatusMarker extends Migration {
     await betaMigrator.run();
 
     await connection.run("DELETE FROM migration_locks WHERE name = ?", ["migrations:tenant:acme"]);
+  });
+
+  test("takes over a migration lock orphaned by a dead process", async () => {
+    await mkdir(TEST_MIGRATIONS_DIR_LOCKS, { recursive: true });
+    await connection.run(
+      "INSERT INTO migration_locks (name, owner, created_at) VALUES (?, ?, ?)",
+      ["migrations:tenant:orphan", "dead-process", new Date(Date.now() - 60_000).toISOString()]
+    );
+
+    const migrator = new Migrator(connection, TEST_MIGRATIONS_DIR_LOCKS, undefined, {}, {
+      tenantId: "orphan",
+      lockTimeoutMs: 1,
+      lockMaxAgeMs: 1_000,
+    });
+    await migrator.run();
+
+    const rows = await connection.query("SELECT name FROM migration_locks WHERE name = ?", [
+      "migrations:tenant:orphan",
+    ]);
+    expect(rows.length).toBe(0);
+  });
+
+  test("keeps waiting on a fresh lock instead of stealing it", async () => {
+    await mkdir(TEST_MIGRATIONS_DIR_LOCKS, { recursive: true });
+    await connection.run(
+      "INSERT INTO migration_locks (name, owner, created_at) VALUES (?, ?, ?)",
+      ["migrations:tenant:fresh", "live-process", new Date().toISOString()]
+    );
+
+    const migrator = new Migrator(connection, TEST_MIGRATIONS_DIR_LOCKS, undefined, {}, {
+      tenantId: "fresh",
+      lockTimeoutMs: 1,
+      lockMaxAgeMs: 60_000,
+    });
+
+    await expect(migrator.run()).rejects.toThrow('Could not acquire migration lock "migrations:tenant:fresh"');
+
+    const rows = await connection.query("SELECT owner FROM migration_locks WHERE name = ?", [
+      "migrations:tenant:fresh",
+    ]);
+    expect(rows[0]?.owner).toBe("live-process");
+
+    await connection.run("DELETE FROM migration_locks WHERE name = ?", ["migrations:tenant:fresh"]);
   });
 
   test("detects changed migration checksums", async () => {
@@ -588,24 +631,24 @@ export default class CreateCommandB extends Migration {
     await Bun.write(commandBPath, commandB);
     await migrator.run();
     await migrator.rollback(2);
-    expect(await Schema.hasTable("command_b")).toBe(false);
-    expect(await Schema.hasTable("command_a")).toBe(false);
+    expect(await Schema.hasTable("command_b", commandConnection)).toBe(false);
+    expect(await Schema.hasTable("command_a", commandConnection)).toBe(false);
 
     await migrator.refresh();
-    expect(await Schema.hasTable("command_a")).toBe(true);
-    expect(await Schema.hasTable("command_b")).toBe(true);
+    expect(await Schema.hasTable("command_a", commandConnection)).toBe(true);
+    expect(await Schema.hasTable("command_b", commandConnection)).toBe(true);
 
     await migrator.reset();
-    expect(await Schema.hasTable("command_a")).toBe(false);
-    expect(await Schema.hasTable("command_b")).toBe(false);
+    expect(await Schema.hasTable("command_a", commandConnection)).toBe(false);
+    expect(await Schema.hasTable("command_b", commandConnection)).toBe(false);
 
     await Schema.create("unmanaged_table", (table) => {
       table.increments("id");
-    });
+    }, commandConnection);
     await migrator.fresh();
-    expect(await Schema.hasTable("unmanaged_table")).toBe(false);
-    expect(await Schema.hasTable("command_a")).toBe(true);
-    expect(await Schema.hasTable("command_b")).toBe(true);
+    expect(await Schema.hasTable("unmanaged_table", commandConnection)).toBe(false);
+    expect(await Schema.hasTable("command_a", commandConnection)).toBe(true);
+    expect(await Schema.hasTable("command_b", commandConnection)).toBe(true);
     await commandConnection.close();
   });
 });

@@ -214,12 +214,30 @@ Use these to wire up structured logging, Slack notifications on production migra
 
 ## Locking
 
-Migrations acquire an advisory lock so concurrent deploys don't double-apply. The lock is released on completion or process exit. If you need to override the lock timeout for slow migrations, pass it via `MigratorOptions`:
+Migrations take a lock so concurrent deploys don't double-apply. How it is held
+depends on the driver:
+
+| Driver | Mechanism | Released when the process dies |
+|---|---|---|
+| PostgreSQL | `pg_advisory_lock` on a dedicated connection | Yes — the server drops it with the session |
+| MySQL | `GET_LOCK` on a dedicated connection | Yes — the server drops it with the session |
+| SQLite | Row in `migration_locks` | Best effort on `SIGINT` / `SIGTERM` / `SIGHUP`, otherwise taken over once the row is older than `lockMaxAgeMs` |
+
+On PostgreSQL and MySQL the lock lives on its own connection, separate from the
+pool the migrations run on, so a crashed or `kill -9`'d deploy releases it as
+soon as the socket closes. Nothing is left in the database to clean up.
+
+SQLite has no advisory locks, so it falls back to a row in `migration_locks`.
+That row is deleted on completion and on a normal termination signal, but a
+`kill -9` leaves it behind — which is what `lockMaxAgeMs` is for: once the row is
+older than that, the next migrator takes it over. Raise it above the runtime of
+your slowest migration so a long-running deploy never has its lock stolen.
 
 ```ts
 new Migrator(connection, path, undefined, {}, {
   lock: true,
-  lockTimeoutMs: 60_000,
+  lockTimeoutMs: 60_000,   // how long to wait for a busy lock (default 30s)
+  lockMaxAgeMs: 900_000,   // SQLite only: orphan takeover age (default 15 min)
 });
 ```
 
