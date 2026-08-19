@@ -250,6 +250,23 @@ describe("Connection", () => {
     ).rejects.toThrow("Invalid PostgreSQL setting name");
   });
 
+  test("sets a safe tenant role and rejects unsafe role names", async () => {
+    const calls: string[] = [];
+    const txDriver = { unsafe: (sql: string) => (calls.push(sql), []) };
+    const driver = { begin: (callback: (sql: any) => any) => callback(txDriver) };
+    const conn = new Connection(
+      { url: "postgres://user:pass@localhost:5432/db" },
+      { driver: driver as any, ownsDriver: true }
+    );
+
+    await conn.withTenant("tenant-1", async () => {}, "app.tenant_id", "tenant_reader");
+    expect(calls[0]).toBe('SET LOCAL ROLE "tenant_reader"');
+
+    await expect(
+      conn.withTenant("tenant-1", async () => {}, "app.tenant_id", 'reader"; RESET ROLE; --')
+    ).rejects.toThrow("Invalid role name");
+  });
+
   test("auto-rolls-back and releases an abandoned manual transaction", async () => {
     const calls: string[] = [];
     const reserved = {

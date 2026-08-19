@@ -65,7 +65,6 @@ describe.serial("PostgreSQL tenant integration", () => {
 
     const suffix = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const table = `fluent_rls_items_${suffix}`;
-    const role = `fluent_rls_role_${suffix}`;
     PgRlsItem.table = table;
     const grammar = connection.getGrammar();
 
@@ -77,15 +76,11 @@ describe.serial("PostgreSQL tenant integration", () => {
       await connection.run(
         `CREATE POLICY ${grammar.wrap(`${table}_tenant_policy`)} ON ${grammar.wrap(table)} USING (tenant_id = current_setting('app.tenant_id', true))`
       );
-      await connection.run(`CREATE ROLE ${grammar.wrap(role)}`);
-      await connection.run(`GRANT SELECT ON ${grammar.wrap(table)} TO ${grammar.wrap(role)}`);
-
       ConnectionManager.setTenantResolver((tenantId) => ({
         strategy: "rls",
         name: "pg-rls:main",
         tenantId,
         setting: "app.tenant_id",
-        role,
       }));
 
       const acme = await TenantContext.run("acme", () => PgRlsItem.all());
@@ -96,7 +91,6 @@ describe.serial("PostgreSQL tenant integration", () => {
     } finally {
       await connection.run("RESET ROLE").catch(() => null);
       await connection.run(`DROP TABLE IF EXISTS ${grammar.wrap(table)} CASCADE`);
-      await connection.run(`DROP ROLE IF EXISTS ${grammar.wrap(role)}`);
       await connection.close();
     }
   });
