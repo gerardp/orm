@@ -46,20 +46,45 @@ function normalizeColumnType(type: unknown): string {
   return base.trim().split(/\s+/)[0] ?? "";
 }
 
-function isNumericColumnType(type: unknown): boolean {
+export function isNumericColumnType(type: unknown): boolean {
   return NUMERIC_COLUMN_TYPES.has(normalizeColumnType(type));
 }
 
+/** Length of the UUID strings `crypto.randomUUID()` produces. */
+const UUID_LENGTH = 36;
+
 /**
- * Whether a primary key column expects the application to supply its value.
- * Any non numeric primary key (uuid, char(36), TEXT under SQLite, ...) that is
- * not auto incrementing has to be filled in before inserting.
+ * The length a column declares, when it declares one: "char(64)" -> 64. Drivers
+ * that report the length separately (Postgres reports "character" plus
+ * `character_maximum_length`) pass it through `column.length` instead.
+ */
+export function declaredColumnLength(type: unknown): number | null {
+  const match = /\(\s*(\d+)/.exec(String(type ?? ""));
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * Whether the ORM should generate a UUID for this primary key.
+ *
+ * Being non numeric is not enough on its own. A column with a database default
+ * already has its value decided, and a column too short to hold a UUID (a
+ * CHAR(26) holding ULIDs, say) would be corrupted by one — in both cases the
+ * value belongs to the database or the application, not to us. Models that want
+ * UUIDs regardless say so with `usesUuids` / `keyType = "uuid"`, which is
+ * checked before this ever runs.
  */
 export function shouldGeneratePrimaryKeyForColumn(
-  column: { type?: unknown; primary?: boolean; autoIncrement?: boolean } | null | undefined
+  column:
+    | { type?: unknown; primary?: boolean; autoIncrement?: boolean; default?: unknown; length?: number | null }
+    | null
+    | undefined
 ): boolean {
   if (!column) return false;
   if (!column.primary) return false;
   if (column.autoIncrement) return false;
-  return !isNumericColumnType(column.type);
+  if (column.default !== undefined && column.default !== null) return false;
+  if (isNumericColumnType(column.type)) return false;
+
+  const length = column.length ?? declaredColumnLength(column.type);
+  return length === null || length >= UUID_LENGTH;
 }

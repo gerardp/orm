@@ -2,6 +2,7 @@ import { Blueprint } from "../schema/Blueprint.js";
 import { Schema, SchemaColumn, SchemaIndex, SchemaForeignKey } from "../schema/Schema.js";
 import { Connection } from "../connection/Connection.js";
 import type { ColumnType } from "../types/index.js";
+import { declaredColumnLength } from "../utils.js";
 
 const INSPECT = Symbol.for("nodejs.util.inspect.custom");
 
@@ -81,6 +82,8 @@ function buildBlueprintFromModel(blueprint: Blueprint, info: ModelInfo): void {
 function dbTypeToColumnType(dbType: string): ColumnType {
   const t = dbType.toLowerCase();
   if (t.startsWith("varchar") || t.startsWith("character varying")) return "string";
+  // Fixed-width character types. "bpchar" is what Postgres calls CHAR internally.
+  if (/^(char|character|bpchar|nchar)(\(|$)/.test(t)) return "char";
   if (t === "mediumtext") return "mediumText";
   if (t === "longtext") return "longText";
   if (t === "text" || t.startsWith("text")) return "text";
@@ -108,6 +111,7 @@ function blueprintFromColumns(tableName: string, columns: SchemaColumn[]): Bluep
     bp.columns.push({
       name: col.name,
       type: dbTypeToColumnType(col.type),
+      length: col.length ?? declaredColumnLength(col.type) ?? undefined,
       nullable: col.nullable,
       autoIncrement: col.autoIncrement,
       primary: col.primary,

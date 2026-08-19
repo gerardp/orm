@@ -1,5 +1,5 @@
 import { expect, test, describe } from "bun:test";
-import { Connection, Schema } from "../src/index.js";
+import { Connection, Model, Schema } from "../src/index.js";
 import { Blueprint } from "../src/schema/Blueprint.js";
 import { SQLiteGrammar } from "../src/schema/grammars/SQLiteGrammar.js";
 import { MySqlGrammar } from "../src/schema/grammars/MySqlGrammar.js";
@@ -536,5 +536,133 @@ describe("Schema Builder", () => {
 
     expect(mysql.compileChange("users", column)).toContain("ALTER TABLE `users` MODIFY COLUMN `name` VARCHAR(150)");
     expect(postgres.compileChange("users", column)).toContain('ALTER TABLE "users" ALTER COLUMN "name" TYPE VARCHAR(150)');
+  });
+});
+
+describe("Schema.table pre-flight validation", () => {
+  test("rejects an unsupported alter before adding any column", async () => {
+    const connection = setupTestDb();
+    await Schema.create("alter_guard", (table) => {
+      table.increments("id");
+      table.string("name");
+    });
+
+    await expect(
+      Schema.table("alter_guard", (table) => {
+        table.string("added_a").nullable();
+        table.string("added_b").nullable();
+        table.primary(["added_a"]);
+      })
+    ).rejects.toThrow(/SQLite cannot add a primary key/i);
+
+    // The failed migration must leave nothing behind.
+    const columns = await Schema.getColumns("alter_guard");
+    expect(columns.map((column) => column.name)).toEqual(["id", "name"]);
+
+    await teardownTestDb(connection);
+  });
+
+  test("rejects an unsupported column change before adding any column", async () => {
+    const connection = setupTestDb();
+    await Schema.create("change_guard", (table) => {
+      table.increments("id");
+      table.string("name");
+    });
+
+    await expect(
+      Schema.table("change_guard", (table) => {
+        table.string("added").nullable();
+        table.string("name", 100).change();
+      })
+    ).rejects.toThrow(/not supported by the SQLite grammar/i);
+
+    const columns = await Schema.getColumns("change_guard");
+    expect(columns.map((column) => column.name)).toEqual(["id", "name"]);
+
+    await teardownTestDb(connection);
+  });
+
+  test("still applies a supported alter in full", async () => {
+    const connection = setupTestDb();
+    await Schema.create("alter_ok", (table) => {
+      table.increments("id");
+    });
+
+    await Schema.table("alter_ok", (table) => {
+      table.string("added_a").nullable();
+      table.string("added_b").nullable();
+    });
+
+    const columns = await Schema.getColumns("alter_ok");
+    expect(columns.map((column) => column.name)).toEqual(["id", "added_a", "added_b"]);
+
+    await teardownTestDb(connection);
+  });
+});
+
+describe("Column introspection", () => {
+  test("keeps char columns and their length through introspection", async () => {
+    const connection = setupTestDb();
+    await connection.run(
+      "CREATE TABLE char_table (id INTEGER PRIMARY KEY, code CHAR(64), label VARCHAR(30), body TEXT)"
+    );
+
+    const columns = await Schema.getColumns("char_table");
+    const byName = Object.fromEntries(columns.map((column) => [column.name, column]));
+    expect(byName.code?.length).toBe(64);
+    expect(byName.label?.length).toBe(30);
+
+    class CharModel extends Model {
+      static override table = "char_table";
+    }
+    const blueprint = await CharModel.schema().introspect().blueprint;
+    const types = Object.fromEntries(blueprint.columns.map((column) => [column.name, column]));
+    expect(types.code?.type).toBe("char");
+    expect(types.code?.length).toBe(64);
+    expect(types.label?.type).toBe("string");
+    expect(types.label?.length).toBe(30);
+    expect(types.body?.type).toBe("text");
+
+    await teardownTestDb(connection);
+  });
+});
+
+describe.serial("Column introspection on PostgreSQL", () => {
+  const postgresUrl = process.env.POSTGRES_TEST_URL;
+  const runIfPostgres = postgresUrl ? test.serial : test.skip;
+
+  runIfPostgres("takes char length from character_maximum_length", async () => {
+    const connection = new Connection({ url: postgresUrl! });
+    const table = `char_probe_${Date.now()}`;
+    await connection.run(
+      `CREATE TABLE ${table} (id INT PRIMARY KEY, code CHAR(64), label VARCHAR(30), body TEXT)`
+    );
+
+    try {
+      Schema.setConnection(connection);
+      Model.setConnection(connection);
+
+      // Unlike SQLite and MySQL, Postgres reports "character" without the
+      // length; it arrives in a column of its own.
+      const columns = await Schema.getColumns(table, connection);
+      const byName = Object.fromEntries(columns.map((column) => [column.name, column]));
+      expect(byName.code?.type).toBe("character");
+      expect(byName.code?.length).toBe(64);
+      expect(byName.label?.length).toBe(30);
+
+      class PgCharModel extends Model {
+        static override table = table;
+      }
+      const blueprint = await PgCharModel.schema().introspect().blueprint;
+      const types = Object.fromEntries(blueprint.columns.map((column) => [column.name, column]));
+      expect(types.code?.type).toBe("char");
+      expect(types.code?.length).toBe(64);
+      expect(types.label?.type).toBe("string");
+      expect(types.label?.length).toBe(30);
+      expect(types.body?.type).toBe("text");
+    } finally {
+      await connection.run(`DROP TABLE IF EXISTS ${table}`);
+      await connection.close();
+    }
   });
 });

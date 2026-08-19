@@ -6,6 +6,8 @@ import { MySqlGrammar } from "./grammars/MySqlGrammar.js";
 import { PostgresGrammar } from "./grammars/PostgresGrammar.js";
 import { ConnectionManager } from "../connection/ConnectionManager.js";
 import { TenantContext } from "../connection/TenantContext.js";
+import { TransactionContext } from "../connection/TransactionContext.js";
+import { declaredColumnLength } from "../utils.js";
 
 export interface SchemaColumn {
   name: string;
@@ -14,6 +16,8 @@ export interface SchemaColumn {
   autoIncrement: boolean;
   nullable: boolean;
   default?: any;
+  /** Declared length for character types, when the driver reports one. */
+  length?: number;
 }
 
 export interface SchemaIndex {
@@ -41,8 +45,9 @@ export class Schema {
   }
 
   static getConnection(): Connection {
+    const transactionConnection = TransactionContext.current();
     const tenantConnection = TenantContext.current()?.connection;
-    const connection = tenantConnection || this.connection || ConnectionManager.getDefault();
+    const connection = transactionConnection || tenantConnection || this.connection || ConnectionManager.getDefault();
     if (!connection) {
       throw new Error("No database connection set.");
     }
@@ -61,52 +66,52 @@ export class Schema {
     }
   }
 
-  static async create(table: string, callback: (blueprint: Blueprint) => void): Promise<void> {
+  static async create(table: string, callback: (blueprint: Blueprint) => void, conn?: Connection): Promise<void> {
     const blueprint = new Blueprint(table);
     callback(blueprint);
-    const grammar = this.getGrammar();
-    const connection = this.getConnection();
+    const connection = conn ?? this.getConnection();
+    const grammar = this.getGrammar(connection);
     const sql = grammar.compileCreate(blueprint, connection.qualifyTable(table));
-    await this.getConnection().run(sql);
+    await connection.run(sql);
 
     const indexes = grammar.compileIndexes(blueprint, connection.qualifyTable(table));
     for (const indexSql of indexes) {
-      await this.getConnection().run(indexSql);
+      await connection.run(indexSql);
     }
 
     const fks = grammar.compileForeignKeys(blueprint, connection.qualifyTable(table));
     for (const fkSql of fks) {
-      await this.getConnection().run(fkSql);
+      await connection.run(fkSql);
     }
   }
 
-  static async createIfNotExists(table: string, callback: (blueprint: Blueprint) => void): Promise<void> {
+  static async createIfNotExists(table: string, callback: (blueprint: Blueprint) => void, conn?: Connection): Promise<void> {
     const blueprint = new Blueprint(table);
     callback(blueprint);
-    const grammar = this.getGrammar();
-    const connection = this.getConnection();
+    const connection = conn ?? this.getConnection();
+    const grammar = this.getGrammar(connection);
     const sql = grammar.compileCreateIfNotExists(blueprint, connection.qualifyTable(table));
-    await this.getConnection().run(sql);
+    await connection.run(sql);
 
     const indexes = grammar.compileIndexes(blueprint, connection.qualifyTable(table));
     for (const indexSql of indexes) {
-      await this.getConnection().run(indexSql);
+      await connection.run(indexSql);
     }
 
     const fks = grammar.compileForeignKeys(blueprint, connection.qualifyTable(table));
     for (const fkSql of fks) {
-      await this.getConnection().run(fkSql);
+      await connection.run(fkSql);
     }
   }
 
-  static async createSchema(schema: string): Promise<void> {
+  static async createSchema(schema: string, conn?: Connection): Promise<void> {
     Connection.assertSafeIdentifier(schema, "schema name");
-    const connection = this.getConnection();
+    const connection = conn ?? this.getConnection();
     const driver = connection.getDriverName();
     if (driver === "sqlite") {
       throw new Error("Schema creation is not supported for SQLite connections.");
     }
-    const grammar = this.getGrammar();
+    const grammar = this.getGrammar(connection);
     const keyword = driver === "mysql" ? "DATABASE" : "SCHEMA";
     await connection.run(`CREATE ${keyword} IF NOT EXISTS ${grammar.wrap(schema)}`);
   }
@@ -124,37 +129,37 @@ export class Schema {
     await connection.run(`DROP ${keyword} IF EXISTS ${grammar.wrap(schema)}${cascade}`);
   }
 
-  static async table(table: string, callback: (blueprint: Blueprint) => void): Promise<void> {
+  static async table(table: string, callback: (blueprint: Blueprint) => void, conn?: Connection): Promise<void> {
     const blueprint = new Blueprint(table);
     callback(blueprint);
-    const grammar = this.getGrammar();
-    const connection = this.getConnection();
+    const connection = conn ?? this.getConnection();
+    const grammar = this.getGrammar(connection);
     const qualifiedTable = connection.qualifyTable(table);
+
+    // Compile every statement before running any of them. Grammars reject what
+    // their driver cannot express (SQLite has no ADD PRIMARY KEY and no column
+    // changes) by throwing at compile time, and a migration that dies halfway
+    // leaves the table in a state no rollback describes.
+    const statements: string[] = [];
+    const push = (sql: string | string[]) => {
+      if (Array.isArray(sql)) statements.push(...sql);
+      else statements.push(sql);
+    };
 
     for (const command of blueprint.commands) {
       if (command.name === "dropColumn") {
-        const sql = grammar.compileDropColumn(qualifiedTable, command.parameters!.column);
-        if (Array.isArray(sql)) {
-          for (const s of sql) await this.getConnection().run(s);
-        } else {
-          await this.getConnection().run(sql);
-        }
+        push(grammar.compileDropColumn(qualifiedTable, command.parameters!.column));
       } else if (command.name === "renameColumn") {
-        const sql = grammar.compileColumnRename(qualifiedTable, command.parameters!.from, command.parameters!.to);
-        await this.getConnection().run(sql);
+        push(grammar.compileColumnRename(qualifiedTable, command.parameters!.from, command.parameters!.to));
       } else if (command.name === "dropIndex" || command.name === "dropUnique") {
         const indexName = command.parameters!.name as string;
         const driver = connection.getDriverName();
         if (driver === "mysql") {
-          await this.getConnection().run(
-            `DROP INDEX ${grammar.wrap(indexName)} ON ${grammar.wrap(qualifiedTable)}`
-          );
+          push(`DROP INDEX ${grammar.wrap(indexName)} ON ${grammar.wrap(qualifiedTable)}`);
         } else if (driver === "postgres") {
-          await this.getConnection().run(
-            `DROP INDEX IF EXISTS ${grammar.wrap(connection.qualifyTable(indexName))}`
-          );
+          push(`DROP INDEX IF EXISTS ${grammar.wrap(connection.qualifyTable(indexName))}`);
         } else {
-          await this.getConnection().run(`DROP INDEX ${grammar.wrap(indexName)}`);
+          push(`DROP INDEX ${grammar.wrap(indexName)}`);
         }
       } else if (command.name === "dropForeign") {
         const given = command.parameters!.name as string;
@@ -169,36 +174,23 @@ export class Schema {
             if (byColumn?.name) constraintName = byColumn.name;
           }
         }
-        await this.getConnection().run(
-          `ALTER TABLE ${grammar.wrap(qualifiedTable)} DROP CONSTRAINT ${grammar.wrap(constraintName)}`
-        );
+        push(`ALTER TABLE ${grammar.wrap(qualifiedTable)} DROP CONSTRAINT ${grammar.wrap(constraintName)}`);
       } else if (command.name === "change") {
-        const sql = grammar.compileChange(qualifiedTable, command.parameters!.column);
-        if (Array.isArray(sql)) {
-          for (const s of sql) await this.getConnection().run(s);
-        } else {
-          await this.getConnection().run(sql);
-        }
+        push(grammar.compileChange(qualifiedTable, command.parameters!.column));
       }
     }
 
-    const addSqls = grammar.compileAdd(blueprint, qualifiedTable);
-    for (const sql of addSqls) {
-      await this.getConnection().run(sql);
-    }
+    push(grammar.compileAdd(blueprint, qualifiedTable));
 
     if (blueprint.primaryKey) {
-      await this.getConnection().run(grammar.compileAddPrimaryKey(qualifiedTable, blueprint.primaryKey));
+      push(grammar.compileAddPrimaryKey(qualifiedTable, blueprint.primaryKey));
     }
 
-    const indexes = grammar.compileIndexes(blueprint, qualifiedTable);
-    for (const indexSql of indexes) {
-      await this.getConnection().run(indexSql);
-    }
+    push(grammar.compileIndexes(blueprint, qualifiedTable));
+    push(grammar.compileForeignKeys(blueprint, qualifiedTable));
 
-    const fks = grammar.compileForeignKeys(blueprint, qualifiedTable);
-    for (const fkSql of fks) {
-      await this.getConnection().run(fkSql);
+    for (const sql of statements) {
+      await connection.run(sql);
     }
   }
 
@@ -222,8 +214,8 @@ export class Schema {
     await connection.run(grammar.compileRename(connection.qualifyTable(from), to));
   }
 
-  static async hasTable(table: string): Promise<boolean> {
-    const connection = this.getConnection();
+  static async hasTable(table: string, conn?: Connection): Promise<boolean> {
+    const connection = conn ?? this.getConnection();
     const driver = connection.getDriverName();
     const schema = connection.getSchema() || "public";
     let sql: string;
@@ -242,11 +234,11 @@ export class Schema {
     return result.length > 0;
   }
 
-  static async hasColumn(table: string, column: string): Promise<boolean> {
-    const connection = this.getConnection();
+  static async hasColumn(table: string, column: string, conn?: Connection): Promise<boolean> {
+    const connection = conn ?? this.getConnection();
     const driver = connection.getDriverName();
     const schema = connection.getSchema() || "public";
-    const grammar = this.getGrammar();
+    const grammar = this.getGrammar(connection);
     let sql: string;
     let bindings: any[] = [];
     if (driver === "sqlite") {
@@ -479,6 +471,7 @@ export class Schema {
         autoIncrement: false,
         nullable: row.notnull === 0,
         default: row.dflt_value ?? undefined,
+        length: declaredColumnLength(row.type) ?? undefined,
       }));
     }
 
@@ -494,11 +487,12 @@ export class Schema {
         autoIncrement: String(row.Extra || "").toLowerCase().includes("auto_increment"),
         nullable: row.Nullable === "YES",
         default: row.Default ?? undefined,
+        length: declaredColumnLength(row.Type) ?? undefined,
       }));
     }
 
     const rows = await conn.query(
-      `SELECT c.column_name, c.data_type, c.is_nullable, c.column_default,
+      `SELECT c.column_name, c.data_type, c.is_nullable, c.column_default, c.character_maximum_length,
        COALESCE(bool_or(tc.constraint_type = 'PRIMARY KEY'), false) AS primary_key
        FROM information_schema.columns c
        LEFT JOIN information_schema.key_column_usage kcu
@@ -511,7 +505,7 @@ export class Schema {
         AND tc.constraint_type = 'PRIMARY KEY'
        WHERE c.table_schema = $1
          AND c.table_name = $2
-       GROUP BY c.column_name, c.data_type, c.is_nullable, c.column_default, c.ordinal_position
+       GROUP BY c.column_name, c.data_type, c.is_nullable, c.column_default, c.character_maximum_length, c.ordinal_position
        ORDER BY c.ordinal_position`,
       [schema, table]
     );
@@ -522,6 +516,7 @@ export class Schema {
       autoIncrement: false,
       nullable: row.is_nullable === "YES",
       default: row.column_default ?? undefined,
+      length: row.character_maximum_length ?? undefined,
     }));
   }
 
@@ -529,7 +524,15 @@ export class Schema {
     table: string,
     column: string,
     conn?: Connection
-  ): Promise<{ name: string; type: string; primary: boolean; autoIncrement: boolean } | null> {
+  ): Promise<{
+    name: string;
+    type: string;
+    primary: boolean;
+    autoIncrement: boolean;
+    default?: any;
+    defaultIsExpression?: boolean;
+    length?: number;
+  } | null> {
     const connection = conn ?? this.getConnection();
     const driver = connection.getDriverName();
     let schema = connection.getSchema() || "public";
@@ -545,20 +548,40 @@ export class Schema {
     if (driver === "sqlite") {
       const rows = await connection.query(`PRAGMA table_info(${grammar.wrap(table)})`);
       const row = rows.find((item: any) => item.name === column);
-      return row ? { name: row.name, type: row.type, primary: row.pk > 0, autoIncrement: false } as any : null;
+      return row
+        ? ({
+            name: row.name,
+            type: row.type,
+            primary: row.pk > 0,
+            autoIncrement: false,
+            default: row.dflt_value ?? undefined,
+            length: declaredColumnLength(row.type) ?? undefined,
+          } as any)
+        : null;
     }
 
     if (driver === "mysql") {
       const rows = await connection.query(
-        "SELECT column_name AS Field, column_type AS Type, column_key AS `Key`, extra AS Extra FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+        "SELECT column_name AS Field, column_type AS Type, column_key AS `Key`, extra AS Extra, column_default AS `Default` FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
         [tableName, column]
       );
       const row = rows[0];
-      return row ? { name: row.Field, type: row.Type, primary: row.Key === "PRI", autoIncrement: String(row.Extra || "").toLowerCase().includes("auto_increment") } as any : null;
+      return row
+        ? ({
+            name: row.Field,
+            type: row.Type,
+            primary: row.Key === "PRI",
+            autoIncrement: String(row.Extra || "").toLowerCase().includes("auto_increment"),
+            default: row.Default ?? undefined,
+            defaultIsExpression: String(row.Extra || "").toLowerCase().includes("default_generated"),
+            length: declaredColumnLength(row.Type) ?? undefined,
+          } as any)
+        : null;
     }
 
     const rows = await connection.query(
-      `SELECT c.column_name, c.data_type, COALESCE(tc.constraint_type = 'PRIMARY KEY', false) AS primary_key
+      `SELECT c.column_name, c.data_type, c.column_default, c.character_maximum_length,
+       COALESCE(tc.constraint_type = 'PRIMARY KEY', false) AS primary_key
        FROM information_schema.columns c
        LEFT JOIN information_schema.key_column_usage kcu
          ON c.table_schema = kcu.table_schema
@@ -573,6 +596,15 @@ export class Schema {
       [schema, tableName, column]
     );
     const row = rows[0];
-    return row ? { name: row.column_name, type: row.data_type, primary: !!row.primary_key, autoIncrement: false } as any : null;
+    return row
+      ? ({
+          name: row.column_name,
+          type: row.data_type,
+          primary: !!row.primary_key,
+          autoIncrement: false,
+          default: row.column_default ?? undefined,
+          length: row.character_maximum_length ?? undefined,
+        } as any)
+      : null;
   }
 }
