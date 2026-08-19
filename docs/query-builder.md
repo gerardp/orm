@@ -696,6 +696,15 @@ await Product.max("price");
 
 `count`, `sum`, `avg`, `min`, `max`, `exists`, `sole` and `pluck` all run either straight off the model, as above, or off a constrained query — `User.sum("credits")` and `User.where("active", true).sum("credits")` are the same call with a different starting point.
 
+`count()` always returns a JavaScript `number`. `sum()` and `avg()` preserve the
+driver's exact numeric representation and return `number | string | bigint`:
+MySQL `DECIMAL` and PostgreSQL `NUMERIC` aggregates are strings; large integer
+aggregates can be strings or bigints when the connection enables `bigint`. Do
+not coerce exact financial totals with `Number(...)` unless the range and
+precision are known to be safe. SQLite performs numeric aggregates through its
+`INTEGER`/`REAL` numeric representations, so arbitrary-precision decimal
+aggregates are not available natively.
+
 ## Eager loading
 
 The fastest way to avoid N+1 query bugs. Always pre-load relations you intend to read.

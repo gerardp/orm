@@ -200,6 +200,17 @@ user!.name;                                                // ✓ string
 
 Column arguments still accept raw strings for joins, aliases, expressions, and SQL fragments, so the autocomplete doesn't block escape hatches.
 
+Generated attributes describe the raw values returned by the active driver.
+For MySQL this means native JSON is `any`, `DATE`/`DATETIME`/`TIMESTAMP` are
+`Date`, `DECIMAL` is `string`, booleans (`TINYINT(1)`) are `number`, and
+`BIGINT` is `number | string`. With `connection.bigint: true`, `BIGINT` becomes
+`number | bigint`. PostgreSQL emits JSON/JSONB as `any`, dates/timestamps as
+`Date`, `NUMERIC` as `string`, and `BIGINT` as `string` (or `bigint` when that
+connection option is enabled). SQLite exposes its native `INTEGER`/`REAL`
+values as `number` and JSON-backed `TEXT` as `string`. Model casts can
+intentionally expose a narrower application type, but the generator cannot
+infer those per-model transformations from the database schema.
+
 ### Stubs mode
 
 If you'd rather Bunny generate the base classes themselves (instead of augmenting hand-written ones), set `typeStubs: true`. The generator then emits:

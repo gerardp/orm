@@ -102,7 +102,7 @@ export type SQLitePragmaConfig = {
 };
 
 export type ConnectionConfig =
-  | { url: string; schema?: string; max?: number; prepare?: boolean; sqlitePragmas?: false | SQLitePragmaConfig }
+  | { url: string; schema?: string; max?: number; prepare?: boolean; bigint?: boolean; sqlitePragmas?: false | SQLitePragmaConfig }
   | {
       driver: "sqlite" | "mysql" | "postgres";
       host?: string;
@@ -114,5 +114,6 @@ export type ConnectionConfig =
       schema?: string;
       max?: number;
       prepare?: boolean;
+      bigint?: boolean;
       sqlitePragmas?: false | SQLitePragmaConfig;
     };

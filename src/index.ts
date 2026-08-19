@@ -19,7 +19,7 @@ export { MySqlGrammar } from "./schema/grammars/MySqlGrammar.js";
 export { PostgresGrammar } from "./schema/grammars/PostgresGrammar.js";
 
 export { Builder, CursorPaginator, Paginator, SimplePaginator } from "./query/Builder.js";
-export type { CursorPaginatorJson, PaginatorJson, SimplePaginatorJson } from "./query/Builder.js";
+export type { CursorPaginatorJson, NumericAggregate, PaginatorJson, SimplePaginatorJson } from "./query/Builder.js";
 export { DB } from "./query/DB.js";
 export { Collection, collect } from "./support/Collection.js";
 export { Cache, RedisCacheStore, MemoryCacheStore } from "./cache/index.js";

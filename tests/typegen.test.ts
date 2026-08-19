@@ -1,7 +1,7 @@
 import { expect, test, describe, beforeAll, afterAll } from "bun:test";
 import { mkdir, readdir, rm, writeFile } from "fs/promises";
 import { join } from "path";
-import { Schema, TypeGenerator, discoverModelTables } from "../src/index.js";
+import { Schema, TypeGenerator, TypeMapper, discoverModelTables } from "../src/index.js";
 import { setupTestDb } from "./helpers.js";
 
 const OUT_DIR = join(process.cwd(), "tests", "temp_types");
@@ -311,5 +311,27 @@ describe("TypeGenerator", () => {
     expect(indexContent).toContain("team_members");
 
     await rm(combinedDir, { recursive: true, force: true });
+  });
+});
+
+describe("TypeMapper MySQL contracts", () => {
+  test("reflects Bun's exact numeric, native JSON, date, and boolean representations", () => {
+    expect(TypeMapper.sqlToTsType("bigint unsigned", false, "mysql")).toBe("number | string");
+    expect(TypeMapper.sqlToTsType("bigint", false, "mysql", true)).toBe("number | bigint");
+    expect(TypeMapper.sqlToTsType("decimal(30,10)", false, "mysql")).toBe("string");
+    expect(TypeMapper.sqlToTsType("json", true, "mysql")).toBe("any");
+    expect(TypeMapper.sqlToTsType("datetime", true, "mysql")).toBe("Date | null");
+    expect(TypeMapper.sqlToTsType("tinyint(1)", false, "mysql")).toBe("number");
+  });
+});
+
+describe("TypeMapper PostgreSQL contracts", () => {
+  test("reflects Bun's exact numeric, native JSON, date, and boolean representations", () => {
+    expect(TypeMapper.sqlToTsType("bigint", false, "postgres")).toBe("string");
+    expect(TypeMapper.sqlToTsType("bigint", false, "postgres", true)).toBe("bigint");
+    expect(TypeMapper.sqlToTsType("numeric", true, "postgres")).toBe("string | null");
+    expect(TypeMapper.sqlToTsType("jsonb", true, "postgres")).toBe("any");
+    expect(TypeMapper.sqlToTsType("timestamp without time zone", true, "postgres")).toBe("Date | null");
+    expect(TypeMapper.sqlToTsType("boolean", false, "postgres")).toBe("boolean");
   });
 });

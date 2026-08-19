@@ -167,6 +167,19 @@ user.settings.theme;       // "dark" (parsed JSON)
 | `enum` | Stores `.value` of enum members |
 | `base64` | Base64-encoded on write, decoded on read. Encoding, not encryption |
 
+`decimal:N` deliberately returns a string. Pass exact database decimals as
+strings too (`"12345678901234567890.12"`): once a value has entered a JavaScript
+`number`, digits beyond its safe precision cannot be recovered. PostgreSQL
+`NUMERIC` and MySQL `DECIMAL` preserve those strings natively. SQLite maps the
+schema builder's decimal type to `REAL`; use a `TEXT` column with the decimal
+cast, or integer minor units, when SQLite storage must remain exact.
+
+JSON casts are mutable. Bunny compares the serialized cached value during dirty
+tracking, so changing `user.settings.theme` in place is detected by `isDirty()`
+and persisted by `save()`; assigning a whole replacement object also works.
+JSON numbers still obey JavaScript's numeric precision. Store identifiers and
+other integers beyond `Number.MAX_SAFE_INTEGER` as JSON strings.
+
 > **`encrypted` was removed in favour of `base64`.** It only Base64-encoded
 > values — anyone could decode them — so the name promised a guarantee it never
 > delivered. Models still declaring `encrypted` now throw instead of silently
@@ -195,6 +208,11 @@ class Product extends Model {
   };
 }
 ```
+
+When a custom cast writes to a `DATE`, `DATETIME`, or `TIMESTAMP` column, its
+`set()` method must return a `Date`, not a preformatted or ISO date string. This
+lets Bunny apply the correct database-specific serialization and, on MySQL,
+verify the session's UTC requirement without mistaking ordinary text for a date.
 
 You can also add casts at runtime to one instance only:
 

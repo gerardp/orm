@@ -40,6 +40,8 @@ export class TypeGenerator {
   ) {}
 
   async generate(): Promise<string[]> {
+    const driver = this.connection.getDriverName();
+    const bigint = this.connection.getConfig().bigint ?? false;
     let tables = await this.getTables();
     if (this.options.allowedTables) {
       const allowed = new Set(this.options.allowedTables.map((t) => t.toLowerCase()));
@@ -75,7 +77,7 @@ export class TypeGenerator {
 
         lines.push(`export interface ${interfaceName} {`);
         for (const col of columns) {
-          const tsType = TypeMapper.sqlToTsType(col.type, col.nullable);
+          const tsType = TypeMapper.sqlToTsType(col.type, col.nullable, driver, bigint);
           lines.push(`  ${col.name}${col.nullable ? "?" : ""}: ${tsType};`);
         }
         lines.push("}");
@@ -101,7 +103,7 @@ export class TypeGenerator {
           lines.push("");
 
           for (const col of columns) {
-            const tsType = TypeMapper.sqlToTsType(col.type, col.nullable);
+            const tsType = TypeMapper.sqlToTsType(col.type, col.nullable, driver, bigint);
             lines.push(`  get ${col.name}(): ${tsType} {`);
             lines.push(`    return this.getAttribute("${col.name}");`);
             lines.push(`  }`);

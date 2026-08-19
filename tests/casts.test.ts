@@ -106,6 +106,38 @@ describe("Attribute Casting", () => {
     expect(record.metadata).toEqual({ foo: "bar" });
   });
 
+  test("tracks and persists in-place mutations to json casts", async () => {
+    const record = await CastedModel.create({
+      metadata: { profile: { theme: "light" } },
+      is_active: 0,
+      count: 0,
+      score: 0,
+    });
+
+    record.metadata.profile.theme = "dark";
+    const rawBeforeCheck = record.$attributes.metadata;
+    const dirtyKeysBeforeCheck = [...(record.$dirtyKeys ?? [])];
+    expect(record.isDirty()).toBe(true);
+    expect(record.getDirty()).toEqual({ metadata: '{"profile":{"theme":"dark"}}' });
+    expect(record.$attributes.metadata).toBe(rawBeforeCheck);
+    expect([...(record.$dirtyKeys ?? [])]).toEqual(dirtyKeysBeforeCheck);
+    await record.save();
+
+    expect(record.$attributes.metadata).toBe('{"profile":{"theme":"dark"}}');
+    expect(record.isDirty()).toBe(false);
+    const found = await CastedModel.find(record.id);
+    expect(found!.metadata).toEqual({ profile: { theme: "dark" } });
+  });
+
+  test("normalizes native json rows without marking an unchanged value dirty", () => {
+    const record = CastedModel.hydrate({ id: 99, metadata: { enabled: true } });
+
+    expect(record.metadata).toEqual({ enabled: true });
+    expect(record.isDirty()).toBe(false);
+    record.metadata.enabled = false;
+    expect(record.getDirty()).toMatchObject({ metadata: '{"enabled":false}' });
+  });
+
   test("supports decimal, base64, runtime, and custom casts", async () => {
     const record = new CastedModel({ price: 12.5, secret: "hidden", code: "abc", is_active: 0, count: 0, score: 0 });
     record.mergeCasts({ count: "string" });
@@ -150,5 +182,30 @@ describe("Attribute Casting", () => {
     record.mergeCasts({ code: "string" });
     expect(record.code).toBe("XYZ");
     expect(CountingCast.gets).toBe(2);
+  });
+
+  test("preserves decimal precision and rounds without converting through Number", () => {
+    const record = new CastedModel({
+      price: "12345678901234567890.125",
+      is_active: 0,
+      count: 0,
+      score: 0,
+    });
+
+    expect(record.$attributes.price).toBe("12345678901234567890.13");
+    expect(record.price).toBe("12345678901234567890.13");
+  });
+
+  test("decimal casts support exponents and reject invalid values or scales", () => {
+    const tiny = new CastedModel({ price: "1e-3", is_active: 0, count: 0, score: 0 });
+    const negative = new CastedModel({ price: "-1.005", is_active: 0, count: 0, score: 0 });
+    expect(tiny.price).toBe("0.00");
+    expect(negative.price).toBe("-1.01");
+
+    expect(() => new CastedModel({ price: "not-a-decimal" })).toThrow("Invalid decimal value");
+    expect(() => new CastedModel({ price: Number.POSITIVE_INFINITY })).toThrow("Invalid decimal value");
+    expect(() => new CastedModel().mergeCasts({ price: "decimal:-1" }).setAttribute("price", "1")).toThrow(
+      "Invalid decimal scale"
+    );
   });
 });

@@ -1,5 +1,4 @@
 import { Connection } from "../connection/Connection.js";
-import { formatDateForDriver } from "../utils.js";
 import { TransactionContext } from "../connection/TransactionContext.js";
 import { Cache } from "../cache/index.js";
 import { MorphTo } from "../model/MorphRelations.js";
@@ -46,6 +45,7 @@ type RecursiveCteDefinition = {
 };
 type RawFragment = { sql: string; bindings: readonly unknown[] };
 type UnionDefinition = { query: Builder<any> | string; all: boolean };
+export type NumericAggregate = number | string | bigint;
 
 const QUERY_OPERATORS = new Set([
   "=", "!=", "<>", "<", "<=", ">", ">=", "<=>",
@@ -2112,48 +2112,20 @@ export class Builder<T = Record<string, any>, TResult = T> {
     return rows.length > 0 ? Number((rows[0] as any).cnt) : 0;
   }
 
-  async sum(column: ModelColumn<T>): Promise<number> {
-    this.bindings = [];
-    this.parameterize = true;
-    const sql = `SELECT SUM(${this.grammar.wrap(column as string)}) as sum_val FROM ${this.compileFrom()}`;
-    const whereSql = this.compileWheres();
-    this.parameterize = false;
-    const fullSql = whereSql ? `${sql}${whereSql}` : sql;
-    const rows = await this.connection.query(fullSql, this.bindings);
-    return rows.length > 0 ? Number((rows[0] as any).sum_val || 0) : 0;
+  async sum(column: ModelColumn<T>): Promise<NumericAggregate> {
+    return (await this.aggregate(`SUM(${this.grammar.wrap(column as string)})`, "sum_val")) ?? 0;
   }
 
-  async avg(column: ModelColumn<T>): Promise<number> {
-    this.bindings = [];
-    this.parameterize = true;
-    const sql = `SELECT AVG(${this.grammar.wrap(column as string)}) as avg_val FROM ${this.compileFrom()}`;
-    const whereSql = this.compileWheres();
-    this.parameterize = false;
-    const fullSql = whereSql ? `${sql}${whereSql}` : sql;
-    const rows = await this.connection.query(fullSql, this.bindings);
-    return rows.length > 0 ? Number((rows[0] as any).avg_val || 0) : 0;
+  async avg(column: ModelColumn<T>): Promise<NumericAggregate> {
+    return (await this.aggregate(`AVG(${this.grammar.wrap(column as string)})`, "avg_val")) ?? 0;
   }
 
   async min<K extends ModelColumn<T>>(column: K): Promise<ModelColumnValue<T, K> | null> {
-    this.bindings = [];
-    this.parameterize = true;
-    const sql = `SELECT MIN(${this.grammar.wrap(column as string)}) as min_val FROM ${this.compileFrom()}`;
-    const whereSql = this.compileWheres();
-    this.parameterize = false;
-    const fullSql = whereSql ? `${sql}${whereSql}` : sql;
-    const rows = await this.connection.query(fullSql, this.bindings);
-    return rows.length > 0 ? (rows[0] as any).min_val : null;
+    return await this.aggregate(`MIN(${this.grammar.wrap(column as string)})`, "min_val");
   }
 
   async max<K extends ModelColumn<T>>(column: K): Promise<ModelColumnValue<T, K> | null> {
-    this.bindings = [];
-    this.parameterize = true;
-    const sql = `SELECT MAX(${this.grammar.wrap(column as string)}) as max_val FROM ${this.compileFrom()}`;
-    const whereSql = this.compileWheres();
-    this.parameterize = false;
-    const fullSql = whereSql ? `${sql}${whereSql}` : sql;
-    const rows = await this.connection.query(fullSql, this.bindings);
-    return rows.length > 0 ? (rows[0] as any).max_val : null;
+    return await this.aggregate(`MAX(${this.grammar.wrap(column as string)})`, "max_val");
   }
 
   async paginate(perPage: number = 15, page: number = 1): Promise<Paginator<TResult>> {
@@ -2511,29 +2483,37 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   /**
-   * Renders date columns in the shape the driver stores them.
+   * Restores driver-native values before Connection sends model writes.
    *
    * Applied here rather than at each call site: a model has a dozen ways to
    * reach a write — insert, upsert, updateOrInsert, saveMany, touch, increment,
-   * soft delete — and MySQL rejects the ISO-8601 the casts keep in memory. One
-   * place means a new write path cannot forget.
+   * soft delete. MySQL needs native Date values and PostgreSQL needs booleans
+   * rather than SQLite's portable 1/0 representation. One place means a new
+   * write path cannot forget either conversion.
    */
-  private serializeDates<D>(data: D): D {
-    if (this.connection.getDriverName() !== "mysql") return data;
+  private serializeDriverValues<D>(data: D): D {
+    const driver = this.connection.getDriverName();
     const model = this.model as any;
-    const columns: string[] | undefined = model?.dateColumns?.();
-    if (!columns || columns.length === 0) return data;
+    const dateColumns: string[] = driver === "mysql" ? model?.dateColumns?.() ?? [] : [];
+    const booleanColumns: string[] = driver === "postgres" ? model?.booleanColumns?.() ?? [] : [];
+    if (dateColumns.length === 0 && booleanColumns.length === 0) return data;
 
     const render = (record: Record<string, any>): Record<string, any> => {
       let copy: Record<string, any> | undefined;
-      for (const column of columns) {
+      for (const column of dateColumns) {
         const value = record?.[column];
         if (value === null || value === undefined) continue;
         if (typeof value !== "string" && !(value instanceof Date)) continue;
         const date = value instanceof Date ? value : new Date(value);
         if (Number.isNaN(date.getTime())) continue;
         copy = copy ?? { ...record };
-        copy[column] = formatDateForDriver(date, "mysql");
+        copy[column] = date;
+      }
+      for (const column of booleanColumns) {
+        const value = record?.[column];
+        if (value === null || value === undefined) continue;
+        copy = copy ?? { ...record };
+        copy[column] = Boolean(value);
       }
       return copy ?? record;
     };
@@ -2543,7 +2523,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async insert(data: ModelAttributeInput<T> | ModelAttributeInput<T>[]): Promise<any> {
-    data = this.serializeDates(data);
+    data = this.serializeDriverValues(data);
     const records = Array.isArray(data) ? data : [data];
     if (records.length === 0) return;
 
@@ -2561,7 +2541,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async insertGetId(data: ModelAttributeInput<T>, idColumn: ModelColumn<T> = "id"): Promise<any> {
-    data = this.serializeDates(data);
+    data = this.serializeDriverValues(data);
     const records = Array.isArray(data) ? data : [data];
     if (records.length === 0) return null;
 
@@ -2597,12 +2577,11 @@ export class Builder<T = Record<string, any>, TResult = T> {
       return null;
     }
 
-    const result = await this.connection.run(sql, bindings);
-    return (result as any)?.lastInsertRowid ?? (result as any)?.insertId ?? null;
+    return await this.connection.runAndGetMysqlInsertId(sql, bindings);
   }
 
   async insertOrIgnore(data: ModelAttributeInput<T> | ModelAttributeInput<T>[]): Promise<any> {
-    data = this.serializeDates(data);
+    data = this.serializeDriverValues(data);
     const records = Array.isArray(data) ? data : [data];
     if (records.length === 0) return;
 
@@ -2624,7 +2603,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async upsert(data: ModelAttributeInput<T> | ModelAttributeInput<T>[], uniqueBy: ModelColumn<T> | ModelColumn<T>[], updateColumns?: ModelColumn<T>[]): Promise<any> {
-    data = this.serializeDates(data);
+    data = this.serializeDriverValues(data);
     const records = Array.isArray(data) ? data : [data];
     if (records.length === 0) return;
 
@@ -2663,7 +2642,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async update(data: ModelAttributeInput<T>): Promise<any> {
-    data = this.serializeDates(data);
+    data = this.serializeDriverValues(data);
     const dispatch = this.shouldDispatchObservers();
     const affectedIds = dispatch ? await this.pluckAffectedIds() : null;
 
@@ -2742,7 +2721,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
     if (typeof amount !== "number" || !Number.isFinite(amount)) {
       throw new Error("Increment amount must be a finite number.");
     }
-    extra = this.serializeDates(extra);
+    extra = this.serializeDriverValues(extra);
     this.bindings = [];
     this.parameterize = true;
     const sets = [`${this.grammar.wrap(column)} = ${this.grammar.wrap(column)} + ${this.addBinding(amount)}`];

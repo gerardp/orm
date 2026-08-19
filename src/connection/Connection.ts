@@ -1,7 +1,6 @@
 import { SQL, FileSink } from "bun";
 import type { ConnectionConfig } from "../types/index.js";
 import { Grammar } from "../query/grammars/Grammar.js";
-import { formatDateForDriver } from "../utils.js";
 import { SQLiteGrammar } from "../query/grammars/SQLiteGrammar.js";
 import { MySqlGrammar } from "../query/grammars/MySqlGrammar.js";
 import { PostgresGrammar } from "../query/grammars/PostgresGrammar.js";
@@ -22,6 +21,7 @@ export class Connection {
   private abandonedTimer?: ReturnType<typeof setTimeout>;
   private sqliteDefaultsApplied = false;
   private sqliteDefaultsPromise?: Promise<void>;
+  private mysqlUtcChecked = false;
   /** When set (ms), a manual beginTransaction() with no commit/rollback within this window is auto-rolled-back and its pooled connection released. Opt-in. */
   static abandonedTransactionTimeoutMs?: number;
   static logQueries = false;
@@ -63,10 +63,12 @@ export class Connection {
 
       const prepare = config.prepare ?? (this.driverName === "postgres" ? false : undefined);
       const max = config.max ?? (this.driverName === "postgres" ? Connection.defaultPostgresPoolMax : undefined);
+      const bigint = config.bigint;
       return new SQL({
         url,
         ...(max !== undefined ? { max } : {}),
         ...(prepare !== undefined ? { prepare } : {}),
+        ...(bigint !== undefined ? { bigint } : {}),
       });
     })();
 
@@ -173,7 +175,9 @@ export class Connection {
   }
 
   private normalizeBinding(value: any): any {
-    if (value instanceof Date) return formatDateForDriver(value, this.driverName);
+    if (value instanceof Date) {
+      return this.driverName === "mysql" ? value : value.toISOString();
+    }
     if (Array.isArray(value)) return value.map((item) => this.normalizeBinding(item));
     return value;
   }
@@ -190,13 +194,47 @@ export class Connection {
     return await this.execute(sqlString, bindings);
   }
 
+  /** MySQL's result metadata rounds large AUTO_INCREMENT ids; read the exact id on the same session. */
+  async runAndGetMysqlInsertId(sqlString: string, bindings?: any[]): Promise<any> {
+    if (this.driverName !== "mysql") {
+      throw new Error("runAndGetMysqlInsertId() is only supported on MySQL connections.");
+    }
+
+    const execute = async (driver: SQL) => {
+      const hasDate = this.carriesDate(bindings);
+      const normalizedBindings = this.normalizeBindings(bindings);
+      this.log(sqlString, normalizedBindings);
+      if (hasDate) await this.assertMysqlUtc(driver, this.dedicated);
+      await driver.unsafe(sqlString, normalizedBindings);
+      const rows = await driver.unsafe("SELECT LAST_INSERT_ID() AS bunny_insert_id") as any[];
+      return rows[0]?.bunny_insert_id ?? null;
+    };
+
+    await this.ensureSqliteDefaults();
+    const driver = this.getDriver();
+    if (this.transactionActive || this.dedicated || this.reservedDriver || typeof (driver as any).reserve !== "function") {
+      return await execute(driver);
+    }
+
+    const reserved = await (driver as any).reserve() as SQL & { release?: () => void };
+    try {
+      return await execute(reserved);
+    } finally {
+      reserved.release?.();
+    }
+  }
+
   private async execute(sqlString: string, bindings?: any[]): Promise<any> {
     await this.ensureSqliteDefaults();
+    if (this.driverName === "mysql" && /^\s*SET\s+(?:SESSION\s+)?(?:@@session\.)?time_zone\b/i.test(sqlString)) {
+      this.mysqlUtcChecked = false;
+    }
+    const hasDate = this.carriesDate(bindings);
     const normalizedBindings = this.normalizeBindings(bindings);
     this.log(sqlString, normalizedBindings);
 
     const driver = this.getDriver();
-    if (this.driverName !== "mysql" || !this.carriesDate(normalizedBindings)) {
+    if (this.driverName !== "mysql" || !hasDate) {
       return await driver.unsafe(sqlString, normalizedBindings);
     }
 
@@ -212,8 +250,15 @@ export class Connection {
       }
     }
 
-    await this.assertMysqlUtc(driver);
+    await this.assertMysqlUtc(driver, this.dedicated);
     return await driver.unsafe(sqlString, normalizedBindings);
+  }
+
+  /** Whether a binding contains a semantic date rather than date-looking text. */
+  private carriesDate(bindings?: any[]): boolean {
+    const containsDate = (value: any): boolean =>
+      value instanceof Date || (Array.isArray(value) && value.some(containsDate));
+    return (bindings ?? []).some(containsDate);
   }
 
   /**
@@ -224,21 +269,16 @@ export class Connection {
    * and breaks DATETIME, and `SET time_zone` only reaches one connection of the
    * pool, so the honest move is to say so instead of storing the wrong moment.
    */
-  /** A binding already rendered as a MySQL datetime, or still a Date. */
-  private carriesDate(bindings?: any[]): boolean {
-    return (bindings ?? []).some(
-      (value) =>
-        value instanceof Date ||
-        (typeof value === "string" && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(value))
-    );
-  }
-
-  private async assertMysqlUtc(driver: SQL): Promise<void> {
+  private async assertMysqlUtc(driver: SQL, cache: boolean = false): Promise<void> {
+    if (cache && this.mysqlUtcChecked) return;
     const rows = (await driver.unsafe(
       "SELECT TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW()) AS offset_seconds"
     )) as any[];
     const offset = Number(rows?.[0]?.offset_seconds ?? 0);
-    if (offset === 0) return;
+    if (offset === 0) {
+      if (cache) this.mysqlUtcChecked = true;
+      return;
+    }
     throw new Error(
       `MySQL session time zone is ${offset > 0 ? "+" : ""}${(offset / 3600).toFixed(2)}h from UTC. ` +
         `Bunny stores dates in UTC, and a TIMESTAMP column would keep a different instant than the one you wrote. ` +
@@ -445,6 +485,7 @@ export class Connection {
       connection.logQueries = this.logQueries;
       connection.transactionActive = true;
       connection.transactionRoot = false;
+      connection.dedicated = true;
       try {
         return await callback(connection);
       } finally {

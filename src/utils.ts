@@ -63,6 +63,47 @@ export function declaredColumnLength(type: unknown): number | null {
   return match ? Number(match[1]) : null;
 }
 
+/** Fixed-scale decimal formatting without passing exact strings through Number. */
+export function formatDecimal(value: string | number | bigint, scale: number = 2): string {
+  if (!Number.isInteger(scale) || scale < 0) {
+    throw new Error(`Invalid decimal scale: ${scale}`);
+  }
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    throw new Error(`Invalid decimal value: ${String(value)}`);
+  }
+
+  const raw = String(value).trim();
+  const match = /^([+-]?)(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/i.exec(raw);
+  if (!match || (!match[2] && !match[3])) {
+    throw new Error(`Invalid decimal value: ${raw}`);
+  }
+
+  const negative = match[1] === "-";
+  const integer = match[2] || "0";
+  const fraction = match[3] || "";
+  const exponent = Number(match[4] || 0);
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 10_000) {
+    throw new Error(`Invalid decimal exponent: ${String(match[4])}`);
+  }
+
+  let coefficient = BigInt(`${integer}${fraction}` || "0");
+  const fractionDigits = fraction.length - exponent;
+  if (fractionDigits > scale) {
+    const divisor = 10n ** BigInt(fractionDigits - scale);
+    const remainder = coefficient % divisor;
+    coefficient /= divisor;
+    if (remainder * 2n >= divisor) coefficient++;
+  } else if (fractionDigits < scale) {
+    coefficient *= 10n ** BigInt(scale - fractionDigits);
+  }
+
+  const digits = coefficient.toString().padStart(scale + 1, "0");
+  const unsigned = scale === 0
+    ? digits
+    : `${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
+  return negative && coefficient !== 0n ? `-${unsigned}` : unsigned;
+}
+
 /**
  * Whether the ORM should generate a UUID for this primary key.
  *
@@ -89,28 +130,12 @@ export function shouldGeneratePrimaryKeyForColumn(
   return length === null || length >= UUID_LENGTH;
 }
 
-/**
- * A date in the shape the driver stores it.
- *
- * MySQL's DATETIME and TIMESTAMP columns reject ISO-8601: the "T", the
- * fractional seconds and the trailing "Z" are all syntax errors to it, so a
- * plain `toISOString()` makes every insert with timestamps fail. SQLite keeps
- * dates as text and PostgreSQL parses ISO-8601 natively, so both stay on it.
- *
- * The MySQL rendering is UTC, matching `Model.dateFormat`.
- */
+/** Renders a Date for inline debug SQL; executed queries pass Date to Bun.SQL. */
 export function formatDateForDriver(
   value: Date,
   driver: "sqlite" | "mysql" | "postgres" | undefined
 ): string {
   if (driver !== "mysql") return value.toISOString();
-  // Milliseconds included: a DATETIME(3) keeps them, and a DATETIME(0) drops
-  // them by itself. Truncating here would lose precision the column can hold.
-  //
-  // Rendered in UTC with no offset. An explicit offset would pin a TIMESTAMP
-  // correctly but shift a DATETIME, which has no time zone of its own and gets
-  // converted into the session's — the two column types only agree when the
-  // session itself is UTC. Connection asserts that on first use rather than let
-  // the difference corrupt instants silently.
+  // Match Bun.SQL's UTC wall-clock encoding while keeping millisecond precision.
   return value.toISOString().slice(0, 23).replace("T", " ");
 }

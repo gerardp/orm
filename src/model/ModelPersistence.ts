@@ -101,8 +101,20 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
     connection?: import("../connection/Connection.js").Connection
   ): InstanceType<M> {
     const instance = new this() as InstanceType<M>;
-    instance.$attributes = { ...(instance.$attributes as Record<string, any>), ...row } as any;
-    instance.$original = { ...row } as any;
+    const hydrated = { ...row };
+    for (const [key, cast] of Object.entries(instance.$mergedCasts)) {
+      const type = typeof cast === "string" ? cast.split(":")[0] : undefined;
+      if (
+        (type === "json" || type === "array" || type === "object") &&
+        hydrated[key] !== null &&
+        hydrated[key] !== undefined &&
+        typeof hydrated[key] !== "string"
+      ) {
+        hydrated[key] = JSON.stringify(hydrated[key]);
+      }
+    }
+    instance.$attributes = { ...(instance.$attributes as Record<string, any>), ...hydrated } as any;
+    instance.$original = { ...hydrated } as any;
     instance.$castCache = {};
     instance.$dirtyKeys?.clear();
     instance.$exists = true;
@@ -272,6 +284,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
 
       for (const model of existingModels) {
         let dirty = model.getDirty();
+        Object.assign(model.$attributes, dirty);
         if (Object.keys(dirty).length > 0 && this.timestamps) {
           const now = model.freshTimestamp();
           (model.$attributes as any).updated_at = now;
@@ -363,6 +376,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
       if (events) await ObserverRegistry.dispatch("saving", this as any);
 
       let dirty = this.getDirty();
+      Object.assign(this.$attributes, dirty);
       if (Object.keys(dirty).length > 0 && constructor.timestamps) {
         const now = this.freshTimestamp();
         (this.$attributes as any)["updated_at"] = now;

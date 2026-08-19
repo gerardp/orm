@@ -1,4 +1,5 @@
 import type { DotPaths, DeepPick } from "../model/ModelBase.js";
+import type { NumericAggregate } from "../query/Builder.js";
 import type {
   AggregateAlias,
   AggregateColumn,
@@ -305,9 +306,9 @@ export class Collection<T = any> extends Array<T> {
     return this as any;
   }
 
-  async loadSum<R extends string & ModelRelationName<T>, C extends AggregateColumn<T, R>>(relationName: R, column: C, callback: AggregateConstraint<T, R>): Promise<Collection<AggregateLoaded<T, AggregateAlias<R, undefined, `sum_${string & C}`>, number>>>;
-  async loadSum<R extends string & ModelRelationName<T>, C extends AggregateColumn<T, R>, A extends string | undefined = undefined>(relationName: R, column: C, alias?: A): Promise<Collection<AggregateLoaded<T, AggregateAlias<R, A, `sum_${string & C}`>, number>>>;
-  async loadSum<R extends string & ModelRelationName<T>, C extends AggregateColumn<T, R>, A extends string>(relationName: R, column: C, alias: A, callback: AggregateConstraint<T, R>): Promise<Collection<AggregateLoaded<T, AggregateAlias<R, A, `sum_${string & C}`>, number>>>;
+  async loadSum<R extends string & ModelRelationName<T>, C extends AggregateColumn<T, R>>(relationName: R, column: C, callback: AggregateConstraint<T, R>): Promise<Collection<AggregateLoaded<T, AggregateAlias<R, undefined, `sum_${string & C}`>, NumericAggregate | null>>>;
+  async loadSum<R extends string & ModelRelationName<T>, C extends AggregateColumn<T, R>, A extends string | undefined = undefined>(relationName: R, column: C, alias?: A): Promise<Collection<AggregateLoaded<T, AggregateAlias<R, A, `sum_${string & C}`>, NumericAggregate | null>>>;
+  async loadSum<R extends string & ModelRelationName<T>, C extends AggregateColumn<T, R>, A extends string>(relationName: R, column: C, alias: A, callback: AggregateConstraint<T, R>): Promise<Collection<AggregateLoaded<T, AggregateAlias<R, A, `sum_${string & C}`>, NumericAggregate | null>>>;
   async loadSum(relationName: string, column: string, aliasOrCallback?: string | AggregateConstraint<T, any>, callback?: AggregateConstraint<T, any>): Promise<any> {
     const models = this.filter((item) => item !== null && item !== undefined && typeof (item as any).getRelation === "function") as unknown as Model[];
     if (models.length === 0) return this as any;
@@ -329,9 +330,9 @@ export class Collection<T = any> extends Array<T> {
     return this as any;
   }
 
-  async loadAvg<R extends string & ModelRelationName<T>, C extends AggregateColumn<T, R>>(relationName: R, column: C, callback: AggregateConstraint<T, R>): Promise<Collection<AggregateLoaded<T, AggregateAlias<R, undefined, `avg_${string & C}`>, number>>>;
-  async loadAvg<R extends string & ModelRelationName<T>, C extends AggregateColumn<T, R>, A extends string | undefined = undefined>(relationName: R, column: C, alias?: A): Promise<Collection<AggregateLoaded<T, AggregateAlias<R, A, `avg_${string & C}`>, number>>>;
-  async loadAvg<R extends string & ModelRelationName<T>, C extends AggregateColumn<T, R>, A extends string>(relationName: R, column: C, alias: A, callback: AggregateConstraint<T, R>): Promise<Collection<AggregateLoaded<T, AggregateAlias<R, A, `avg_${string & C}`>, number>>>;
+  async loadAvg<R extends string & ModelRelationName<T>, C extends AggregateColumn<T, R>>(relationName: R, column: C, callback: AggregateConstraint<T, R>): Promise<Collection<AggregateLoaded<T, AggregateAlias<R, undefined, `avg_${string & C}`>, NumericAggregate | null>>>;
+  async loadAvg<R extends string & ModelRelationName<T>, C extends AggregateColumn<T, R>, A extends string | undefined = undefined>(relationName: R, column: C, alias?: A): Promise<Collection<AggregateLoaded<T, AggregateAlias<R, A, `avg_${string & C}`>, NumericAggregate | null>>>;
+  async loadAvg<R extends string & ModelRelationName<T>, C extends AggregateColumn<T, R>, A extends string>(relationName: R, column: C, alias: A, callback: AggregateConstraint<T, R>): Promise<Collection<AggregateLoaded<T, AggregateAlias<R, A, `avg_${string & C}`>, NumericAggregate | null>>>;
   async loadAvg(relationName: string, column: string, aliasOrCallback?: string | AggregateConstraint<T, any>, callback?: AggregateConstraint<T, any>): Promise<any> {
     const models = this.filter((item) => item !== null && item !== undefined && typeof (item as any).getRelation === "function") as unknown as Model[];
     if (models.length === 0) return this as any;

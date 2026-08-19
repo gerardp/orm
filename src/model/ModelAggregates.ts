@@ -1,4 +1,4 @@
-import { Builder } from "../query/Builder.js";
+import { Builder, type NumericAggregate } from "../query/Builder.js";
 import { Collection } from "../support/Collection.js";
 import type {
   ModelConstructor,
@@ -62,11 +62,11 @@ export class ModelAggregates<T extends Record<string, any> = any> extends ModelQ
     return (this as any).query().count();
   }
 
-  static async sum<M extends ModelConstructor>(this: M, column: ModelColumn<InstanceType<M>>): Promise<number> {
+  static async sum<M extends ModelConstructor>(this: M, column: ModelColumn<InstanceType<M>>): Promise<NumericAggregate> {
     return (this as any).query().sum(column);
   }
 
-  static async avg<M extends ModelConstructor>(this: M, column: ModelColumn<InstanceType<M>>): Promise<number> {
+  static async avg<M extends ModelConstructor>(this: M, column: ModelColumn<InstanceType<M>>): Promise<NumericAggregate> {
     return (this as any).query().avg(column);
   }
 

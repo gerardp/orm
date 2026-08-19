@@ -90,13 +90,27 @@ connection: { url: "sqlite://./app.db" }
 connection: { url: "sqlite://:memory:" }
 ```
 
+For MySQL and PostgreSQL, `bigint: true` asks Bun to decode large integer
+values as `bigint`. MySQL can still return safe values as `number`; PostgreSQL
+returns its `BIGINT` values as `bigint`. Leave it off when serializing rows
+directly to JSON, because JavaScript's native `JSON.stringify` does not accept
+`bigint`:
+
+```ts
+connection: {
+  url: "mysql://user:pass@localhost:3306/mydb",
+  bigint: true,
+}
+```
+
 ### MySQL sessions must use UTC
 
-Bunny serializes model dates in UTC. Every physical MySQL connection in the
-pool must therefore start with `time_zone = '+00:00'`. This is a runtime
-requirement: `DATETIME` has no time zone, while `TIMESTAMP` interprets the same
-bound value in the session's time zone; a non-UTC session can silently store a
-different instant.
+On MySQL, Bunny passes model dates to `Bun.SQL` as native `Date` bindings, which
+Bun encodes as a UTC wall clock. Every physical connection in the pool must
+therefore start with `time_zone = '+00:00'`. This remains a runtime requirement:
+`DATETIME` stores that wall clock directly, while `TIMESTAMP` interprets it in
+the session's time zone; a non-UTC session can silently store a different
+instant even though reading the value back appears to round-trip correctly.
 
 Configure UTC as the server or pool default, then recreate existing
 connections. Running this once is not sufficient for a pool with more than one

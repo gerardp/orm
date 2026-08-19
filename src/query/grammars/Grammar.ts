@@ -25,6 +25,7 @@ export abstract class Grammar {
     if (value === null) return "NULL";
     if (typeof value === "boolean") return value ? "1" : "0";
     if (typeof value === "number") return String(value);
+    if (value instanceof Date) value = value.toISOString();
     return `'${String(value).replace(/'/g, "''")}'`;
   }
 

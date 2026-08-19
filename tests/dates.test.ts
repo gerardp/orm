@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Builder, Connection, Model } from "../src/index.js";
+import { Builder, Connection, Model, type CastsAttributes } from "../src/index.js";
 import { formatDateForDriver } from "../src/utils.js";
 import { setupTestDb } from "./helpers.js";
 
@@ -35,20 +35,87 @@ describe("Date handling", () => {
     expect(beat.isDirty()).toBe(true);
   });
 
-  test("a Date bound into a query is rendered for the driver", async () => {
-    const rendered: string[] = [];
-    const driver = { unsafe: (_sql: string, bindings?: any[]) => (rendered.push(...(bindings ?? [])), []) };
+  test("a Date binding reaches each Bun.SQL driver in its supported form", async () => {
+    const received: any[] = [];
+    const driver = {
+      unsafe: (sql: string, bindings?: any[]) => {
+        if (sql.startsWith("SELECT TIMESTAMPDIFF")) return [{ offset_seconds: 0 }];
+        received.push(...(bindings ?? []));
+        return [];
+      },
+    };
+    const instant = new Date("2026-08-19T14:00:00.123Z");
+
+    for (const [url, nativeDate] of [
+      ["sqlite://:memory:", false],
+      ["mysql://user:pass@localhost:3306/db", true],
+      ["postgres://user:pass@localhost:5432/db", false],
+    ] as const) {
+      received.length = 0;
+      const connection = new Connection({ url }, { driver: driver as any, ownsDriver: false });
+      await connection.query("SELECT ?", [instant]);
+      if (nativeDate) expect(received[0]).toBe(instant);
+      else expect(received[0]).toBe("2026-08-19T14:00:00.123Z");
+    }
+  });
+
+  test("toSql renders dates in the target driver's format", () => {
+    const instant = new Date("2020-01-01T00:00:00.000Z");
+    const driver = { unsafe: () => [] };
 
     for (const [url, expected] of [
-      ["sqlite://:memory:", "2026-08-19T14:00:00.123Z"],
-      ["mysql://user:pass@localhost:3306/db", "2026-08-19 14:00:00.123"],
-      ["postgres://user:pass@localhost:5432/db", "2026-08-19T14:00:00.123Z"],
+      ["sqlite://:memory:", "'2020-01-01T00:00:00.000Z'"],
+      ["mysql://user:pass@localhost:3306/db", "'2020-01-01 00:00:00.000'"],
+      ["postgres://user:pass@localhost:5432/db", "'2020-01-01T00:00:00.000Z'"],
     ] as const) {
-      rendered.length = 0;
       const connection = new Connection({ url }, { driver: driver as any, ownsDriver: false });
-      await connection.query("SELECT ?", [new Date("2026-08-19T14:00:00.123Z")]);
-      expect(rendered[0]).toBe(expected);
+      expect(new Builder(connection, "events").where("created_at", ">", instant).toSql()).toContain(expected);
     }
+  });
+
+  test("MySQL does not treat date-looking text as a date binding", async () => {
+    const calls: string[] = [];
+    const connection = new Connection(
+      { url: "mysql://user:pass@localhost:3306/db" },
+      { driver: { unsafe: async (sql: string) => (calls.push(sql), []) } as any, ownsDriver: false }
+    );
+
+    await connection.run("INSERT INTO logs (message) VALUES (?)", ["2026-08-19 14:00:00 server started"]);
+
+    expect(calls).toEqual(["INSERT INTO logs (message) VALUES (?)"]);
+  });
+
+  test("custom database date casts return Date values for driver serialization", async () => {
+    class DatabaseDateCast implements CastsAttributes {
+      get(_model: Model, _key: string, value: unknown) {
+        return new Date(value as string);
+      }
+      set(_model: Model, _key: string, value: unknown) {
+        return value instanceof Date ? value : new Date(value as string);
+      }
+    }
+    class CustomEvent extends Model {
+      static override timestamps = false;
+      static override casts = { happened_at: DatabaseDateCast };
+    }
+
+    const queries: Array<{ sql: string; bindings?: any[] }> = [];
+    const driver = {
+      unsafe: async (sql: string, bindings?: any[]) => {
+        queries.push({ sql, bindings });
+        return sql.startsWith("SELECT TIMESTAMPDIFF") ? [{ offset_seconds: 0 }] : [];
+      },
+    };
+    const connection = new Connection(
+      { url: "mysql://user:pass@localhost:3306/db" },
+      { driver: driver as any, ownsDriver: false }
+    );
+    const event = new CustomEvent({ happened_at: new Date("2026-08-19T14:00:00.123Z") } as any);
+    const attributes = event.attributesForDriver(connection);
+
+    expect(attributes.happened_at).toBeInstanceOf(Date);
+    await connection.run("SELECT ?", [attributes.happened_at]);
+    expect(queries.at(-1)?.bindings?.[0]).toBe(attributes.happened_at);
   });
 
   test("MySQL checks and executes a date query on the same reserved session", async () => {
@@ -77,6 +144,40 @@ describe("Date handling", () => {
       "reserved:SELECT ?",
     ]);
     expect(released).toBe(true);
+  });
+
+  test("MySQL checks UTC once per owned session and rechecks after SET time_zone", async () => {
+    const calls: string[] = [];
+    const session = {
+      unsafe: async (sql: string) => {
+        calls.push(sql);
+        return sql.startsWith("SELECT TIMESTAMPDIFF") ? [{ offset_seconds: 0 }] : [];
+      },
+    };
+    const pool = {
+      begin: async (callback: (driver: typeof session) => Promise<void>) => await callback(session),
+    };
+    const connection = new Connection(
+      { url: "mysql://user:pass@localhost:3306/db" },
+      { driver: pool as any, ownsDriver: true }
+    );
+    const instant = new Date("2026-08-19T14:00:00.123Z");
+
+    await connection.transaction(async (transaction) => {
+      await transaction.run("INSERT INTO events (created_at) VALUES (?)", [instant]);
+      await transaction.run("UPDATE events SET created_at = ?", [instant]);
+      await transaction.run("SET SESSION time_zone = '+00:00'");
+      await transaction.run("UPDATE events SET created_at = ?", [instant]);
+    });
+
+    expect(calls).toEqual([
+      "SELECT TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW()) AS offset_seconds",
+      "INSERT INTO events (created_at) VALUES (?)",
+      "UPDATE events SET created_at = ?",
+      "SET SESSION time_zone = '+00:00'",
+      "SELECT TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW()) AS offset_seconds",
+      "UPDATE events SET created_at = ?",
+    ]);
   });
 
   test("formatDateForDriver keeps milliseconds and drops the T only for MySQL", () => {

@@ -1,6 +1,11 @@
 import { Grammar } from "./Grammar.js";
+import { formatDateForDriver } from "../../utils.js";
 
 export class MySqlGrammar extends Grammar {
+  override escape(value: any): string {
+    return super.escape(value instanceof Date ? formatDateForDriver(value, "mysql") : value);
+  }
+
   wrap(value: string): string {
     if (/\s+as\s+/i.test(value)) {
       const [column, alias] = value.split(/\s+as\s+/i);

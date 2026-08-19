@@ -21,7 +21,7 @@ import type {
   ModelAttributeInput,
   BulkModelOptions,
 } from "./ModelBase.js";
-import { snakeCase, formatDateForDriver } from "../utils.js";
+import { formatDecimal, snakeCase } from "../utils.js";
 
 /**
  * The old `encrypted` cast only Base64-encoded values, so it read as a security
@@ -40,6 +40,24 @@ function dateCastKeys(casts: Record<string, any>): string[] {
   for (const [key, cast] of Object.entries(casts ?? {})) {
     const type = typeof cast === "string" ? cast.split(":")[0] : undefined;
     if (type === "date" || type === "datetime" || type === "timestamp") keys.push(key);
+  }
+  return keys;
+}
+
+function booleanCastKeys(casts: Record<string, any>): string[] {
+  const keys: string[] = [];
+  for (const [key, cast] of Object.entries(casts ?? {})) {
+    const type = typeof cast === "string" ? cast.split(":")[0] : undefined;
+    if (type === "boolean" || type === "bool") keys.push(key);
+  }
+  return keys;
+}
+
+function mutableJsonCastKeys(casts: Record<string, any>): string[] {
+  const keys: string[] = [];
+  for (const [key, cast] of Object.entries(casts ?? {})) {
+    const type = typeof cast === "string" ? cast.split(":")[0] : undefined;
+    if (type === "json" || type === "array" || type === "object") keys.push(key);
   }
   return keys;
 }
@@ -172,6 +190,11 @@ export class ModelCore<T extends Record<string, any> = any> {
     if (this.timestamps) keys.push("created_at", "updated_at");
     if (this.softDeletes) keys.push(this.deletedAtColumn);
     return [...new Set(keys)];
+  }
+
+  /** Columns whose portable in-memory 1/0 cast must become native booleans on PostgreSQL. */
+  static booleanColumns(): string[] {
+    return booleanCastKeys(this.casts);
   }
 
   static schema(): ModelSchemaBuilder {
@@ -361,7 +384,7 @@ export class ModelCore<T extends Record<string, any> = any> {
       case "double":
         return Number(value);
       case "decimal":
-        return Number(value).toFixed(Number(argument || 2));
+        return formatDecimal(value, Number(argument || 2));
       case "string":
         return String(value);
       case "date":
@@ -401,7 +424,7 @@ export class ModelCore<T extends Record<string, any> = any> {
       case "double":
         return Number(value);
       case "decimal":
-        return Number(value).toFixed(Number(argument || 2));
+        return formatDecimal(value, Number(argument || 2));
       case "string":
         return String(value);
       case "date":
@@ -442,32 +465,41 @@ export class ModelCore<T extends Record<string, any> = any> {
   }
 
   /**
-   * Attributes in the shape the driver stores them.
+   * Attributes in the shape the driver accepts.
    *
    * In memory a date cast stays an ISO string — that is the documented contract
    * and what the generated types say — so a model can be built with no
    * connection at all. MySQL rejects ISO-8601 in DATETIME and TIMESTAMP columns,
-   * so the rendering happens here, on the way out, where the connection is
-   * finally known. Only columns the model declares as dates are touched.
+   * so declared date columns become Date objects here and Connection sends them
+   * in the form supported by each driver. PostgreSQL, unlike SQLite and MySQL,
+   * requires native booleans rather than the cast's portable 1/0 representation.
+   * Only explicitly cast columns are touched.
    */
   attributesForDriver(
     connection: Connection,
     attributes: Record<string, any> = this.$attributes as Record<string, any>
   ): Record<string, any> {
     const driver = connection.getDriverName();
-    if (driver !== "mysql") return attributes;
-
-    const keys = this.dateAttributeKeys();
-    if (keys.length === 0) return attributes;
-
     let copy: Record<string, any> | undefined;
-    for (const key of keys) {
-      const value = attributes[key];
-      if (value === null || value === undefined) continue;
-      const date = value instanceof Date ? value : new Date(value);
-      if (Number.isNaN(date.getTime())) continue;
-      copy = copy ?? { ...attributes };
-      copy[key] = formatDateForDriver(date, driver);
+
+    if (driver === "mysql") {
+      for (const key of this.dateAttributeKeys()) {
+        const value = attributes[key];
+        if (value === null || value === undefined) continue;
+        const date = value instanceof Date ? value : new Date(value);
+        if (Number.isNaN(date.getTime())) continue;
+        copy = copy ?? { ...attributes };
+        copy[key] = date;
+      }
+    }
+
+    if (driver === "postgres") {
+      for (const key of booleanCastKeys(this.$mergedCasts)) {
+        const value = attributes[key];
+        if (value === null || value === undefined) continue;
+        copy = copy ?? { ...attributes };
+        copy[key] = Boolean(value);
+      }
     }
     return copy ?? attributes;
   }
@@ -480,11 +512,18 @@ export class ModelCore<T extends Record<string, any> = any> {
 
   getDirty(): Partial<T> {
     const dirty: Partial<T> = {};
-    const keys = this.$dirtyKeys;
-    if (!keys) return dirty;
+    const jsonKeys = new Set(mutableJsonCastKeys(this.$mergedCasts));
+    const keys = new Set(this.$dirtyKeys);
+    for (const key of jsonKeys) {
+      if (Object.prototype.hasOwnProperty.call(this.$castCache, key)) keys.add(key);
+    }
+
     for (const key of keys) {
-      if (!sameAttributeValue((this.$original as any)[key], (this.$attributes as any)[key])) {
-        (dirty as any)[key] = (this.$attributes as any)[key];
+      const value = jsonKeys.has(key) && Object.prototype.hasOwnProperty.call(this.$castCache, key)
+        ? this.serializeCastAttribute(key, this.$castCache[key])
+        : (this.$attributes as any)[key];
+      if (!sameAttributeValue((this.$original as any)[key], value)) {
+        (dirty as any)[key] = value;
       }
     }
     return dirty;
