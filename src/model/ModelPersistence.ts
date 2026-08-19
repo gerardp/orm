@@ -244,7 +244,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
             const id = await insertAndResolveKey(
               connection,
               (this as any).getQualifiedTable(connection),
-              record,
+              model.attributesForDriver(connection, record),
               this.primaryKey,
               keyStrategy.column
             );
@@ -381,7 +381,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
         const connection = this.getConnection();
         await new Builder(connection, constructor.getQualifiedTable(connection))
           .where(constructor.primaryKey, pk)
-          .update(dirty);
+          .update(this.attributesForDriver(connection, dirty as Record<string, any>) as any);
         this.$changes = { ...dirty };
         if (events) await ObserverRegistry.dispatch("updated", this as any);
       } else {
@@ -416,10 +416,16 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
 
       const connection = this.getConnection();
       if (shouldGeneratePrimaryKey || primaryKeyValue !== null && primaryKeyValue !== undefined && primaryKeyValue !== "") {
-        await new Builder(connection, constructor.getQualifiedTable(connection)).insert(this.$attributes);
+        await new Builder(connection, constructor.getQualifiedTable(connection)).insert(this.attributesForDriver(connection) as any);
       } else {
         const table = constructor.getQualifiedTable(connection);
-        const key = await insertAndResolveKey(connection, table, this.$attributes, primaryKey, keyStrategy.column);
+        const key = await insertAndResolveKey(
+          connection,
+          table,
+          this.attributesForDriver(connection),
+          primaryKey,
+          keyStrategy.column
+        );
         if (key !== null && key !== undefined && key !== "") {
           (this.$attributes as any)[primaryKey] = key;
           delete this.$castCache[primaryKey];
@@ -483,7 +489,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
     const connection = this.getConnection();
     await new Builder(connection, constructor.getQualifiedTable(connection))
       .where(constructor.primaryKey, pk)
-      .update({ updated_at: now } as any);
+      .update(this.attributesForDriver(connection, { updated_at: now }) as any);
     (this.$attributes as any)["updated_at"] = now;
     delete this.$castCache.updated_at;
     this.$original = { ...this.$attributes };
@@ -498,6 +504,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
 
     const connection = this.getConnection();
     const builder = new Builder(connection, constructor.getQualifiedTable(connection))
+      .setModel(constructor as any)
       .where(constructor.primaryKey, pk);
 
     if (constructor.timestamps) {
@@ -531,7 +538,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
       const connection = this.getConnection();
       await new Builder(connection, constructor.getQualifiedTable(connection))
         .where(constructor.primaryKey, pk)
-        .update({ [constructor.deletedAtColumn]: deletedAt } as any);
+        .update(this.attributesForDriver(connection, { [constructor.deletedAtColumn]: deletedAt }) as any);
       (this.$attributes as any)[constructor.deletedAtColumn] = deletedAt;
       delete this.$castCache[constructor.deletedAtColumn];
       this.$original = { ...this.$attributes };
@@ -564,7 +571,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
       const connection = this.getConnection();
       await new Builder(connection, constructor.getQualifiedTable(connection))
         .where(constructor.primaryKey, pk)
-        .update({ [constructor.deletedAtColumn]: deletedAt } as any);
+        .update(this.attributesForDriver(connection, { [constructor.deletedAtColumn]: deletedAt }) as any);
       (this.$attributes as any)[constructor.deletedAtColumn] = deletedAt;
       delete this.$castCache[constructor.deletedAtColumn];
       this.$original = { ...this.$attributes };

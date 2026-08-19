@@ -90,6 +90,31 @@ connection: { url: "sqlite://./app.db" }
 connection: { url: "sqlite://:memory:" }
 ```
 
+### MySQL sessions must use UTC
+
+Bunny serializes model dates in UTC. Every physical MySQL connection in the
+pool must therefore start with `time_zone = '+00:00'`. This is a runtime
+requirement: `DATETIME` has no time zone, while `TIMESTAMP` interprets the same
+bound value in the session's time zone; a non-UTC session can silently store a
+different instant.
+
+Configure UTC as the server or pool default, then recreate existing
+connections. Running this once is not sufficient for a pool with more than one
+connection:
+
+```sql
+SET SESSION time_zone = '+00:00';
+```
+
+`SET SESSION` affects only the physical connection that executes it. Verify the
+setting from application sessions; `offset_seconds` must be `0`:
+
+```sql
+SELECT
+  @@session.time_zone AS time_zone,
+  TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW()) AS offset_seconds;
+```
+
 SQLite connections apply production-friendly defaults before the first query:
 
 ```sql

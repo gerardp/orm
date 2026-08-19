@@ -21,7 +21,7 @@ import type {
   ModelAttributeInput,
   BulkModelOptions,
 } from "./ModelBase.js";
-import { snakeCase } from "../utils.js";
+import { snakeCase, formatDateForDriver } from "../utils.js";
 
 /**
  * The old `encrypted` cast only Base64-encoded values, so it read as a security
@@ -33,6 +33,25 @@ function removedEncryptedCast(model: object, key: string): Error {
     `The "encrypted" cast was removed (${model.constructor.name}.${key}): it only Base64-encoded values, it never encrypted them. ` +
       `Use the "base64" cast for encoding, or a custom CastsAttributes class backed by a real cipher for secrets.`
   );
+}
+
+function dateCastKeys(casts: Record<string, any>): string[] {
+  const keys: string[] = [];
+  for (const [key, cast] of Object.entries(casts ?? {})) {
+    const type = typeof cast === "string" ? cast.split(":")[0] : undefined;
+    if (type === "date" || type === "datetime" || type === "timestamp") keys.push(key);
+  }
+  return keys;
+}
+
+/** Dates compare by instant: two Date objects for the same moment are equal. */
+function sameAttributeValue(before: unknown, after: unknown): boolean {
+  if (before instanceof Date || after instanceof Date) {
+    const a = before instanceof Date ? before.getTime() : new Date(before as any).getTime();
+    const b = after instanceof Date ? after.getTime() : new Date(after as any).getTime();
+    if (!Number.isNaN(a) && !Number.isNaN(b)) return a === b;
+  }
+  return before === after;
 }
 
 export class ModelCore<T extends Record<string, any> = any> {
@@ -141,6 +160,18 @@ export class ModelCore<T extends Record<string, any> = any> {
       return activeConnection.qualifyTable(table);
     }
     return activeConnection.withSchema(schema).qualifyTable(table);
+  }
+
+  /**
+   * Columns this model stores dates in. The query builder asks for these so a
+   * date reaches the driver in the shape it accepts, no matter which write path
+   * produced it.
+   */
+  static dateColumns(): string[] {
+    const keys = dateCastKeys(this.casts);
+    if (this.timestamps) keys.push("created_at", "updated_at");
+    if (this.softDeletes) keys.push(this.deletedAtColumn);
+    return [...new Set(keys)];
   }
 
   static schema(): ModelSchemaBuilder {
@@ -410,12 +441,49 @@ export class ModelCore<T extends Record<string, any> = any> {
     return null;
   }
 
+  /**
+   * Attributes in the shape the driver stores them.
+   *
+   * In memory a date cast stays an ISO string — that is the documented contract
+   * and what the generated types say — so a model can be built with no
+   * connection at all. MySQL rejects ISO-8601 in DATETIME and TIMESTAMP columns,
+   * so the rendering happens here, on the way out, where the connection is
+   * finally known. Only columns the model declares as dates are touched.
+   */
+  attributesForDriver(
+    connection: Connection,
+    attributes: Record<string, any> = this.$attributes as Record<string, any>
+  ): Record<string, any> {
+    const driver = connection.getDriverName();
+    if (driver !== "mysql") return attributes;
+
+    const keys = this.dateAttributeKeys();
+    if (keys.length === 0) return attributes;
+
+    let copy: Record<string, any> | undefined;
+    for (const key of keys) {
+      const value = attributes[key];
+      if (value === null || value === undefined) continue;
+      const date = value instanceof Date ? value : new Date(value);
+      if (Number.isNaN(date.getTime())) continue;
+      copy = copy ?? { ...attributes };
+      copy[key] = formatDateForDriver(date, driver);
+    }
+    return copy ?? attributes;
+  }
+
+  /** Columns this model treats as dates: date casts plus the timestamp columns. */
+  protected dateAttributeKeys(): string[] {
+    const ctor = this.getModelConstructor();
+    return [...new Set([...ctor.dateColumns(), ...dateCastKeys(this.$mergedCasts)])];
+  }
+
   getDirty(): Partial<T> {
     const dirty: Partial<T> = {};
     const keys = this.$dirtyKeys;
     if (!keys) return dirty;
     for (const key of keys) {
-      if ((this.$original as any)[key] !== (this.$attributes as any)[key]) {
+      if (!sameAttributeValue((this.$original as any)[key], (this.$attributes as any)[key])) {
         (dirty as any)[key] = (this.$attributes as any)[key];
       }
     }

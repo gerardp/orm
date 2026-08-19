@@ -1,6 +1,7 @@
 import { SQL, FileSink } from "bun";
 import type { ConnectionConfig } from "../types/index.js";
 import { Grammar } from "../query/grammars/Grammar.js";
+import { formatDateForDriver } from "../utils.js";
 import { SQLiteGrammar } from "../query/grammars/SQLiteGrammar.js";
 import { MySqlGrammar } from "../query/grammars/MySqlGrammar.js";
 import { PostgresGrammar } from "../query/grammars/PostgresGrammar.js";
@@ -172,7 +173,7 @@ export class Connection {
   }
 
   private normalizeBinding(value: any): any {
-    if (value instanceof Date) return value.toISOString();
+    if (value instanceof Date) return formatDateForDriver(value, this.driverName);
     if (Array.isArray(value)) return value.map((item) => this.normalizeBinding(item));
     return value;
   }
@@ -182,17 +183,67 @@ export class Connection {
   }
 
   async query(sqlString: string, bindings?: any[]): Promise<any[]> {
-    await this.ensureSqliteDefaults();
-    const normalizedBindings = this.normalizeBindings(bindings);
-    this.log(sqlString, normalizedBindings);
-    return (await this.getDriver().unsafe(sqlString, normalizedBindings)) as any[];
+    return (await this.execute(sqlString, bindings)) as any[];
   }
 
   async run(sqlString: string, bindings?: any[]): Promise<any> {
+    return await this.execute(sqlString, bindings);
+  }
+
+  private async execute(sqlString: string, bindings?: any[]): Promise<any> {
     await this.ensureSqliteDefaults();
     const normalizedBindings = this.normalizeBindings(bindings);
     this.log(sqlString, normalizedBindings);
-    return await this.getDriver().unsafe(sqlString, normalizedBindings);
+
+    const driver = this.getDriver();
+    if (this.driverName !== "mysql" || !this.carriesDate(normalizedBindings)) {
+      return await driver.unsafe(sqlString, normalizedBindings);
+    }
+
+    // A pool may hand two consecutive queries to different sessions. Reserve
+    // one so the UTC assertion and the date-bearing query cannot be separated.
+    if (!this.transactionActive && !this.dedicated && !this.reservedDriver && typeof (driver as any).reserve === "function") {
+      const reserved = await (driver as any).reserve() as SQL & { release?: () => void };
+      try {
+        await this.assertMysqlUtc(reserved);
+        return await reserved.unsafe(sqlString, normalizedBindings);
+      } finally {
+        reserved.release?.();
+      }
+    }
+
+    await this.assertMysqlUtc(driver);
+    return await driver.unsafe(sqlString, normalizedBindings);
+  }
+
+  /**
+   * Bunny renders dates in UTC. MySQL reads a datetime literal in the session's
+   * time zone, so on a session that is not UTC a TIMESTAMP column silently
+   * stores a different instant than the one handed to it — and a DATETIME
+   * column disagrees with it. An explicit offset in the literal fixes TIMESTAMP
+   * and breaks DATETIME, and `SET time_zone` only reaches one connection of the
+   * pool, so the honest move is to say so instead of storing the wrong moment.
+   */
+  /** A binding already rendered as a MySQL datetime, or still a Date. */
+  private carriesDate(bindings?: any[]): boolean {
+    return (bindings ?? []).some(
+      (value) =>
+        value instanceof Date ||
+        (typeof value === "string" && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(value))
+    );
+  }
+
+  private async assertMysqlUtc(driver: SQL): Promise<void> {
+    const rows = (await driver.unsafe(
+      "SELECT TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW()) AS offset_seconds"
+    )) as any[];
+    const offset = Number(rows?.[0]?.offset_seconds ?? 0);
+    if (offset === 0) return;
+    throw new Error(
+      `MySQL session time zone is ${offset > 0 ? "+" : ""}${(offset / 3600).toFixed(2)}h from UTC. ` +
+        `Bunny stores dates in UTC, and a TIMESTAMP column would keep a different instant than the one you wrote. ` +
+        `Set the server or connection to time_zone = '+00:00'.`
+    );
   }
 
   private async ensureSqliteDefaults(): Promise<void> {

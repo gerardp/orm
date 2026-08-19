@@ -88,3 +88,29 @@ export function shouldGeneratePrimaryKeyForColumn(
   const length = column.length ?? declaredColumnLength(column.type);
   return length === null || length >= UUID_LENGTH;
 }
+
+/**
+ * A date in the shape the driver stores it.
+ *
+ * MySQL's DATETIME and TIMESTAMP columns reject ISO-8601: the "T", the
+ * fractional seconds and the trailing "Z" are all syntax errors to it, so a
+ * plain `toISOString()` makes every insert with timestamps fail. SQLite keeps
+ * dates as text and PostgreSQL parses ISO-8601 natively, so both stay on it.
+ *
+ * The MySQL rendering is UTC, matching `Model.dateFormat`.
+ */
+export function formatDateForDriver(
+  value: Date,
+  driver: "sqlite" | "mysql" | "postgres" | undefined
+): string {
+  if (driver !== "mysql") return value.toISOString();
+  // Milliseconds included: a DATETIME(3) keeps them, and a DATETIME(0) drops
+  // them by itself. Truncating here would lose precision the column can hold.
+  //
+  // Rendered in UTC with no offset. An explicit offset would pin a TIMESTAMP
+  // correctly but shift a DATETIME, which has no time zone of its own and gets
+  // converted into the session's — the two column types only agree when the
+  // session itself is UTC. Connection asserts that on first use rather than let
+  // the difference corrupt instants silently.
+  return value.toISOString().slice(0, 23).replace("T", " ");
+}

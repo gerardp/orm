@@ -279,7 +279,9 @@ export class Schema {
     const connection = conn ?? this.getConnection();
     const driver = connection.getDriverName();
     const grammar = this.getGrammar(connection);
-    const schema = connection.getSchema() || "public";
+    const qualified = this.splitQualifiedTable(connection, table);
+    const schema = qualified.schema || "public";
+    const tableName = qualified.table;
 
     if (driver === "sqlite") {
       const indexes = await connection.query(`PRAGMA index_list(${grammar.wrap(table)})`);
@@ -299,13 +301,19 @@ export class Schema {
 
     if (driver === "mysql") {
       const rows = await connection.query(
-        `SELECT index_name, column_name, non_unique
+        `SELECT index_name AS \`index_name\`, column_name AS \`column_name\`, non_unique AS \`non_unique\`
          FROM information_schema.statistics
-         WHERE table_schema = DATABASE() AND table_name = ?
+         WHERE table_schema = COALESCE(?, DATABASE()) AND table_name = ?
          ORDER BY index_name, seq_in_index`,
-        [table]
+        [qualified.schema ?? null, tableName]
       );
-      return this.groupIndexRows(rows as any[], "index_name", "column_name", (row) => Number(row.non_unique) === 0);
+      return this.groupIndexRows(
+        rows as any[],
+        "index_name",
+        "column_name",
+        (row) => Number(row.non_unique) === 0,
+        (row) => row.index_name === "PRIMARY",
+      );
     }
 
     const rows = await connection.query(
@@ -323,7 +331,7 @@ export class Schema {
        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
        WHERE n.nspname = $1 AND t.relname = $2
        ORDER BY i.relname, k.ordinality`,
-      [schema, table]
+      [schema, tableName]
     );
     return this.groupIndexRows(rows as any[], "index_name", "column_name", (row) => !!row.is_unique, (row) => !!row.is_primary);
   }
@@ -344,7 +352,9 @@ export class Schema {
     const connection = conn ?? this.getConnection();
     const driver = connection.getDriverName();
     const grammar = this.getGrammar(connection);
-    const schema = connection.getSchema() || "public";
+    const qualified = this.splitQualifiedTable(connection, table);
+    const schema = qualified.schema || "public";
+    const tableName = qualified.table;
 
     if (driver === "sqlite") {
       const rows = await connection.query(`PRAGMA foreign_key_list(${grammar.wrap(table)})`);
@@ -369,22 +379,22 @@ export class Schema {
     if (driver === "mysql") {
       const rows = await connection.query(
         `SELECT
-           k.constraint_name,
-           k.column_name,
-           k.referenced_table_name,
-           k.referenced_column_name,
-           rc.delete_rule,
-           rc.update_rule,
-           k.ordinal_position
+           k.constraint_name AS \`constraint_name\`,
+           k.column_name AS \`column_name\`,
+           k.referenced_table_name AS \`referenced_table_name\`,
+           k.referenced_column_name AS \`referenced_column_name\`,
+           rc.delete_rule AS \`delete_rule\`,
+           rc.update_rule AS \`update_rule\`,
+           k.ordinal_position AS \`ordinal_position\`
          FROM information_schema.key_column_usage k
          JOIN information_schema.referential_constraints rc
            ON rc.constraint_schema = k.constraint_schema
           AND rc.constraint_name = k.constraint_name
-         WHERE k.table_schema = DATABASE()
+         WHERE k.table_schema = COALESCE(?, DATABASE())
            AND k.table_name = ?
            AND k.referenced_table_name IS NOT NULL
          ORDER BY k.constraint_name, k.ordinal_position`,
-        [table]
+        [qualified.schema ?? null, tableName]
       );
       return this.groupForeignKeyRows(rows as any[], "constraint_name", "column_name", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule");
     }
@@ -412,7 +422,7 @@ export class Schema {
          AND tc.table_schema = $1
          AND tc.table_name = $2
        ORDER BY tc.constraint_name, kcu.ordinal_position`,
-      [schema, table]
+      [schema, tableName]
     );
     return this.groupForeignKeyRows(rows as any[], "constraint_name", "column_name", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule");
   }

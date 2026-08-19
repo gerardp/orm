@@ -34,6 +34,7 @@ describe.serial("Database-assigned primary keys", () => {
 
   runIfMySql("returns the key a MySQL literal default assigned", async () => {
     const connection = new Connection({ url: mysqlUrl! });
+    await connection.run("SET time_zone = \'+00:00\'");
     const table = `pk_default_${Date.now()}`;
 
     await connection.run(
@@ -56,6 +57,7 @@ describe.serial("Database-assigned primary keys", () => {
     const url = mysqlUrl!;
     const database = new URL(url).pathname.replace(/^\//, "");
     const plain = new Connection({ url });
+    await plain.run("SET time_zone = \'+00:00\'");
     const table = `pk_qualified_${Date.now()}`;
 
     await plain.run(`CREATE TABLE ${table} (id BIGINT AUTO_INCREMENT PRIMARY KEY, name TEXT)`);
@@ -63,6 +65,7 @@ describe.serial("Database-assigned primary keys", () => {
     // A connection with a schema makes every model table qualified ("db.table"),
     // which introspection has to be able to take apart again.
     const scoped = new Connection({ url, schema: database });
+    await scoped.run("SET time_zone = \'+00:00\'");
     Model.setConnection(scoped);
     Schema.setConnection(scoped);
 
@@ -90,6 +93,7 @@ describe.serial("Database-assigned primary keys", () => {
 
   runIfMySql("still uses AUTO_INCREMENT when that is what assigns the key", async () => {
     const connection = new Connection({ url: mysqlUrl! });
+    await connection.run("SET time_zone = \'+00:00\'");
     const table = `pk_auto_${Date.now()}`;
 
     await connection.run(
@@ -110,6 +114,7 @@ describe.serial("Database-assigned primary keys", () => {
 
   runIfMySql("rejects an expression-assigned key before inserting an untrackable model", async () => {
     const connection = new Connection({ url: mysqlUrl! });
+    await connection.run("SET time_zone = \'+00:00\'");
     const table = `pk_expression_${Date.now()}`;
 
     class ExpressionKey extends Model {

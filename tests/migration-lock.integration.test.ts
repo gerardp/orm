@@ -55,6 +55,7 @@ describe.serial("Native migration advisory locks", () => {
 
   runIfMySql("honours a sub-second lock timeout", async () => {
     const connection = new Connection({ url: mysqlUrl! });
+    await connection.run("SET time_zone = \'+00:00\'");
     const name = lockName();
 
     const held = await acquireMigrationLock(connection, name, { timeoutMs: 1000 });
@@ -74,6 +75,7 @@ describe.serial("Native migration advisory locks", () => {
 
   runIfMySql("holds a GET_LOCK and shuts out a second migrator", async () => {
     const connection = new Connection({ url: mysqlUrl! });
+    await connection.run("SET time_zone = \'+00:00\'");
     const name = lockName();
 
     const held = await acquireMigrationLock(connection, name, { timeoutMs: 1000 });

@@ -1,4 +1,5 @@
 import { Connection } from "../connection/Connection.js";
+import { formatDateForDriver } from "../utils.js";
 import { TransactionContext } from "../connection/TransactionContext.js";
 import { Cache } from "../cache/index.js";
 import { MorphTo } from "../model/MorphRelations.js";
@@ -2331,7 +2332,40 @@ export class Builder<T = Record<string, any>, TResult = T> {
     }
   }
 
+  /**
+   * Renders date columns in the shape the driver stores them.
+   *
+   * Applied here rather than at each call site: a model has a dozen ways to
+   * reach a write — insert, upsert, updateOrInsert, saveMany, touch, increment,
+   * soft delete — and MySQL rejects the ISO-8601 the casts keep in memory. One
+   * place means a new write path cannot forget.
+   */
+  private serializeDates<D>(data: D): D {
+    if (this.connection.getDriverName() !== "mysql") return data;
+    const model = this.model as any;
+    const columns: string[] | undefined = model?.dateColumns?.();
+    if (!columns || columns.length === 0) return data;
+
+    const render = (record: Record<string, any>): Record<string, any> => {
+      let copy: Record<string, any> | undefined;
+      for (const column of columns) {
+        const value = record?.[column];
+        if (value === null || value === undefined) continue;
+        if (typeof value !== "string" && !(value instanceof Date)) continue;
+        const date = value instanceof Date ? value : new Date(value);
+        if (Number.isNaN(date.getTime())) continue;
+        copy = copy ?? { ...record };
+        copy[column] = formatDateForDriver(date, "mysql");
+      }
+      return copy ?? record;
+    };
+
+    if (Array.isArray(data)) return (data as any[]).map(render) as unknown as D;
+    return render(data as any) as unknown as D;
+  }
+
   async insert(data: ModelAttributeInput<T> | ModelAttributeInput<T>[]): Promise<any> {
+    data = this.serializeDates(data);
     const records = Array.isArray(data) ? data : [data];
     if (records.length === 0) return;
 
@@ -2349,6 +2383,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async insertGetId(data: ModelAttributeInput<T>, idColumn: ModelColumn<T> = "id"): Promise<any> {
+    data = this.serializeDates(data);
     const records = Array.isArray(data) ? data : [data];
     if (records.length === 0) return null;
 
@@ -2389,6 +2424,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async insertOrIgnore(data: ModelAttributeInput<T> | ModelAttributeInput<T>[]): Promise<any> {
+    data = this.serializeDates(data);
     const records = Array.isArray(data) ? data : [data];
     if (records.length === 0) return;
 
@@ -2410,6 +2446,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async upsert(data: ModelAttributeInput<T> | ModelAttributeInput<T>[], uniqueBy: ModelColumn<T> | ModelColumn<T>[], updateColumns?: ModelColumn<T>[]): Promise<any> {
+    data = this.serializeDates(data);
     const records = Array.isArray(data) ? data : [data];
     if (records.length === 0) return;
 
@@ -2448,6 +2485,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async update(data: ModelAttributeInput<T>): Promise<any> {
+    data = this.serializeDates(data);
     const dispatch = this.shouldDispatchObservers();
     const affectedIds = dispatch ? await this.pluckAffectedIds() : null;
 
@@ -2523,9 +2561,13 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async increment(column: ModelColumn<T>, amount: number = 1, extra: ModelAttributeInput<T> = {}): Promise<any> {
+    if (typeof amount !== "number" || !Number.isFinite(amount)) {
+      throw new Error("Increment amount must be a finite number.");
+    }
+    extra = this.serializeDates(extra);
     this.bindings = [];
     this.parameterize = true;
-    const sets = [`${this.grammar.wrap(column)} = ${this.grammar.wrap(column)} + ${amount}`];
+    const sets = [`${this.grammar.wrap(column)} = ${this.grammar.wrap(column)} + ${this.addBinding(amount)}`];
     for (const [key, value] of Object.entries(extra)) {
       this.bindings.push(value);
       sets.push(`${this.grammar.wrap(key)} = ${this.grammar.placeholder(this.bindings.length)}`);
