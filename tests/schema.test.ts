@@ -29,7 +29,34 @@ describe("Schema Builder", () => {
     blueprint.timestamps();
     const sql = grammar.compileCreate(blueprint, "users");
     expect(sql).toContain("`id` INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY");
-    expect(sql).toContain("`email` VARCHAR(255) NOT NULL UNIQUE");
+    expect(sql).toContain("`email` VARCHAR(255) NOT NULL");
+    expect(grammar.compileIndexes(blueprint, "users")).toContain(
+      "ALTER TABLE `users` ADD UNIQUE INDEX `users_email_unique` (`email`)"
+    );
+  });
+
+  test("mysql grammar emits JSON defaults as expressions", () => {
+    const grammar = new MySqlGrammar();
+    const blueprint = new Blueprint("preferences");
+    blueprint.json("settings").default({});
+    blueprint.json("flags").default("[]");
+
+    const sql = grammar.compileCreate(blueprint, "preferences");
+    expect(sql).toContain("`settings` JSON NOT NULL DEFAULT ('{}')");
+    expect(sql).toContain("`flags` JSON NOT NULL DEFAULT ('[]')");
+  });
+
+  test("sqlite and postgres grammars serialize structured JSON defaults", () => {
+    const blueprint = new Blueprint("preferences");
+    blueprint.json("settings").default({ theme: "dark" });
+    blueprint.jsonb("flags").default(["a", "b"]);
+
+    const sqlite = new SQLiteGrammar().compileCreate(blueprint, "preferences");
+    const postgres = new PostgresGrammar().compileCreate(blueprint, "preferences");
+    expect(sqlite).toContain(`"settings" TEXT NOT NULL DEFAULT '{"theme":"dark"}'`);
+    expect(sqlite).toContain(`"flags" TEXT NOT NULL DEFAULT '["a","b"]'`);
+    expect(postgres).toContain(`"settings" JSON NOT NULL DEFAULT '{"theme":"dark"}'`);
+    expect(postgres).toContain(`"flags" JSONB NOT NULL DEFAULT '["a","b"]'`);
   });
 
   test("postgres grammar compileCreate", () => {
@@ -529,11 +556,39 @@ describe("Schema Builder", () => {
     expect(await Schema.hasIndex("introspect_children", "children_parent_idx")).toBe(true);
     expect(await Schema.hasIndex("introspect_children", ["parent_id"])).toBe(true);
     expect(indexes.some((index) => index.columns.includes("email") && index.unique)).toBe(true);
+    expect(await Schema.hasIndex("introspect_children", "introspect_children_email_unique")).toBe(true);
     expect(await Schema.hasForeignKey("introspect_children", ["parent_id"])).toBe(true);
     expect(foreignKeys[0]).toMatchObject({
       columns: ["parent_id"],
       references: ["id"],
       onTable: "introspect_parents",
+    });
+
+    class IntrospectChild extends Model {
+      static override table = "introspect_children";
+    }
+    const blueprint = await IntrospectChild.schema().introspect().blueprint;
+    expect(blueprint.columns.find((column) => column.name === "email")?.unique).toBe(true);
+    expect(blueprint.indexes).toContainEqual(expect.objectContaining({ name: "children_parent_idx" }));
+    expect(blueprint.foreignKeys).toContainEqual(expect.objectContaining({
+      columns: ["parent_id"],
+      references: ["id"],
+      onTable: "introspect_parents",
+    }));
+  });
+
+  test("model-inferred schemas understand decimal cast arguments", () => {
+    class Invoice extends Model {
+      static override table = "invoices";
+      static override timestamps = false;
+      static override fillable = ["amount"];
+      static override casts = { amount: "decimal:4" };
+    }
+
+    expect(Invoice.schema().blueprint.columns.find((column) => column.name === "amount")).toMatchObject({
+      type: "decimal",
+      precision: 8,
+      scale: 4,
     });
   });
 
@@ -614,13 +669,14 @@ describe("Column introspection", () => {
   test("keeps char columns and their length through introspection", async () => {
     const connection = setupTestDb();
     await connection.run(
-      "CREATE TABLE char_table (id INTEGER PRIMARY KEY, code CHAR(64), label VARCHAR(30), body TEXT)"
+      "CREATE TABLE char_table (id INTEGER PRIMARY KEY, code CHAR(64), label VARCHAR(30), body TEXT, amount DECIMAL(30,10))"
     );
 
     const columns = await Schema.getColumns("char_table");
     const byName = Object.fromEntries(columns.map((column) => [column.name, column]));
     expect(byName.code?.length).toBe(64);
     expect(byName.label?.length).toBe(30);
+    expect(byName.amount).toMatchObject({ precision: 30, scale: 10 });
 
     class CharModel extends Model {
       static override table = "char_table";
@@ -632,6 +688,7 @@ describe("Column introspection", () => {
     expect(types.label?.type).toBe("string");
     expect(types.label?.length).toBe(30);
     expect(types.body?.type).toBe("text");
+    expect(types.amount).toMatchObject({ type: "decimal", precision: 30, scale: 10 });
 
     await teardownTestDb(connection);
   });

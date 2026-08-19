@@ -19,6 +19,27 @@ export interface SchemaColumn {
   default?: any;
   /** Declared length for character types, when the driver reports one. */
   length?: number;
+  /** Precision and scale for exact numeric columns, when available. */
+  precision?: number;
+  scale?: number;
+  /** Whether the database declared this numeric column UNSIGNED. */
+  unsigned?: boolean;
+}
+
+function characterLength(type: unknown): number | undefined {
+  const declared = String(type ?? "").toLowerCase();
+  return /^(?:var)?char(?:acter)?(?: varying)?\s*\(/.test(declared)
+    ? declaredColumnLength(declared) ?? undefined
+    : undefined;
+}
+
+function numericSize(type: unknown): { precision?: number; scale?: number } {
+  const match = /^(?:decimal|numeric)\s*\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?\)/i.exec(String(type ?? ""));
+  if (!match) return {};
+  return {
+    precision: Number(match[1]),
+    scale: match[2] === undefined ? 0 : Number(match[2]),
+  };
 }
 
 export interface SchemaIndex {
@@ -499,20 +520,24 @@ export class Schema {
 
     if (driver === "sqlite") {
       const rows = await conn.query(`PRAGMA table_info(${grammar.wrap(table)})`);
-      return (rows as any[]).map((row) => ({
-        name: row.name,
-        type: row.type,
-        primary: row.pk > 0,
-        autoIncrement: false,
-        nullable: row.notnull === 0,
-        default: row.dflt_value ?? undefined,
-        length: declaredColumnLength(row.type) ?? undefined,
-      }));
+      return (rows as any[]).map((row) => {
+        const size = numericSize(row.type);
+        return {
+          name: row.name,
+          type: row.type,
+          primary: row.pk > 0,
+          autoIncrement: false,
+          nullable: row.notnull === 0,
+          default: row.dflt_value ?? undefined,
+          length: characterLength(row.type),
+          ...size,
+        };
+      });
     }
 
     if (driver === "mysql") {
       const rows = await conn.query(
-        "SELECT column_name AS Field, column_type AS Type, column_key AS `Key`, extra AS Extra, is_nullable AS Nullable, column_default AS `Default` FROM information_schema.columns WHERE table_schema = COALESCE(?, DATABASE()) AND table_name = ? ORDER BY ordinal_position",
+        "SELECT column_name AS Field, column_type AS Type, column_key AS `Key`, extra AS Extra, is_nullable AS Nullable, column_default AS `Default`, character_maximum_length AS CharacterLength, numeric_precision AS `Precision`, numeric_scale AS `Scale` FROM information_schema.columns WHERE table_schema = COALESCE(?, DATABASE()) AND table_name = ? ORDER BY ordinal_position",
         [qualified.schema ?? null, qualified.table]
       );
       return (rows as any[]).map((row) => ({
@@ -522,12 +547,16 @@ export class Schema {
         autoIncrement: String(row.Extra || "").toLowerCase().includes("auto_increment"),
         nullable: row.Nullable === "YES",
         default: row.Default ?? undefined,
-        length: declaredColumnLength(row.Type) ?? undefined,
+        length: row.CharacterLength == null ? characterLength(row.Type) : Number(row.CharacterLength),
+        precision: row.Precision == null ? undefined : Number(row.Precision),
+        scale: row.Scale == null ? undefined : Number(row.Scale),
+        unsigned: /\bunsigned\b/i.test(String(row.Type)),
       }));
     }
 
     const rows = await conn.query(
       `SELECT c.column_name, c.data_type, c.is_nullable, c.column_default, c.character_maximum_length,
+       c.numeric_precision, c.numeric_scale,
        COALESCE(bool_or(tc.constraint_type = 'PRIMARY KEY'), false) AS primary_key
        FROM information_schema.columns c
        LEFT JOIN information_schema.key_column_usage kcu
@@ -540,7 +569,7 @@ export class Schema {
         AND tc.constraint_type = 'PRIMARY KEY'
        WHERE c.table_schema = $1
          AND c.table_name = $2
-       GROUP BY c.column_name, c.data_type, c.is_nullable, c.column_default, c.character_maximum_length, c.ordinal_position
+       GROUP BY c.column_name, c.data_type, c.is_nullable, c.column_default, c.character_maximum_length, c.numeric_precision, c.numeric_scale, c.ordinal_position
        ORDER BY c.ordinal_position`,
       [schema, qualified.table]
     );
@@ -552,6 +581,9 @@ export class Schema {
       nullable: row.is_nullable === "YES",
       default: row.column_default ?? undefined,
       length: row.character_maximum_length ?? undefined,
+      precision: row.numeric_precision == null ? undefined : Number(row.numeric_precision),
+      scale: row.numeric_scale == null ? undefined : Number(row.numeric_scale),
+      unsigned: false,
     }));
   }
 
@@ -567,6 +599,9 @@ export class Schema {
     default?: any;
     defaultIsExpression?: boolean;
     length?: number;
+    precision?: number;
+    scale?: number;
+    unsigned?: boolean;
   } | null> {
     const connection = conn ?? this.getConnection();
     const driver = connection.getDriverName();
@@ -584,14 +619,15 @@ export class Schema {
             primary: row.pk > 0,
             autoIncrement: false,
             default: row.dflt_value ?? undefined,
-            length: declaredColumnLength(row.type) ?? undefined,
+            length: characterLength(row.type),
+            ...numericSize(row.type),
           } as any)
         : null;
     }
 
     if (driver === "mysql") {
       const rows = await connection.query(
-        "SELECT column_name AS Field, column_type AS Type, column_key AS `Key`, extra AS Extra, column_default AS `Default` FROM information_schema.columns WHERE table_schema = COALESCE(?, DATABASE()) AND table_name = ? AND column_name = ?",
+        "SELECT column_name AS Field, column_type AS Type, column_key AS `Key`, extra AS Extra, column_default AS `Default`, character_maximum_length AS CharacterLength, numeric_precision AS `Precision`, numeric_scale AS `Scale` FROM information_schema.columns WHERE table_schema = COALESCE(?, DATABASE()) AND table_name = ? AND column_name = ?",
         [qualified.schema ?? null, tableName, column]
       );
       const row = rows[0];
@@ -603,13 +639,17 @@ export class Schema {
             autoIncrement: String(row.Extra || "").toLowerCase().includes("auto_increment"),
             default: row.Default ?? undefined,
             defaultIsExpression: String(row.Extra || "").toLowerCase().includes("default_generated"),
-            length: declaredColumnLength(row.Type) ?? undefined,
+            length: row.CharacterLength == null ? characterLength(row.Type) : Number(row.CharacterLength),
+            precision: row.Precision == null ? undefined : Number(row.Precision),
+            scale: row.Scale == null ? undefined : Number(row.Scale),
+            unsigned: /\bunsigned\b/i.test(String(row.Type)),
           } as any)
         : null;
     }
 
     const rows = await connection.query(
       `SELECT c.column_name, c.data_type, c.column_default, c.character_maximum_length,
+       c.numeric_precision, c.numeric_scale,
        COALESCE(tc.constraint_type = 'PRIMARY KEY', false) AS primary_key
        FROM information_schema.columns c
        LEFT JOIN information_schema.key_column_usage kcu
@@ -633,6 +673,9 @@ export class Schema {
           autoIncrement: false,
           default: row.column_default ?? undefined,
           length: row.character_maximum_length ?? undefined,
+          precision: row.numeric_precision == null ? undefined : Number(row.numeric_precision),
+          scale: row.numeric_scale == null ? undefined : Number(row.numeric_scale),
+          unsigned: false,
         } as any)
       : null;
   }

@@ -74,7 +74,10 @@ table.decimal("price", 10, 2);   // up to 99,999,999.99
 table.decimal("tax_rate", 5, 4); // 0.0000 – 9.9999
 ```
 
-Always store currency as `decimal`, not `float`/`double`. Floats lose precision on rounding.
+Always store currency as `decimal`, not `float`/`double`. Floats lose precision
+on rounding. At the model boundary, use a `decimal:N` cast and pass exact values
+as strings; this keeps MySQL `DECIMAL` and PostgreSQL `NUMERIC` values out of
+JavaScript's lossy `number` representation.
 
 ### Strings and text
 
@@ -120,11 +123,19 @@ table.timestamp("published_at").nullable();
 | `jsonb(name)` | `JSONB` (Postgres only); falls back to `JSON` elsewhere |
 
 ```ts
-table.json("preferences").default("{}");
+table.json("preferences").default({});
 table.jsonb("search_index").nullable();
 ```
 
-Use `jsonb` on Postgres for indexable / queryable JSON. See [`whereJsonContains`](./query-builder.md#json-clauses).
+MySQL uses its native binary `JSON` type, PostgreSQL uses native `JSON`, and
+SQLite stores the serialized text. Structured defaults such as `.default({})`
+and `.default([])` are serialized correctly on all three drivers. Use `jsonb`
+on Postgres for indexable / queryable JSON. See
+[`whereJsonContains`](./query-builder.md#json-clauses).
+
+JSON is decoded into JavaScript values, so numeric literals beyond
+`Number.MAX_SAFE_INTEGER` are not exact. Encode large IDs and exact decimal
+values as strings inside JSON documents.
 
 ### Identifiers
 
@@ -328,14 +339,21 @@ await Schema.create("posts", (table) => {
 
 ```ts
 await Schema.create("posts", (table) => {
-  table.increments("id");
+  table.id();
   table.foreignId("user_id").constrained();                  // FK posts.user_id → users.id
-  table.foreignId("category_id").constrained().nullable();
+  table.foreignId("category_id").nullable().constrained();
   table.foreignUuid("tenant_id").constrained();
   table.string("title");
   table.timestamps();
 });
 ```
+
+`foreignId()` creates `BIGINT UNSIGNED`, so its referenced key should be
+`id()`/`bigIncrements()` (or an explicitly matching `bigInteger().unsigned()`).
+If the parent uses `increments()`/`INTEGER`, declare the child with
+`integer("user_id").unsigned()` instead. MySQL rejects foreign keys whose
+integer size or signedness differs. Apply `nullable()` before `constrained()`,
+because `constrained()` starts the foreign-key builder.
 
 `constrained(table?, column?, name?)` takes the referenced table, the referenced column, and the constraint name — all optional:
 
@@ -438,5 +456,6 @@ When you set `connection.schema` (or use a tenant resolver), every `Schema.creat
 ## Driver caveats
 
 - **SQLite** can not change column types in place. The schema builder issues `ALTER TABLE` where SQLite supports it and falls back to a `create + copy + drop + rename` recipe for unsupported operations.
+- **SQLite exact numbers:** its `INTEGER`/`REAL` values and Bun's SQLite decoder use JavaScript numbers, so values beyond `Number.MAX_SAFE_INTEGER` and arbitrary-precision decimals are not exact. Store large IDs/decimals as `TEXT`, or store money as integer minor units. Changing `decimal()` globally to text would break numeric ordering and aggregates, so Bunny does not do that implicitly.
 - **MySQL** unique-key indexes have a 191-character limit on `utf8mb4`. Use `string("col", 191)` for unique columns.
 - **PostgreSQL** is the only driver that supports `jsonb`, named `schema` qualification, and timezone-aware `timestamp`.

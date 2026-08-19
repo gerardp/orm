@@ -76,9 +76,8 @@ export class PostgresGrammar extends Grammar {
     let sql = `${this.wrap(column.name)} ${this.getType(column)}`;
     if (!column.nullable) sql += " NOT NULL";
     if (column.defaultUuid) sql += this.modifyDefaultUuid(column);
-    else if (column.default !== undefined) sql += ` DEFAULT ${this.getDefaultValue(column.default)}`;
+    else if (column.default !== undefined) sql += ` DEFAULT ${this.getColumnDefault(column)}`;
     if (column.autoIncrement) sql += this.modifyAutoIncrement(column);
-    if (column.unique) sql += " UNIQUE";
     if (column.primary) sql += " PRIMARY KEY";
     return sql;
   }

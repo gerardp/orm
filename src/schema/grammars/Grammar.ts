@@ -73,7 +73,7 @@ export abstract class Grammar {
     if (column.unsigned) sql += this.modifyUnsigned(column);
     if (!column.nullable) sql += " NOT NULL";
     if (column.defaultUuid) sql += this.modifyDefaultUuid(column);
-    else if (column.default !== undefined) sql += ` DEFAULT ${this.getDefaultValue(column.default)}`;
+    else if (column.default !== undefined) sql += ` DEFAULT ${this.getColumnDefault(column)}`;
     if (column.autoIncrement) sql += this.modifyAutoIncrement(column);
     if (column.comment) sql += this.modifyComment(column);
     return sql;
@@ -105,8 +105,26 @@ export abstract class Grammar {
     return `'${String(value).replace(/'/g, "''")}'`;
   }
 
+  /** JSON defaults are values, not JavaScript's "[object Object]" string. */
+  protected getColumnDefault(column: ColumnDefinition): string {
+    const json = column.type === "json" || column.type === "jsonb";
+    const value = json && column.default !== null &&
+      !(column.default instanceof SchemaRawExpression) && typeof column.default !== "string"
+      ? JSON.stringify(column.default)
+      : column.default;
+    return this.getDefaultValue(value);
+  }
+
   compileIndexes(blueprint: Blueprint, table: string): string[] {
     const statements: string[] = [];
+    for (const column of blueprint.columns) {
+      if (!column.unique) continue;
+      statements.push(this.compileIndex(table, {
+        name: `${blueprint.table}_${column.name}_unique`,
+        columns: [column.name],
+        unique: true,
+      }));
+    }
     for (const index of blueprint.indexes) {
       statements.push(this.compileIndex(table, index));
     }

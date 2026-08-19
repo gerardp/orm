@@ -20,7 +20,7 @@ export interface ModelInfo {
 }
 
 function castToColumnType(cast: any): string {
-  const s = typeof cast === "string" ? cast.toLowerCase() : "";
+  const s = typeof cast === "string" ? cast.toLowerCase().split(":")[0] : "";
   if (s === "integer" || s === "int") return "integer";
   if (s === "biginteger" || s === "bigint") return "bigInteger";
   if (s === "boolean" || s === "bool") return "boolean";
@@ -64,7 +64,11 @@ function buildBlueprintFromModel(blueprint: Blueprint, info: ModelInfo): void {
       case "boolean":     col = blueprint.boolean(field); break;
       case "float":       col = blueprint.float(field); break;
       case "double":      col = blueprint.double(field); break;
-      case "decimal":     col = blueprint.decimal(field); break;
+      case "decimal": {
+        const scale = Number(typeof cast === "string" ? cast.split(":")[1] ?? 2 : 2);
+        col = blueprint.decimal(field, Math.max(8, scale + 1), scale);
+        break;
+      }
       case "date":        col = blueprint.date(field); break;
       case "dateTime":    col = blueprint.dateTime(field); break;
       case "json":        col = blueprint.json(field); break;
@@ -105,8 +109,14 @@ function dbTypeToColumnType(dbType: string): ColumnType {
   return "string";
 }
 
-function blueprintFromColumns(tableName: string, columns: SchemaColumn[]): Blueprint {
+function blueprintFromColumns(
+  tableName: string,
+  columns: SchemaColumn[],
+  indexes: SchemaIndex[],
+  foreignKeys: SchemaForeignKey[]
+): Blueprint {
   const bp = new Blueprint(tableName);
+  const primaryColumns = columns.filter((column) => column.primary).map((column) => column.name);
   for (const col of columns) {
     bp.columns.push({
       name: col.name,
@@ -114,13 +124,33 @@ function blueprintFromColumns(tableName: string, columns: SchemaColumn[]): Bluep
       length: col.length ?? declaredColumnLength(col.type) ?? undefined,
       nullable: col.nullable,
       autoIncrement: col.autoIncrement,
-      primary: col.primary,
+      precision: col.precision,
+      scale: col.scale,
+      primary: col.primary && primaryColumns.length === 1,
       unique: false,
       index: false,
-      unsigned: col.autoIncrement,
+      unsigned: col.unsigned ?? false,
       default: col.default,
     });
   }
+  if (primaryColumns.length > 1) bp.primary(primaryColumns);
+
+  for (const index of indexes) {
+    if (index.primary) continue;
+    if (index.unique && index.columns.length === 1) {
+      const column = bp.columns.find((candidate) => candidate.name === index.columns[0]);
+      if (column) {
+        column.unique = true;
+        continue;
+      }
+    }
+    bp.indexes.push({ name: index.name, columns: [...index.columns], unique: index.unique });
+  }
+  bp.foreignKeys.push(...foreignKeys.map((foreignKey) => ({
+    ...foreignKey,
+    columns: [...foreignKey.columns],
+    references: [...foreignKey.references],
+  })));
   return bp;
 }
 
@@ -155,7 +185,7 @@ export class SchemaResult {
   ) {}
 
   get blueprint(): Blueprint {
-    return blueprintFromColumns(this.tableName, this.columns);
+    return blueprintFromColumns(this.tableName, this.columns, this.indexes, this.foreignKeys);
   }
 
   private renderAll(): string {
