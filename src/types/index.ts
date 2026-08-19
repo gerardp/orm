@@ -52,13 +52,15 @@ export interface IndexDefinition {
   unique: boolean;
 }
 
+export type ReferentialAction = "cascade" | "restrict" | "set null" | "no action" | "set default";
+
 export interface ForeignKeyDefinition {
   name?: string;
   columns: string[];
   references: string[];
   onTable: string;
-  onDelete?: string;
-  onUpdate?: string;
+  onDelete?: ReferentialAction;
+  onUpdate?: ReferentialAction;
 }
 
 export interface WhereClause {
@@ -99,6 +101,7 @@ export interface UnionClause {
 export type SQLitePragmaConfig = {
   journalMode?: string | false;
   synchronous?: string | false;
+  foreignKeys?: boolean;
 };
 
 export type ConnectionConfig =

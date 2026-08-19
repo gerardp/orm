@@ -27,6 +27,10 @@ export class MySqlGrammar extends Grammar {
     return "ORDER BY RAND()";
   }
 
+  compileInsertDefault(table: string): string {
+    return `INSERT INTO ${table} () VALUES ()`;
+  }
+
   compileDateWhere(type: string, column: string, operator: string, value: any, binding?: (value: any) => string): string {
     const val = binding ? binding(value) : this.escape(value);
     switch (type) {
@@ -46,6 +50,7 @@ export class MySqlGrammar extends Grammar {
   }
 
   compileInsertOrIgnore(table: string, columns: string[], values: string[]): string {
+    if (columns.length === 0) return `INSERT IGNORE INTO ${table} () VALUES ()`;
     return `INSERT IGNORE INTO ${table} (${columns.map((c) => this.wrap(c)).join(", ")}) VALUES ${values.join(", ")}`;
   }
 

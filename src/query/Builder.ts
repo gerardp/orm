@@ -2100,15 +2100,44 @@ export class Builder<T = Record<string, any>, TResult = T> {
     return result ? (result as any)[alias] : null;
   }
 
+  private async countSubquery(): Promise<number> {
+    const query = this.clone();
+    query.model = undefined;
+    query.orders = [];
+    query.limitValue = undefined;
+    query.offsetValue = undefined;
+    query.eagerLoads = [];
+    query.lockMode = undefined;
+    query.bindings = [];
+    query.parameterize = true;
+    query.invalidateSqlCache();
+    const innerSql = query.toSql();
+    const rows = await this.connection.query(
+      `SELECT COUNT(*) AS bunny_count FROM (${innerSql}) AS ${this.grammar.wrap("bunny_count_query")}`,
+      query.bindings
+    );
+    return rows.length > 0 ? Number((rows[0] as any).bunny_count) : 0;
+  }
+
   async count(column: ModelColumn<T> | "*" = "*"): Promise<number> {
+    if (
+      column === "*" &&
+      (this.distinctFlag || this.groups.length > 0 || this.havings.length > 0 ||
+        this.unions.length > 0 || this.recursiveCtes.length > 0)
+    ) {
+      return await this.countSubquery();
+    }
+
+    const query = this.clone();
     const countSql = column === "*" ? "COUNT(*)" : `COUNT(${this.grammar.wrap(column as string)})`;
-    this.bindings = [];
-    this.parameterize = true;
-    const from = this.compileFrom();
-    const whereSql = this.compileWheres();
-    this.parameterize = false;
-    const sql = `SELECT ${countSql} as cnt FROM ${from}${whereSql ? " " + whereSql : ""}`;
-    const rows = await this.connection.query(sql, this.bindings);
+    query.bindings = [];
+    query.parameterize = true;
+    const from = query.compileFrom();
+    const joins = query.joins.length > 0 ? ` ${query.joins.join(" ")}` : "";
+    const whereSql = query.compileWheres();
+    query.parameterize = false;
+    const sql = `SELECT ${countSql} as cnt FROM ${from}${joins}${whereSql ? " " + whereSql : ""}`;
+    const rows = await this.connection.query(sql, query.bindings);
     return rows.length > 0 ? Number((rows[0] as any).cnt) : 0;
   }
 
@@ -2522,12 +2551,29 @@ export class Builder<T = Record<string, any>, TResult = T> {
     return render(data as any) as unknown as D;
   }
 
+  private definedRecord(record: ModelAttributeInput<T>): ModelAttributeInput<T> {
+    return Object.fromEntries(
+      Object.entries(record).filter(([, value]) => value !== undefined)
+    ) as ModelAttributeInput<T>;
+  }
+
+  private definedRecords(data: ModelAttributeInput<T> | ModelAttributeInput<T>[]): ModelAttributeInput<T>[] {
+    const serialized = this.serializeDriverValues(data);
+    return (Array.isArray(serialized) ? serialized : [serialized]).map((record) => this.definedRecord(record));
+  }
+
   async insert(data: ModelAttributeInput<T> | ModelAttributeInput<T>[]): Promise<any> {
-    data = this.serializeDriverValues(data);
-    const records = Array.isArray(data) ? data : [data];
+    const records = this.definedRecords(data);
     if (records.length === 0) return;
 
     const columns = this.getUniformColumns(records);
+    if (columns.length === 0) {
+      let result: any;
+      for (const _record of records) {
+        result = await this.connection.run(this.grammar.compileInsertDefault(this.grammar.wrap(this.tableName)));
+      }
+      return result;
+    }
     const bindings: any[] = [];
     const values = records.map((record) => {
       return `(${columns.map((col) => {
@@ -2541,8 +2587,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async insertGetId(data: ModelAttributeInput<T>, idColumn: ModelColumn<T> = "id"): Promise<any> {
-    data = this.serializeDriverValues(data);
-    const records = Array.isArray(data) ? data : [data];
+    const records = this.definedRecords(data);
     if (records.length === 0) return null;
 
     const columns = this.getUniformColumns(records);
@@ -2554,7 +2599,9 @@ export class Builder<T = Record<string, any>, TResult = T> {
       }).join(", ")})`;
     });
 
-    let sql = `INSERT INTO ${this.grammar.wrap(this.tableName)} (${columns.map((c) => this.grammar.wrap(c)).join(", ")}) VALUES ${values.join(", ")}`;
+    let sql = columns.length === 0
+      ? this.grammar.compileInsertDefault(this.grammar.wrap(this.tableName))
+      : `INSERT INTO ${this.grammar.wrap(this.tableName)} (${columns.map((c) => this.grammar.wrap(c)).join(", ")}) VALUES ${values.join(", ")}`;
 
     const driver = this.connection.getDriverName();
     if (driver === "postgres" || driver === "sqlite") {
@@ -2581,11 +2628,19 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async insertOrIgnore(data: ModelAttributeInput<T> | ModelAttributeInput<T>[]): Promise<any> {
-    data = this.serializeDriverValues(data);
-    const records = Array.isArray(data) ? data : [data];
+    const records = this.definedRecords(data);
     if (records.length === 0) return;
 
     const columns = this.getUniformColumns(records);
+    if (columns.length === 0) {
+      let result: any;
+      for (const _record of records) {
+        result = await this.connection.run(
+          this.grammar.compileInsertOrIgnore(this.grammar.wrap(this.tableName), [], [])
+        );
+      }
+      return result;
+    }
     const bindings: any[] = [];
     const values = records.map((record) => {
       return `(${columns.map((col) => {
@@ -2603,11 +2658,11 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async upsert(data: ModelAttributeInput<T> | ModelAttributeInput<T>[], uniqueBy: ModelColumn<T> | ModelColumn<T>[], updateColumns?: ModelColumn<T>[]): Promise<any> {
-    data = this.serializeDriverValues(data);
-    const records = Array.isArray(data) ? data : [data];
+    const records = this.definedRecords(data);
     if (records.length === 0) return;
 
     const columns = this.getUniformColumns(records);
+    if (columns.length === 0) throw new Error("Upsert requires at least one defined column.");
     const bindings: any[] = [];
     const values = records.map((record) => {
       return `(${columns.map((col) => {
@@ -2642,7 +2697,8 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async update(data: ModelAttributeInput<T>): Promise<any> {
-    data = this.serializeDriverValues(data);
+    data = this.definedRecords(data)[0]!;
+    if (Object.keys(data).length === 0) return;
     const dispatch = this.shouldDispatchObservers();
     const affectedIds = dispatch ? await this.pluckAffectedIds() : null;
 
@@ -2721,7 +2777,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
     if (typeof amount !== "number" || !Number.isFinite(amount)) {
       throw new Error("Increment amount must be a finite number.");
     }
-    extra = this.serializeDriverValues(extra);
+    extra = this.definedRecords(extra)[0]!;
     this.bindings = [];
     this.parameterize = true;
     const sets = [`${this.grammar.wrap(column)} = ${this.grammar.wrap(column)} + ${this.addBinding(amount)}`];

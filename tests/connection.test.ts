@@ -29,7 +29,7 @@ describe("Connection", () => {
     expect(conn.getDriverName()).toBe("mysql");
   });
 
-  test("applies SQLite WAL and synchronous NORMAL before first statement", async () => {
+  test("applies SQLite foreign keys, WAL, and synchronous NORMAL before first statement", async () => {
     const calls: string[] = [];
     const driver = {
       unsafe(sql: string) {
@@ -43,6 +43,7 @@ describe("Connection", () => {
     await conn.run("SELECT 2");
 
     expect(calls).toEqual([
+      "PRAGMA foreign_keys=ON",
       "PRAGMA journal_mode=WAL",
       "PRAGMA synchronous=NORMAL",
       "SELECT 1",
@@ -59,9 +60,11 @@ describe("Connection", () => {
 
       const journalMode = await conn.query("PRAGMA journal_mode");
       const synchronous = await conn.query("PRAGMA synchronous");
+      const foreignKeys = await conn.query("PRAGMA foreign_keys");
 
       expect(journalMode[0].journal_mode).toBe("wal");
       expect(synchronous[0].synchronous).toBe(1);
+      expect(foreignKeys[0].foreign_keys).toBe(1);
     } finally {
       await conn.close();
       await cleanupSqliteFile(dbPath);
@@ -87,10 +90,19 @@ describe("Connection", () => {
     );
     await custom.query("SELECT 1");
     expect(customCalls).toEqual([
+      "PRAGMA foreign_keys=ON",
       "PRAGMA journal_mode=DELETE",
       "PRAGMA synchronous=FULL",
       "SELECT 1",
     ]);
+
+    const foreignKeysDisabledCalls: string[] = [];
+    const foreignKeysDisabled = new Connection(
+      { url: "sqlite://app.db", sqlitePragmas: { foreignKeys: false } },
+      { driver: { unsafe: (sql: string) => (foreignKeysDisabledCalls.push(sql), []) } as any },
+    );
+    await foreignKeysDisabled.query("SELECT 1");
+    expect(foreignKeysDisabledCalls).not.toContain("PRAGMA foreign_keys=ON");
   });
 
   test("runs and queries sql", async () => {
@@ -144,6 +156,34 @@ describe("Connection", () => {
 
     const rows = await conn.query("SELECT * FROM nested_tx_test ORDER BY id");
     expect(rows.map((row) => row.id)).toEqual([1]);
+  });
+
+  test("manual MySQL transactions reserve one pooled session", async () => {
+    const calls: string[] = [];
+    const reserved = {
+      unsafe(sql: string) { calls.push(`reserved:${sql}`); return []; },
+      release() { calls.push("RELEASE"); },
+    };
+    const pool = {
+      async reserve() { calls.push("RESERVE"); return reserved; },
+      unsafe(sql: string) { calls.push(`pool:${sql}`); return []; },
+    };
+    const conn = new Connection(
+      { url: "mysql://user:pass@localhost:3306/db" },
+      { driver: pool as any }
+    );
+
+    await conn.beginTransaction();
+    await conn.run("INSERT INTO widgets (id) VALUES (1)");
+    await conn.rollback();
+
+    expect(calls).toEqual([
+      "RESERVE",
+      "reserved:BEGIN",
+      "reserved:INSERT INTO widgets (id) VALUES (1)",
+      "reserved:ROLLBACK",
+      "RELEASE",
+    ]);
   });
 
   test("opens a root transaction before nested savepoints on borrowed postgres connections", async () => {
@@ -237,6 +277,29 @@ describe("Connection", () => {
       `SET search_path TO "tenant_demo"`,
       "BEGIN",
       "COMMIT",
+      "RESET search_path",
+      "RELEASE",
+    ]);
+  });
+
+  test("resets and releases search_path sessions when the callback throws", async () => {
+    const calls: string[] = [];
+    const reserved = {
+      unsafe(sql: string) { calls.push(sql); return []; },
+      release() { calls.push("RELEASE"); },
+    };
+    const driver = { reserve: async () => reserved };
+    const conn = new Connection(
+      { url: "postgres://user:pass@localhost:5432/db" },
+      { driver: driver as any, ownsDriver: true }
+    );
+
+    await expect(conn.withSearchPath("tenant_demo", async () => {
+      throw new Error("callback failed");
+    })).rejects.toThrow("callback failed");
+
+    expect(calls).toEqual([
+      `SET search_path TO "tenant_demo"`,
       "RESET search_path",
       "RELEASE",
     ]);

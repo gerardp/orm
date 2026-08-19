@@ -3,17 +3,28 @@ import type {
   IndexDefinition,
   PrimaryKeyDefinition,
   ColumnType,
+  ForeignKeyDefinition,
+  ReferentialAction,
 } from "../types/index.js";
 
+const REFERENTIAL_ACTIONS = new Set<ReferentialAction>([
+  "cascade",
+  "restrict",
+  "set null",
+  "no action",
+  "set default",
+]);
+
+function referentialAction(action: string): ReferentialAction {
+  const normalized = action.trim().toLowerCase().replace(/\s+/g, " ") as ReferentialAction;
+  if (!REFERENTIAL_ACTIONS.has(normalized)) {
+    throw new Error(`Invalid foreign key action: ${action}`);
+  }
+  return normalized;
+}
+
 export class ForeignKeyBuilder {
-  fk: {
-    name?: string;
-    columns: string[];
-    references: string[];
-    onTable: string;
-    onDelete?: string;
-    onUpdate?: string;
-  };
+  fk: ForeignKeyDefinition;
   blueprint: Blueprint;
 
   constructor(blueprint: Blueprint, columns: string[], name?: string) {
@@ -33,13 +44,29 @@ export class ForeignKeyBuilder {
   }
 
   onDelete(action: string): this {
-    this.fk.onDelete = action;
+    this.fk.onDelete = this.validateAction(action, "delete");
     return this;
   }
 
   onUpdate(action: string): this {
-    this.fk.onUpdate = action;
+    this.fk.onUpdate = this.validateAction(action, "update");
     return this;
+  }
+
+  private validateAction(action: string, event: "delete" | "update"): ReferentialAction {
+    const normalized = referentialAction(action);
+    if (normalized === "set null") {
+      // Schema.table() may reference a column that already exists in the
+      // database. Only columns declared in this blueprint can be checked here;
+      // the database remains authoritative for existing columns.
+      const nonNullable = this.fk.columns.find((name) =>
+        this.blueprint.columns.some((column) => column.name === name && !column.nullable)
+      );
+      if (nonNullable) {
+        throw new Error(`ON ${event.toUpperCase()} SET NULL requires nullable foreign key column "${nonNullable}".`);
+      }
+    }
+    return normalized;
   }
 
   cascadeOnDelete(): this {
@@ -64,7 +91,7 @@ export class Blueprint {
   columns: ColumnDefinition[] = [];
   indexes: IndexDefinition[] = [];
   primaryKey?: PrimaryKeyDefinition;
-  foreignKeys: any[] = [];
+  foreignKeys: ForeignKeyDefinition[] = [];
   commands: { name: string; parameters?: Record<string, any> }[] = [];
 
   private currentColumn?: ColumnDefinition;

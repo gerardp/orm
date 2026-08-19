@@ -30,6 +30,11 @@ class ContractPost extends Model {
   }
 }
 
+class ContractDefault extends Model {
+  static table = "contract_defaults";
+  static timestamps = false;
+}
+
 async function createContext(driver: ContractDriver): Promise<ContractContext> {
   if (driver !== "sqlite") return await createDriverContext(driver);
   const connection = new Connection({ url: "sqlite://:memory:" });
@@ -145,6 +150,114 @@ for (const driver of ["sqlite", "mysql", "postgres"] as const) {
 
       expect(() => new Builder(connection, "contract_users").where("name", "= ? OR 1=1 --", "missing")).toThrow("Invalid query operator");
     });
+
+    run("distinguishes undefined from null and keeps database defaults", async () => {
+      const connection = context.connection;
+      await Schema.create("contract_defaults", (table) => {
+        table.increments("id");
+        table.string("value").nullable().default("database");
+      }, connection);
+
+      const omitted = await ContractDefault.create({ value: undefined });
+      const explicitNull = await ContractDefault.create({ value: null });
+      await new Builder(connection, "contract_defaults").insertOrIgnore({ value: undefined });
+      await omitted.update({ value: undefined });
+
+      expect((await ContractDefault.find(omitted.id))!.value).toBe("database");
+      expect((await ContractDefault.find(explicitNull.id))!.value).toBeNull();
+      expect(await ContractDefault.where("value", "database").count()).toBe(2);
+    });
+
+    run("paginates joined and grouped queries with having bindings", async () => {
+      const connection = context.connection;
+      await Schema.create("contract_page_users", (table) => {
+        table.increments("id");
+        table.string("name");
+      }, connection);
+      await Schema.create("contract_page_posts", (table) => {
+        table.increments("id");
+        table.integer("user_id");
+        table.boolean("published");
+      }, connection);
+      const users = new Builder(connection, "contract_page_users");
+      const adaId = await users.insertGetId({ name: "Ada" });
+      const graceId = await users.insertGetId({ name: "Grace" });
+      await new Builder(connection, "contract_page_posts").insert([
+        { user_id: adaId, published: true },
+        { user_id: adaId, published: true },
+        { user_id: graceId, published: false },
+      ]);
+
+      const page = await new Builder(connection, "contract_page_users")
+        .select("contract_page_users.id", "contract_page_users.name")
+        .join("contract_page_posts", "contract_page_users.id", "=", "contract_page_posts.user_id")
+        .where("contract_page_posts.published", true)
+        .groupBy("contract_page_users.id", "contract_page_users.name")
+        .havingRaw("COUNT(contract_page_posts.id) >= ?", [2])
+        .paginate(10, 1);
+
+      expect(page.total).toBe(1);
+      expect(page.data).toHaveLength(1);
+      expect((page.data[0] as any).name).toBe("Ada");
+    });
+
+    run("enforces SET NULL, RESTRICT, and ON UPDATE CASCADE foreign keys", async () => {
+      const connection = context.connection;
+      await Schema.create("contract_fk_parents", (table) => {
+        table.bigInteger("id").unsigned().primary();
+        table.string("name");
+      }, connection);
+      await Schema.create("contract_fk_nullable", (table) => {
+        table.id();
+        table.foreignId("parent_id").nullable().constrained("contract_fk_parents")
+          .onDelete("set null").onUpdate("cascade");
+      }, connection);
+      await Schema.create("contract_fk_restricted", (table) => {
+        table.id();
+        table.foreignId("parent_id").constrained("contract_fk_parents").onDelete("restrict");
+      }, connection);
+
+      const parents = new Builder(connection, "contract_fk_parents");
+      const mutableId = 100;
+      const restrictedId = 200;
+      const updatedId = 101;
+      await parents.insert([
+        { id: mutableId, name: "mutable" },
+        { id: restrictedId, name: "restricted" },
+      ]);
+      await new Builder(connection, "contract_fk_nullable").insert({ parent_id: mutableId });
+      await new Builder(connection, "contract_fk_restricted").insert({ parent_id: restrictedId });
+
+      await parents.clone().where("id", mutableId).update({ id: updatedId });
+      expect(Number((await new Builder(connection, "contract_fk_nullable").first())!.parent_id)).toBe(updatedId);
+      await parents.clone().where("id", updatedId).delete();
+      expect((await new Builder(connection, "contract_fk_nullable").first())!.parent_id).toBeNull();
+      await expect(parents.clone().where("id", restrictedId).delete()).rejects.toThrow();
+    });
+
+    if (driver === "mysql") {
+      run("manual pooled transactions stay on one MySQL session", async () => {
+        const config = context.connection.getConfig();
+        if (!("url" in config)) throw new Error("Expected URL-based MySQL test connection.");
+        await Schema.create("contract_manual_transactions", (table) => {
+          table.increments("id");
+          table.string("value");
+        }, context.connection);
+        const pooled = new Connection({ url: config.url, max: 5 });
+        try {
+          await pooled.beginTransaction();
+          const before = (await pooled.query("SELECT CONNECTION_ID() AS id"))[0].id;
+          await pooled.run("INSERT INTO contract_manual_transactions (value) VALUES (?)", ["rollback"]);
+          const after = (await pooled.query("SELECT CONNECTION_ID() AS id"))[0].id;
+          expect(after).toBe(before);
+          await pooled.rollback();
+          expect(await new Builder(context.connection, "contract_manual_transactions").count()).toBe(0);
+        } finally {
+          if (pooled.isInTransaction()) await pooled.rollback().catch(() => null);
+          await pooled.close();
+        }
+      });
+    }
 
     run("runs and rolls back migrations", async () => {
       const migrations = await mkdtemp(join(process.cwd(), "tests", ".tmp-driver-contract-"));

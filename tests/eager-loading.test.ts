@@ -170,6 +170,36 @@ describe("Eager Loading", () => {
     expect(books[0].getRelation("chapters").map((chapter: EChapter) => chapter.getAttribute("title"))).toEqual(["Intro"]);
   });
 
+  test("nested eager loading uses one query per relation level", async () => {
+    const first = await EAuthor.create({ name: "Query Count A" });
+    const second = await EAuthor.create({ name: "Query Count B" });
+    const firstBook = await EBook.create({ author_id: first.id, title: "Counted A" });
+    const secondBook = await EBook.create({ author_id: second.id, title: "Counted B" });
+    await EChapter.create({ book_id: firstBook.id, title: "Chapter A" });
+    await EChapter.create({ book_id: secondBook.id, title: "Chapter B" });
+
+    const connection = EAuthor.getConnection();
+    const originalQuery = connection.query.bind(connection);
+    const queries: string[] = [];
+    connection.query = async (sql: string, bindings?: any[]) => {
+      queries.push(sql);
+      return await originalQuery(sql, bindings);
+    };
+
+    try {
+      const authors = await EAuthor.with("books.chapters").whereIn("id", [first.id, second.id]).get();
+      expect(authors).toHaveLength(2);
+      expect(authors.flatMap((author) => author.books).map((book) => book.chapters[0].title)).toEqual([
+        "Chapter A",
+        "Chapter B",
+      ]);
+    } finally {
+      connection.query = originalQuery;
+    }
+
+    expect(queries).toHaveLength(3);
+  });
+
   test("load supports constrained eager loading", async () => {
     const author = await EAuthor.create({ name: "Helen" });
     await EBook.create({ author_id: author.getAttribute("id"), title: "Visible", published: true });

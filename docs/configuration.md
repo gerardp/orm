@@ -129,9 +129,18 @@ SELECT
   TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW()) AS offset_seconds;
 ```
 
+Bunny checks this before every date-bearing statement that runs directly on a
+pool, because consecutive statements may use different sessions. Inside
+`connection.transaction(...)` the session is pinned and the successful check is
+reused for the rest of that transaction. Group related date writes in a short
+transaction when the extra round trip matters; `max: 1` alone does not suppress
+the check because that physical connection can still be replaced after a
+disconnect.
+
 SQLite connections apply production-friendly defaults before the first query:
 
 ```sql
+PRAGMA foreign_keys=ON;
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
 ```
@@ -141,13 +150,22 @@ Override or disable them only when your deployment needs a different SQLite mode
 ```ts
 connection: {
   url: "sqlite://./app.db",
-  sqlitePragmas: { journalMode: "DELETE", synchronous: "FULL" },
+  sqlitePragmas: { journalMode: "DELETE", synchronous: "FULL", foreignKeys: true },
 }
 
 connection: {
   url: "sqlite://./app.db",
   sqlitePragmas: false,
 }
+```
+
+`foreignKeys` defaults to `true`, so SQLite enforces declared foreign keys like MySQL and PostgreSQL. Set it to `false` only for an existing database that deliberately relies on SQLite's legacy disabled behavior.
+
+Before upgrading an existing SQLite database, check for old orphaned references
+that SQLite previously allowed:
+
+```sql
+PRAGMA foreign_key_check;
 ```
 
 You can also pin a Postgres schema and tune the connection pool from the URL form:

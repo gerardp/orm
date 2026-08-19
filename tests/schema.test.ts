@@ -335,6 +335,24 @@ describe("Schema Builder", () => {
     expect(sql).not.toContain("CONSTRAINT");
   });
 
+  test("foreign key actions reject SQL fragments and invalid SET NULL columns", () => {
+    const injected = new Blueprint("posts");
+    injected.foreignId("user_id");
+    expect(() => injected.constrained().onDelete("cascade; DROP TABLE users; --")).toThrow(
+      "Invalid foreign key action"
+    );
+
+    const required = new Blueprint("posts");
+    required.foreignId("user_id");
+    expect(() => required.constrained().nullOnDelete()).toThrow(
+      'ON DELETE SET NULL requires nullable foreign key column "user_id"'
+    );
+
+    const nullable = new Blueprint("posts");
+    nullable.foreignId("user_id").nullable();
+    expect(() => nullable.constrained().onDelete("SET   NULL")).not.toThrow();
+  });
+
   test("sqlite names its inline foreign keys", () => {
     const blueprint = new Blueprint("practicum_specialties");
     blueprint.foreignId("practicum_id").constrained("practicums", "id", "practicum_fk").cascadeOnDelete();

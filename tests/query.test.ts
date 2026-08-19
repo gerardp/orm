@@ -114,6 +114,22 @@ describe("Query Builder", () => {
     ).rejects.toThrow("Bulk insert records must have the same columns.");
   });
 
+  test("insert omits undefined values but preserves explicit null", async () => {
+    const connection = setupTestDb();
+    await connection.run("CREATE TABLE write_defaults (id INTEGER PRIMARY KEY, value TEXT DEFAULT 'database')");
+
+    await new Builder(connection, "write_defaults").insert({ value: undefined } as any);
+    await new Builder(connection, "write_defaults").insert({ value: null } as any);
+    await new Builder(connection, "write_defaults").insertOrIgnore({ value: undefined } as any);
+    await new Builder(connection, "write_defaults").where("id", 1).update({ value: undefined } as any);
+
+    expect(await connection.query("SELECT value FROM write_defaults ORDER BY id")).toEqual([
+      { value: "database" },
+      { value: null },
+      { value: "database" },
+    ]);
+  });
+
   test("insertGetId falls back to the rowid when the table has no such column", async () => {
     const connection = setupTestDb();
     // No "id" column: SQLite reads RETURNING "id" as a string literal rather

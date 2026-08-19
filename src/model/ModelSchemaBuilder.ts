@@ -1,7 +1,7 @@
 import { Blueprint } from "../schema/Blueprint.js";
 import { Schema, SchemaColumn, SchemaIndex, SchemaForeignKey } from "../schema/Schema.js";
 import { Connection } from "../connection/Connection.js";
-import type { ColumnType } from "../types/index.js";
+import type { ColumnType, ForeignKeyDefinition } from "../types/index.js";
 import { declaredColumnLength } from "../utils.js";
 
 const INSPECT = Symbol.for("nodejs.util.inspect.custom");
@@ -150,6 +150,8 @@ function blueprintFromColumns(
     ...foreignKey,
     columns: [...foreignKey.columns],
     references: [...foreignKey.references],
+    onDelete: foreignKey.onDelete as ForeignKeyDefinition["onDelete"],
+    onUpdate: foreignKey.onUpdate as ForeignKeyDefinition["onUpdate"],
   })));
   return bp;
 }

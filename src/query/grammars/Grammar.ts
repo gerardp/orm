@@ -41,6 +41,8 @@ export abstract class Grammar {
 
   abstract compileDateWhere(type: string, column: string, operator: string, value: any, binding?: (value: any) => string): string;
 
+  abstract compileInsertDefault(table: string): string;
+
   abstract compileInsertOrIgnore(table: string, columns: string[], values: string[]): string;
 
   abstract compileUpsert(

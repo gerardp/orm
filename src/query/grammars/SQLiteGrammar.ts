@@ -22,6 +22,10 @@ export class SQLiteGrammar extends Grammar {
     return "ORDER BY RANDOM()";
   }
 
+  compileInsertDefault(table: string): string {
+    return `INSERT INTO ${table} DEFAULT VALUES`;
+  }
+
   compileOffset(offset: number, limit?: number): string {
     const limitSql = limit === undefined ? "LIMIT -1 " : "";
     return `${limitSql}OFFSET ${offset}`;
@@ -46,6 +50,7 @@ export class SQLiteGrammar extends Grammar {
   }
 
   compileInsertOrIgnore(table: string, columns: string[], values: string[]): string {
+    if (columns.length === 0) return `INSERT OR IGNORE INTO ${table} DEFAULT VALUES`;
     return `INSERT OR IGNORE INTO ${table} (${columns.map((c) => this.wrap(c)).join(", ")}) VALUES ${values.join(", ")}`;
   }
 

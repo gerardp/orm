@@ -941,6 +941,10 @@ await connection.transaction(async () => {
 
 ## Bulk write operations
 
+Write payloads omit properties whose value is `undefined`, allowing database
+defaults to run. An explicit `null` is still bound as SQL `NULL`. Bulk records
+must have the same columns after undefined values have been omitted.
+
 ```ts
 // Raw insert — no model events fire
 await User.query().insert({ name: "Alice", email: "alice@example.com" });

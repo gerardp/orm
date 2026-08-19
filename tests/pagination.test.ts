@@ -1,5 +1,5 @@
 import { expect, test, describe, beforeAll } from "bun:test";
-import { Collection, Model, Schema, type RelationConstraintQuery } from "../src/index.js";
+import { Builder, Collection, Model, Schema, type RelationConstraintQuery } from "../src/index.js";
 import { setupTestDb } from "./helpers.js";
 
 enum PAdmissionStatus {
@@ -114,6 +114,26 @@ describe("Pagination", () => {
     expect(result.total).toBe(0);
     expect(result.from).toBe(0);
     expect(result.to).toBe(0);
+  });
+
+  test("paginate counts joined, grouped, and having-filtered rows", async () => {
+    const connection = PUser.getConnection();
+    await connection.run("CREATE TABLE page_join_users (id INTEGER PRIMARY KEY, name TEXT)");
+    await connection.run("CREATE TABLE page_join_posts (id INTEGER PRIMARY KEY, user_id INTEGER, published INTEGER)");
+    await connection.run("INSERT INTO page_join_users VALUES (1, 'Ada'), (2, 'Grace')");
+    await connection.run("INSERT INTO page_join_posts VALUES (1, 1, 1), (2, 1, 1), (3, 2, 0)");
+
+    const page = await new Builder(connection, "page_join_users")
+      .select("page_join_users.id", "page_join_users.name")
+      .join("page_join_posts", "page_join_users.id", "=", "page_join_posts.user_id")
+      .where("page_join_posts.published", 1)
+      .groupBy("page_join_users.id", "page_join_users.name")
+      .havingRaw("COUNT(page_join_posts.id) >= ?", [2])
+      .paginate(10, 1);
+
+    expect(page.total).toBe(1);
+    expect(page.data).toHaveLength(1);
+    expect((page.data[0] as any).name).toBe("Ada");
   });
 
   test("simplePaginate returns one page without total count metadata", async () => {

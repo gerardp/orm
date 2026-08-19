@@ -146,6 +146,34 @@ describe("Date handling", () => {
     expect(released).toBe(true);
   });
 
+  test("MySQL releases reserved sessions when date writes fail", async () => {
+    for (const failure of ["check", "insert"] as const) {
+      let released = false;
+      const reserved = {
+        unsafe: async (sql: string) => {
+          if (sql.startsWith("SELECT TIMESTAMPDIFF")) {
+            if (failure === "check") throw new Error("UTC check failed");
+            return [{ offset_seconds: 0 }];
+          }
+          if (failure === "insert") throw new Error("insert failed");
+          return [];
+        },
+        release: () => { released = true; },
+      };
+      const connection = new Connection(
+        { url: "mysql://user:pass@localhost:3306/db" },
+        { driver: { reserve: async () => reserved } as any, ownsDriver: false }
+      );
+      const instant = new Date("2026-08-19T14:00:00.123Z");
+
+      const operation = failure === "check"
+        ? connection.run("UPDATE events SET created_at = ?", [instant])
+        : connection.runAndGetMysqlInsertId("INSERT INTO events (created_at) VALUES (?)", [instant]);
+      await expect(operation).rejects.toThrow(failure === "check" ? "UTC check failed" : "insert failed");
+      expect(released).toBe(true);
+    }
+  });
+
   test("MySQL checks UTC once per owned session and rechecks after SET time_zone", async () => {
     const calls: string[] = [];
     const session = {

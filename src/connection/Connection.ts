@@ -154,6 +154,14 @@ export class Connection {
     return this.reservedDriver || this.driver;
   }
 
+  private async reserveRootTransaction(): Promise<void> {
+    if (this.driverName === "sqlite" || this.dedicated || this.reservedDriver) return;
+    if (typeof (this.driver as any).reserve !== "function") {
+      throw new Error(`${this.driverName} transactions require a driver that can reserve one pooled session.`);
+    }
+    this.reservedDriver = await (this.driver as any).reserve();
+  }
+
   private log(sqlString: string, bindings?: any[]): void {
     if (!(this.logQueries ?? Connection.logQueries)) return;
     if (Connection.queryLogFile) {
@@ -204,7 +212,7 @@ export class Connection {
       const hasDate = this.carriesDate(bindings);
       const normalizedBindings = this.normalizeBindings(bindings);
       this.log(sqlString, normalizedBindings);
-      if (hasDate) await this.assertMysqlUtc(driver, this.dedicated);
+      if (hasDate) await this.assertMysqlUtc(driver, this.dedicated || !!this.reservedDriver);
       await driver.unsafe(sqlString, normalizedBindings);
       const rows = await driver.unsafe("SELECT LAST_INSERT_ID() AS bunny_insert_id") as any[];
       return rows[0]?.bunny_insert_id ?? null;
@@ -250,7 +258,7 @@ export class Connection {
       }
     }
 
-    await this.assertMysqlUtc(driver, this.dedicated);
+    await this.assertMysqlUtc(driver, this.dedicated || !!this.reservedDriver);
     return await driver.unsafe(sqlString, normalizedBindings);
   }
 
@@ -303,6 +311,13 @@ export class Connection {
 
     const journalMode = pragmas?.journalMode ?? "WAL";
     const synchronous = pragmas?.synchronous ?? "NORMAL";
+    const foreignKeys = pragmas?.foreignKeys ?? true;
+
+    if (foreignKeys) {
+      const sql = "PRAGMA foreign_keys=ON";
+      this.log(sql);
+      await this.getDriver().unsafe(sql);
+    }
 
     if (journalMode !== false) {
       const sql = `PRAGMA journal_mode=${this.sanitizeSqlitePragmaValue(journalMode, "journal_mode")}`;
@@ -329,9 +344,7 @@ export class Connection {
   async beginTransaction(): Promise<void> {
     await this.ensureSqliteDefaults();
     if (this.transactionDepth === 0 && !this.transactionActive) {
-      if (this.driverName === "postgres" && !this.dedicated) {
-        this.reservedDriver = await (this.driver as any).reserve();
-      }
+      await this.reserveRootTransaction();
       try {
         await this.getDriver().unsafe("BEGIN");
       } catch (error) {
@@ -353,6 +366,7 @@ export class Connection {
     this.clearAbandonedTimer();
     this.reservedDriver?.release?.();
     this.reservedDriver = undefined;
+    this.mysqlUtcChecked = false;
   }
 
   private armAbandonedTimer(): void {
@@ -433,9 +447,7 @@ export class Connection {
       // depth so a root transaction starts with BEGIN and nested calls use
       // SAVEPOINTs.
       if (!this.transactionActive) {
-        if (this.driverName === "postgres" && !this.dedicated) {
-          this.reservedDriver = await (this.driver as any).reserve();
-        }
+        await this.reserveRootTransaction();
         try {
           await this.getDriver().unsafe("BEGIN");
         } catch (error) {

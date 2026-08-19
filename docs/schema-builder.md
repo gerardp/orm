@@ -368,12 +368,13 @@ Without a name the database picks one. Name it when you need to reference it lat
 Cascade helpers chain naturally:
 
 ```ts
-table.foreignId("user_id").constrained().cascadeOnDelete();
+table.foreignId("author_id").constrained().cascadeOnDelete();
+table.integer("user_id").nullable();
 table.foreign("user_id").references("id").on("users").onDelete("set null");
 table.foreign("user_id", "posts_user_fk").references("id").on("users");
 ```
 
-`onDelete` accepts `"cascade"`, `"restrict"`, `"set null"`, `"no action"`, or `"set default"`. The same options apply to `onUpdate`.
+`onDelete` accepts `"cascade"`, `"restrict"`, `"set null"`, `"no action"`, or `"set default"`. The same options apply to `onUpdate`; other strings are rejected. `SET NULL` requires every local foreign-key column declared in the blueprint to be nullable.
 
 ## Altering tables
 
