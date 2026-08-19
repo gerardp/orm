@@ -114,6 +114,28 @@ describe("Query Builder", () => {
     ).rejects.toThrow("Bulk insert records must have the same columns.");
   });
 
+  test("insertGetId falls back to the rowid when the table has no such column", async () => {
+    const connection = setupTestDb();
+    // No "id" column: SQLite reads RETURNING "id" as a string literal rather
+    // than failing, so the value has to come from the rowid instead.
+    await connection.run("CREATE TABLE no_id_col (code TEXT PRIMARY KEY, name TEXT)");
+
+    const first = await new Builder(connection, "no_id_col").insertGetId({ code: "a", name: "A" } as any);
+    const second = await new Builder(connection, "no_id_col").insertGetId({ code: "b", name: "B" } as any);
+
+    expect(Number(first)).toBe(1);
+    expect(Number(second)).toBe(2);
+    expect(await connection.query("SELECT COUNT(*) AS n FROM no_id_col")).toEqual([{ n: 2 }]);
+  });
+
+  test("insertGetId returns the declared key when the column exists", async () => {
+    const connection = setupTestDb();
+    await connection.run("CREATE TABLE keyed (code TEXT PRIMARY KEY, name TEXT)");
+
+    const key = await new Builder(connection, "keyed").insertGetId({ code: "abc", name: "A" } as any, "code" as any);
+    expect(key).toBe("abc");
+  });
+
   test("pluck returns array of values", async () => {
     const connection = setupTestDb();
     await connection.run("CREATE TABLE plk (name TEXT)");

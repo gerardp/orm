@@ -81,6 +81,7 @@ This is mostly useful when you're combining the ORM with generated `.d.ts` files
 - **Schema (PostgreSQL)** — optional `static modelSchema = "..."` pins a model to a schema (for example landlord/shared models on `public`).
 - **Primary key** — defaults to `id`. Override with `static primaryKey = "..."`.
 - **Key type** — defaults to `int`. Set `static keyType = "uuid"` or `"string"` for non-numeric keys; set `static incrementing = false` if the database doesn't auto-increment.
+- **Generated keys** — with a textual primary key the ORM fills the value with a UUID before inserting, but not when the column has a database default (the database already decides it) or is too short to hold one — a `CHAR(26)` holding ULIDs stays yours to fill. `static keyType = "uuid"` opts in regardless of the column. MySQL cannot return a primary key assigned by an expression or trigger, so those models must provide the key explicitly (or use `AUTO_INCREMENT` or a literal default).
 - **Timestamps** — `created_at` and `updated_at` are managed automatically. Disable with `static timestamps = false`.
 - **Connection** — uses the default connection. Override per model with `static connection = "..."` plus `ConnectionManager.add(...)`.
 

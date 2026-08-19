@@ -54,6 +54,25 @@ export class Schema {
     return connection;
   }
 
+  /**
+   * Splits a possibly qualified table name. Models hand introspection whatever
+   * `qualifyTable()` produced, which carries the schema on every driver except
+   * SQLite — so every driver has to be able to take it apart again, not just
+   * PostgreSQL.
+   */
+  private static splitQualifiedTable(
+    connection: Connection,
+    table: string
+  ): { schema: string | undefined; table: string } {
+    const fallback = connection.getSchema() || undefined;
+    if (connection.getDriverName() === "sqlite" || !table.includes(".")) {
+      return { schema: fallback, table };
+    }
+    const [schemaPart, ...tableParts] = table.split(".");
+    if (!schemaPart || tableParts.length === 0) return { schema: fallback, table };
+    return { schema: schemaPart, table: tableParts.join(".") };
+  }
+
   private static getGrammar(connection?: Connection): Grammar {
     const driver = (connection ?? this.getConnection()).getDriverName();
     switch (driver) {
@@ -459,7 +478,8 @@ export class Schema {
   static async getColumns(table: string, connection?: Connection): Promise<SchemaColumn[]> {
     const conn = connection ?? this.getConnection();
     const driver = conn.getDriverName();
-    const schema = conn.getSchema() || "public";
+    const qualified = this.splitQualifiedTable(conn, table);
+    const schema = qualified.schema || "public";
     const grammar = this.getGrammar(conn);
 
     if (driver === "sqlite") {
@@ -477,8 +497,8 @@ export class Schema {
 
     if (driver === "mysql") {
       const rows = await conn.query(
-        "SELECT column_name AS Field, column_type AS Type, column_key AS `Key`, extra AS Extra, is_nullable AS Nullable, column_default AS `Default` FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ordinal_position",
-        [table]
+        "SELECT column_name AS Field, column_type AS Type, column_key AS `Key`, extra AS Extra, is_nullable AS Nullable, column_default AS `Default` FROM information_schema.columns WHERE table_schema = COALESCE(?, DATABASE()) AND table_name = ? ORDER BY ordinal_position",
+        [qualified.schema ?? null, qualified.table]
       );
       return (rows as any[]).map((row) => ({
         name: row.Field,
@@ -507,7 +527,7 @@ export class Schema {
          AND c.table_name = $2
        GROUP BY c.column_name, c.data_type, c.is_nullable, c.column_default, c.character_maximum_length, c.ordinal_position
        ORDER BY c.ordinal_position`,
-      [schema, table]
+      [schema, qualified.table]
     );
     return (rows as any[]).map((row) => ({
       name: row.column_name,
@@ -535,15 +555,9 @@ export class Schema {
   } | null> {
     const connection = conn ?? this.getConnection();
     const driver = connection.getDriverName();
-    let schema = connection.getSchema() || "public";
-    let tableName = table;
-    if (driver === "postgres" && table.includes(".")) {
-      const [schemaPart, ...tableParts] = table.split(".");
-      if (schemaPart && tableParts.length > 0) {
-        schema = schemaPart;
-        tableName = tableParts.join(".");
-      }
-    }
+    const qualified = this.splitQualifiedTable(connection, table);
+    const schema = qualified.schema || "public";
+    const tableName = qualified.table;
     const grammar = this.getGrammar(connection);
     if (driver === "sqlite") {
       const rows = await connection.query(`PRAGMA table_info(${grammar.wrap(table)})`);
@@ -562,8 +576,8 @@ export class Schema {
 
     if (driver === "mysql") {
       const rows = await connection.query(
-        "SELECT column_name AS Field, column_type AS Type, column_key AS `Key`, extra AS Extra, column_default AS `Default` FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
-        [tableName, column]
+        "SELECT column_name AS Field, column_type AS Type, column_key AS `Key`, extra AS Extra, column_default AS `Default` FROM information_schema.columns WHERE table_schema = COALESCE(?, DATABASE()) AND table_name = ? AND column_name = ?",
+        [qualified.schema ?? null, tableName, column]
       );
       const row = rows[0];
       return row

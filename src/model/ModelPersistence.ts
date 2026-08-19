@@ -6,15 +6,26 @@ import { Collection } from "../support/Collection.js";
 import { findRelationMethod } from "./ModelBase.js";
 import type { ModelConstructor, BulkModelOptions, SaveOptions, ModelAttributeInput } from "./ModelBase.js";
 import { ModelCore } from "./ModelCore.js";
-import { shouldGeneratePrimaryKeyForColumn } from "../utils.js";
+import { isNumericColumnType, shouldGeneratePrimaryKeyForColumn } from "../utils.js";
+import type { Connection } from "../connection/Connection.js";
+import { insertAndResolveKey, type PrimaryKeyColumn } from "./PrimaryKeyResolution.js";
 
 export class ModelPersistence<T extends Record<string, any> = any> extends ModelCore<T> {
-  static async shouldAutoGeneratePrimaryKey(): Promise<boolean> {
-    if ((this as any).usesUuids || this.keyType === "uuid") return true;
+  /**
+   * How this model's primary key gets its value: whether we generate it, plus
+   * the column itself, which is what decides how the key is read back after an
+   * insert. Fetched once so a save costs a single introspection.
+   */
+  static async primaryKeyStrategy(): Promise<{ generate: boolean; column: PrimaryKeyColumn | null }> {
+    if ((this as any).usesUuids || this.keyType === "uuid") return { generate: true, column: null };
     const { Schema } = await import("../schema/Schema.js");
     const connection = (this as any).getConnection();
     const column = await Schema.getColumn((this as any).getQualifiedTable(connection), this.primaryKey, connection);
-    return shouldGeneratePrimaryKeyForColumn(column);
+    return { generate: shouldGeneratePrimaryKeyForColumn(column), column };
+  }
+
+  static async shouldAutoGeneratePrimaryKey(): Promise<boolean> {
+    return (await this.primaryKeyStrategy()).generate;
   }
 
   static async prepareBulkRecords<M extends ModelConstructor>(
@@ -222,14 +233,22 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
       const existingModels = chunk.filter((model) => model.$exists);
 
       if (newModels.length > 0) {
-        const shouldGeneratePrimaryKey = await (this as any).shouldAutoGeneratePrimaryKey();
+        const keyStrategy = await (this as any).primaryKeyStrategy();
+        const shouldGeneratePrimaryKey = keyStrategy.generate;
         const bulkModels: InstanceType<M>[] = [];
         for (const model of newModels) {
           const pk = model.getAttribute(this.primaryKey);
           if (!shouldGeneratePrimaryKey && (pk === null || pk === undefined || pk === "")) {
             const record = await (this as any).prepareBulkRecord(model.$attributes as any);
-            const id = await (this as any).query().insertGetId(record as any);
-            if (id) record[this.primaryKey] = id;
+            const connection = (this as any).getConnection();
+            const id = await insertAndResolveKey(
+              connection,
+              (this as any).getQualifiedTable(connection),
+              record,
+              this.primaryKey,
+              keyStrategy.column
+            );
+            if (id !== null && id !== undefined && id !== "") record[this.primaryKey] = id;
             model.$attributes = record as any;
             model.$original = { ...record } as any;
             model.$dirtyKeys?.clear();
@@ -351,8 +370,14 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
         (dirty as any)["updated_at"] = now;
       }
       if (Object.keys(dirty).length > 0) {
-        if (events) await ObserverRegistry.dispatch("updating", this as any);
         const pk = this.getAttribute(constructor.primaryKey);
+        if (pk === null || pk === undefined || pk === "") {
+          throw new Error(
+            `Cannot update ${constructor.name}: it carries no "${constructor.primaryKey}" value, so there is no row to target. ` +
+              `Load the record with its primary key selected, or set one before saving.`
+          );
+        }
+        if (events) await ObserverRegistry.dispatch("updating", this as any);
         const connection = this.getConnection();
         await new Builder(connection, constructor.getQualifiedTable(connection))
           .where(constructor.primaryKey, pk)
@@ -381,7 +406,8 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
 
       const primaryKey = constructor.primaryKey;
       const primaryKeyValue = this.getAttribute(primaryKey);
-      const shouldGeneratePrimaryKey = await constructor.shouldAutoGeneratePrimaryKey();
+      const keyStrategy = await constructor.primaryKeyStrategy();
+      const shouldGeneratePrimaryKey = keyStrategy.generate;
       if ((primaryKeyValue === null || primaryKeyValue === undefined || primaryKeyValue === "") && shouldGeneratePrimaryKey) {
         const generated = crypto.randomUUID();
         (this.$attributes as any)[primaryKey] = generated;
@@ -392,10 +418,11 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
       if (shouldGeneratePrimaryKey || primaryKeyValue !== null && primaryKeyValue !== undefined && primaryKeyValue !== "") {
         await new Builder(connection, constructor.getQualifiedTable(connection)).insert(this.$attributes);
       } else {
-        const result = await new Builder(connection, constructor.getQualifiedTable(connection)).insertGetId(this.$attributes);
-        if (result) {
-          (this.$attributes as any)[constructor.primaryKey] = result;
-          delete this.$castCache[constructor.primaryKey];
+        const table = constructor.getQualifiedTable(connection);
+        const key = await insertAndResolveKey(connection, table, this.$attributes, primaryKey, keyStrategy.column);
+        if (key !== null && key !== undefined && key !== "") {
+          (this.$attributes as any)[primaryKey] = key;
+          delete this.$castCache[primaryKey];
         }
       }
 

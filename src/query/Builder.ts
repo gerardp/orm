@@ -2363,10 +2363,25 @@ export class Builder<T = Record<string, any>, TResult = T> {
 
     let sql = `INSERT INTO ${this.grammar.wrap(this.tableName)} (${columns.map((c) => this.grammar.wrap(c)).join(", ")}) VALUES ${values.join(", ")}`;
 
-    if (this.connection.getDriverName() === "postgres") {
-      sql += ` RETURNING ${this.grammar.wrap(idColumn)}`;
-      const result = await this.connection.query(sql, bindings);
-      return result[0]?.[idColumn] ?? null;
+    const driver = this.connection.getDriverName();
+    if (driver === "postgres" || driver === "sqlite") {
+      const result = await this.connection.query(
+        `${sql} RETURNING ${this.grammar.wrap(idColumn)}`,
+        bindings
+      );
+      const row = result[0];
+      if (row && Object.prototype.hasOwnProperty.call(row, idColumn)) {
+        return (row as any)[idColumn] ?? null;
+      }
+      // SQLite reads a quoted identifier that matches no column as a string
+      // literal, so RETURNING "id" on a table without an "id" column succeeds
+      // and returns nothing usable instead of failing. Fall back to the rowid,
+      // which is what this returned before RETURNING was used here.
+      if (driver === "sqlite") {
+        const rowid = await this.connection.query("SELECT last_insert_rowid() AS bunny_rowid");
+        return rowid[0]?.bunny_rowid ?? null;
+      }
+      return null;
     }
 
     const result = await this.connection.run(sql, bindings);

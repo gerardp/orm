@@ -1,4 +1,5 @@
 import { Builder } from "../query/Builder.js";
+import { insertAndResolveKey, type PrimaryKeyColumn } from "./PrimaryKeyResolution.js";
 import { Schema } from "../schema/Schema.js";
 import { Collection } from "../support/Collection.js";
 import { shouldGeneratePrimaryKeyForColumn, snakeCase } from "../utils.js";
@@ -270,9 +271,12 @@ export class BelongsToMany<T extends Record<string, any> = Model, RelatedFixed e
     return builder;
   }
 
+  protected async pivotPrimaryKeyColumn(primaryKey: string): Promise<PrimaryKeyColumn | null> {
+    return await Schema.getColumn(this.qualifiedPivotTable(), primaryKey, this.parent.getConnection());
+  }
+
   protected async shouldAutoGeneratePivotPrimaryKey(primaryKey: string): Promise<boolean> {
-    const column = await Schema.getColumn(this.qualifiedPivotTable(), primaryKey, this.parent.getConnection());
-    return shouldGeneratePrimaryKeyForColumn(column);
+    return shouldGeneratePrimaryKeyForColumn(await this.pivotPrimaryKeyColumn(primaryKey));
   }
 
   protected attachPivotToResults(results: Collection<any>): void {
@@ -468,7 +472,13 @@ export class BelongsToMany<T extends Record<string, any> = Model, RelatedFixed e
         await builder.insert(records[0]);
         return records[0][pk];
       }
-      return await builder.insertGetId(records[0]);
+      return await insertAndResolveKey(
+        connection,
+        this.qualifiedPivotTable(),
+        records[0],
+        pk,
+        await this.pivotPrimaryKeyColumn(pk)
+      );
     }
 
     await builder.insert(records);
