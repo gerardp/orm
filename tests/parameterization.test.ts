@@ -1,5 +1,5 @@
 import { expect, test, describe } from "bun:test";
-import { Builder, Model, Schema } from "../src/index.js";
+import { Builder, Connection, Model, Schema } from "../src/index.js";
 import { setupTestDb } from "./helpers.js";
 
 describe("Parameterized Queries", () => {
@@ -126,10 +126,10 @@ describe("Parameterized Queries", () => {
     const calls = captureExecution(connection);
     await new Builder(connection, "users").where("id", 1).increment("counter", 5, { name: "Y" });
 
-    expect(calls[0].sql).toContain("SET \"counter\" = \"counter\" + 5");
+    expect(calls[0].sql).toContain("SET \"counter\" = \"counter\" + ?");
     expect(calls[0].sql).toContain("\"name\" = ?");
     expect(calls[0].sql).toContain("WHERE \"id\" = ?");
-    expect(calls[0].bindings).toEqual(["Y", 1]);
+    expect(calls[0].bindings).toEqual([5, "Y", 1]);
   });
 
   test("toSql() still returns inline SQL for backward compat", () => {
@@ -158,6 +158,146 @@ describe("Parameterized Queries", () => {
 
     const check = await connection.query('SELECT name FROM users');
     expect(check).toHaveLength(1);
+  });
+
+  test("rejects injected operators, directions, join types, and numeric clauses", () => {
+    const connection = setupTestDb();
+
+    expect(() => new Builder(connection, "users").where("name", "= ? OR 1=1 --", "nobody")).toThrow("Invalid query operator");
+    expect(() => new Builder(connection, "users").having("id", "> 0 OR 1=1 --", 0)).toThrow("Invalid query operator");
+    expect(() => new Builder(connection, "users").join("roles", "users.role_id", "= roles.id; --", "roles.id")).toThrow("Invalid query operator");
+    expect(() => new Builder(connection, "users").join("roles", "users.role_id", "=", "roles.id", "LEFT; DROP TABLE users; --")).toThrow("Invalid join type");
+    expect(() => new Builder(connection, "users").orderBy("id", "asc; DROP TABLE users; --" as any)).toThrow("Invalid order direction");
+    expect(() => new Builder(connection, "users").limit("1; DROP TABLE users; --" as any)).toThrow("non-negative integer");
+    expect(() => new Builder(connection, "users").offset(Number.NaN)).toThrow("non-negative integer");
+  });
+
+  test("quotes select and groupBy inputs instead of treating expressions as raw", async () => {
+    const connection = setupTestDb();
+    await connection.run("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+    await connection.run("CREATE TABLE secrets (value TEXT)");
+    await connection.run("INSERT INTO users (name) VALUES ('Alice')");
+    await connection.run("INSERT INTO secrets (value) VALUES ('top-secret')");
+
+    const expression = "name, (SELECT value FROM secrets) AS leaked";
+    const rows = await new Builder(connection, "users").select(expression as any).get();
+    expect((rows[0] as any).leaked).not.toBe("top-secret");
+
+    const grouped = new Builder(connection, "users").groupBy("name) UNION SELECT value FROM secrets --" as any).toSql();
+    expect(grouped).toContain('GROUP BY "name) UNION SELECT value FROM secrets --"');
+  });
+
+  test("raw clauses bind values in SQL order", async () => {
+    const connection = setupTestDb();
+    await connection.run("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+    await connection.run("INSERT INTO users (name) VALUES ('Alice')");
+
+    const calls = captureExecution(connection);
+    const input = "'; DROP TABLE users; --";
+    const rows = await new Builder(connection, "users")
+      .select("name")
+      .selectRaw("? as marker", [input])
+      .whereRaw('"name" = ?', ["Alice"])
+      .orderByRaw("CASE WHEN name = ? THEN 0 ELSE 1 END", ["Alice"])
+      .get();
+
+    expect(calls[0].bindings).toEqual([input, "Alice", "Alice"]);
+    expect(calls[0].sql).not.toContain(input);
+    expect((rows[0] as any).marker).toBe(input);
+    expect(await connection.query("SELECT value FROM (SELECT COUNT(*) AS value FROM users)")).toEqual([{ value: 1 }]);
+  });
+
+  test("groupByRaw, havingRaw, and whereExists bind their values", async () => {
+    const connection = setupTestDb();
+    await connection.run("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+    await connection.run("INSERT INTO users (name) VALUES ('Alice'), ('Alice')");
+
+    const calls = captureExecution(connection);
+    const rows = await new Builder(connection, "users")
+      .select("name")
+      .selectRaw("COUNT(*) as total")
+      .whereExists("SELECT 1 WHERE ? = ?", ["same", "same"])
+      .groupByRaw("CASE WHEN name = ? THEN name ELSE name END", ["Alice"])
+      .havingRaw("COUNT(*) > ?", [1])
+      .get();
+
+    expect(rows).toHaveLength(1);
+    expect(calls[0].bindings).toEqual(["same", "same", "Alice", 1]);
+  });
+
+  test("fromSub, union, and recursive CTE builders preserve bindings", async () => {
+    const connection = setupTestDb();
+    await connection.run("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+    await connection.run("INSERT INTO users (name) VALUES ('Alice'), ('Bob')");
+
+    const malicious = "CURRENT_TIMESTAMP OR 1=1 --";
+    const subCalls = captureExecution(connection);
+    const sub = new Builder(connection, "users").where("name", malicious);
+    const subRows = await new Builder(connection, "users").fromSub(sub, "filtered").get();
+    expect(subRows).toHaveLength(0);
+    expect(subCalls[0].sql).not.toContain(malicious);
+    expect(subCalls[0].bindings).toEqual([malicious]);
+
+    const unionCalls = captureExecution(connection);
+    const unionRows = await new Builder(connection, "users")
+      .where("name", "Alice")
+      .union(new Builder(connection, "users").where("name", "Bob"))
+      .get();
+    expect(unionRows).toHaveLength(2);
+    expect(unionCalls[0].bindings).toEqual(["Alice", "Bob"]);
+
+    const cteCalls = captureExecution(connection);
+    await new Builder(connection, "matched")
+      .withRecursive(
+        "matched",
+        new Builder(connection, "users").select("id", "name").where("name", malicious),
+        new Builder(connection, "users").select("id", "name").where("name", "nobody"),
+      )
+      .get();
+    expect(cteCalls[0].bindings).toEqual([malicious, "nobody"]);
+    expect(cteCalls[0].sql).not.toContain(malicious);
+  });
+
+  test("PostgreSQL numbers placeholders across raw clauses and subqueries", async () => {
+    const calls: Array<{ sql: string; bindings: any[] }> = [];
+    const driver = {
+      unsafe: async (sql: string, bindings: any[] = []) => {
+        calls.push({ sql, bindings });
+        return [];
+      },
+    } as any;
+    const connection = new Connection({ url: "postgres://test:test@localhost/test" }, { driver, ownsDriver: false });
+
+    await new Builder(connection, "users")
+      .selectRaw("? AS marker", ["selected"])
+      .fromSub(new Builder(connection, "users").where("name", "Alice"), "filtered")
+      .whereRaw("id > ?", [10])
+      .union(new Builder(connection, "users").where("name", "Bob"))
+      .get();
+
+    expect(calls[0].sql).toContain("$1 AS marker");
+    expect(calls[0].sql).toContain('WHERE "name" = $2');
+    expect(calls[0].sql).toContain("id > $3");
+    expect(calls[0].sql).toContain('WHERE "name" = $4');
+    expect(calls[0].bindings).toEqual(["selected", "Alice", 10, "Bob"]);
+  });
+
+  test("raw clauses reject placeholder and binding count mismatches", async () => {
+    const connection = setupTestDb();
+    await connection.run("CREATE TABLE users (id INTEGER PRIMARY KEY)");
+
+    await expect(new Builder(connection, "users").whereRaw("id = ?", [1, 2]).get()).rejects.toThrow("fewer placeholders");
+    await expect(new Builder(connection, "users").whereRaw("id = ? OR id = ?", [1]).get()).rejects.toThrow("fewer bindings");
+  });
+
+  test("increment rejects non-numeric runtime input", async () => {
+    const connection = setupTestDb();
+    await connection.run("CREATE TABLE users (id INTEGER PRIMARY KEY, counter INTEGER, name TEXT)");
+    await connection.run("INSERT INTO users (counter, name) VALUES (0, 'safe')");
+
+    await expect(new Builder(connection, "users").increment("counter", "0, name = 'owned'" as any)).rejects.toThrow("finite number");
+    const row = await new Builder(connection, "users").first();
+    expect((row as any).name).toBe("safe");
   });
 
   test("nested where clauses use placeholders and bindings", async () => {

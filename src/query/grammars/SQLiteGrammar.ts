@@ -2,7 +2,7 @@ import { Grammar } from "./Grammar.js";
 
 export class SQLiteGrammar extends Grammar {
   wrap(value: string): string {
-    if (value.includes(" as ")) {
+    if (/\s+as\s+/i.test(value)) {
       const [column, alias] = value.split(/\s+as\s+/i);
       return `${this.wrap(column)} AS ${this.wrap(alias)}`;
     }
@@ -10,6 +10,7 @@ export class SQLiteGrammar extends Grammar {
       return value.split(".").map((v) => this.wrap(v)).join(".");
     }
     if (value === "*") return value;
+    value = this.unwrapIdentifier(value);
     return `"${value.replaceAll('"', '""')}"`;
   }
 
@@ -62,7 +63,8 @@ export class SQLiteGrammar extends Grammar {
   }
 
   compileJsonContains(column: string, value: any, binding?: (value: any) => string): string {
-    return `${column} IN (SELECT value FROM json_each(${column})) AND ${binding ? binding(value) : this.escape(value)} IN (SELECT value FROM json_each(${column}))`;
+    const expected = binding ? binding(value) : this.escape(value);
+    return `EXISTS (SELECT 1 FROM json_each(${column}) WHERE json_each.value = ${expected})`;
   }
 
   compileJsonLength(column: string, operator: string, value: any, binding?: (value: any) => string): string {

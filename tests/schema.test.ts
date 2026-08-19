@@ -45,6 +45,16 @@ describe("Schema Builder", () => {
     expect(sql).toContain('"active" BOOLEAN NOT NULL DEFAULT FALSE');
   });
 
+  test("schema defaults require Schema.raw for SQL expressions", () => {
+    const blueprint = new Blueprint("events");
+    blueprint.timestamp("literal_default").default("CURRENT_TIMESTAMP");
+    blueprint.timestamp("expression_default").default(Schema.raw("CURRENT_TIMESTAMP"));
+
+    const sql = new SQLiteGrammar().compileCreate(blueprint, "events");
+    expect(sql).toContain('"literal_default" TEXT NOT NULL DEFAULT \'CURRENT_TIMESTAMP\'');
+    expect(sql).toContain('"expression_default" TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP');
+  });
+
   test("id() is the conventional big integer primary key", () => {
     const withId = new Blueprint("posts");
     withId.id();

@@ -17,6 +17,13 @@ import type {
   SearchSort,
 } from "./SearchEngine.js";
 import type { SearchableModelConstructor } from "./Searchable.js";
+import {
+  finiteSearchNumber,
+  nonNegativeSearchInteger,
+  positiveSearchInteger,
+  validSearchDirection,
+  validSearchOperator,
+} from "./sqlSafety.js";
 
 type Field<M> = ModelColumn<M>;
 type ValueOf<M, K> = K extends keyof M ? M[K] : any;
@@ -170,7 +177,7 @@ export class SearchBuilder<M = Model> {
   // ── Sort / limit / eager ────────────────────────────────────────────────────
 
   orderBy<K extends Field<M>>(field: K, direction: "asc" | "desc" = "asc"): this {
-    this.sorts.push({ field: field as string, direction });
+    this.sorts.push({ field: field as string, direction: validSearchDirection(direction) });
     return this;
   }
 
@@ -180,7 +187,7 @@ export class SearchBuilder<M = Model> {
   }
 
   take(n: number): this {
-    this.limitValue = n;
+    this.limitValue = nonNegativeSearchInteger(n, "Search limit");
     return this;
   }
 
@@ -210,13 +217,17 @@ export class SearchBuilder<M = Model> {
    * ```
    */
   facetRange<K extends Field<M>>(field: K, buckets: number[], labels?: string[]): this {
-    this.facetRangeList.push({ field: field as string, buckets: [...buckets], labels });
+    this.facetRangeList.push({
+      field: field as string,
+      buckets: buckets.map((bucket) => finiteSearchNumber(bucket, "Facet bucket")),
+      labels,
+    });
     return this;
   }
 
   /** Ranking score threshold (0..1). Drops hits below the floor. */
   minScore(value: number): this {
-    this.minScoreValue = value;
+    this.minScoreValue = finiteSearchNumber(value, "Minimum score");
     return this;
   }
 
@@ -266,7 +277,10 @@ export class SearchBuilder<M = Model> {
   }
 
   crop<K extends Field<M>>(field: K, length?: number): this {
-    this.cropConfig.push({ field: field as string, length });
+    this.cropConfig.push({
+      field: field as string,
+      length: length === undefined ? undefined : positiveSearchInteger(length, "Crop length"),
+    });
     return this;
   }
 
@@ -287,13 +301,13 @@ export class SearchBuilder<M = Model> {
 
   /** Per-column bm25 weights — order matches the FTS5 column order. */
   bm25Weights(weights: number[]): this {
-    this.bm25WeightsList = [...weights];
+    this.bm25WeightsList = weights.map((weight) => finiteSearchNumber(weight, "BM25 weight"));
     return this;
   }
 
   /** Vector search — supply an embedding vector for k-NN retrieval. */
   vector(vector: number[]): this {
-    this.vectorList = [...vector];
+    this.vectorList = vector.map((value) => finiteSearchNumber(value, "Vector component"));
     return this;
   }
 
@@ -305,7 +319,11 @@ export class SearchBuilder<M = Model> {
 
   /** Geo sort — closest first by default. Use `dir="desc"` for farthest first. */
   orderByGeo(lat: number, lng: number, direction: "asc" | "desc" = "asc"): this {
-    this.geoSortConfig = { lat, lng, direction };
+    this.geoSortConfig = {
+      lat: finiteSearchNumber(lat, "Latitude"),
+      lng: finiteSearchNumber(lng, "Longitude"),
+      direction: validSearchDirection(direction),
+    };
     return this;
   }
 
@@ -325,6 +343,8 @@ export class SearchBuilder<M = Model> {
   }
 
   async paginate(perPage = 15, page = 1): Promise<SearchPaginatorResult<M>> {
+    positiveSearchInteger(perPage, "Search page size");
+    positiveSearchInteger(page, "Search page");
     const result: SearchPage = await getSearchEngine().paginate(this.buildQuery(), perPage, page);
     const data = await this.hydrate(result.hits);
     return {
@@ -341,11 +361,14 @@ export class SearchBuilder<M = Model> {
    * Returns engine hits and pagination metadata without ORM hydration.
    */
   async rawPaginate(perPage = 15, page = 1): Promise<SearchPage> {
+    positiveSearchInteger(perPage, "Search page size");
+    positiveSearchInteger(page, "Search page");
     return getSearchEngine().paginate(this.buildQuery(), perPage, page);
   }
 
   /** Page-shape result that always carries facet distribution when facets are set. */
   async fetch(limit?: number): Promise<SearchFetchResult<M>> {
+    if (limit !== undefined) nonNegativeSearchInteger(limit, "Search limit");
     const result = await getSearchEngine().paginate(this.buildQuery(), limit ?? this.limitValue ?? 20, 1);
     const data = await this.hydrate(result.hits);
     return {
@@ -364,6 +387,8 @@ export class SearchBuilder<M = Model> {
   }
 
   async simplePaginate(perPage = 15, page = 1): Promise<SearchSimplePaginatorResult<M>> {
+    positiveSearchInteger(perPage, "Search page size");
+    positiveSearchInteger(page, "Search page");
     const q = this.buildQuery();
     q.limit = perPage + 1;
     q.offset = (page - 1) * perPage;
@@ -374,6 +399,7 @@ export class SearchBuilder<M = Model> {
   }
 
   async *cursor(chunkSize = 100): AsyncGenerator<M> {
+    positiveSearchInteger(chunkSize, "Search cursor chunk size");
     let offset = 0;
     while (true) {
       const q = this.buildQuery();
@@ -403,7 +429,7 @@ export class SearchBuilder<M = Model> {
       return this;
     }
     const hasOp = value !== undefined;
-    const op = (hasOp ? (opOrValue as CmpOp) : "=") as CmpOp;
+    const op = validSearchOperator(hasOp ? opOrValue : "=");
     const v = hasOp ? value : opOrValue;
     this.filters.push({ kind: "cmp", bool, field: fieldOrCb as string, op, value: v });
     return this;

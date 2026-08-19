@@ -418,7 +418,7 @@ export class BelongsToMany<T extends Record<string, any> = Model, RelatedFixed e
 
   protected newExistenceQuery(parentTable: string, aggregate: string, callback?: (query: Builder<any>) => void | Builder<any>): Builder<any> {
     const relatedTable = this.related.getQualifiedTable(this.parent.getConnection());
-    const query = this.decoratePivotQuery((this.related as any).on(this.parent.getConnection()).select(aggregate));
+    const query = this.decoratePivotQuery((this.related as any).on(this.parent.getConnection()).selectRaw(aggregate));
     query.join(
       this.qualifiedPivotTable(),
       `${this.table}.${this.relatedPivotKey}`,

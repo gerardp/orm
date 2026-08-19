@@ -144,6 +144,14 @@ describe("Soft Deletes, Scopes, and Relation Queries", () => {
     expect(usersWithCounts[0].getAttribute("posts_sum_views")).toBe(40);
   });
 
+  test("whereHas quotes callback values that look like SQL expressions", async () => {
+    const malicious = "CURRENT_TIMESTAMP OR 1=1 --";
+    const query = ScopedUser.whereHas("posts", (related) => related.where("title", malicious));
+
+    expect(query.toSql()).toContain("'CURRENT_TIMESTAMP OR 1=1 --'");
+    expect(await query.get()).toHaveLength(0);
+  });
+
   test("whereHas works for belongsToMany relations", async () => {
     const user = await ScopedUser.create({ name: "Role User", active: true });
     const role = await ScopedRole.create({ title: "Maintainer" });

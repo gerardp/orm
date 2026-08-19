@@ -151,6 +151,37 @@ describe("SqliteFTS5Engine — whereRaw bindings", () => {
   });
 });
 
+describe("SqliteFTS5Engine — SQL boundary validation", () => {
+  test("rejects unsafe direct SearchQuery operators and limits", async () => {
+    const { engine } = freshEngine();
+    engine.configureIndex("posts_fts", { columns: ["title"] });
+    await engine.createIndex("posts_fts");
+
+    await expect(engine.search({
+      index: "posts_fts",
+      query: "",
+      filters: [{ kind: "cmp", bool: "and", field: "title", op: "= ? OR 1=1 --" as any, value: "x" }],
+      sorts: [],
+    })).rejects.toThrow("Invalid search comparison operator");
+
+    await expect(engine.search({
+      index: "posts_fts",
+      query: "",
+      filters: [],
+      sorts: [],
+      limit: "1; DROP TABLE posts_fts; --" as any,
+    })).rejects.toThrow("non-negative integer");
+  });
+
+  test("rejects unsafe journal modes before executing a PRAGMA", () => {
+    const conn = new Connection({ url: "sqlite://:memory:" });
+    expect(() => new SqliteFTS5Engine({
+      connection: conn,
+      journalMode: "WAL; DROP TABLE users; --",
+    })).toThrow("Invalid SQLite journal mode");
+  });
+});
+
 describe("SqliteFTS5Engine — :memory: + WAL options", () => {
   test("memory: true opens in-memory SQLite", async () => {
     const engine = new SqliteFTS5Engine({ memory: true });

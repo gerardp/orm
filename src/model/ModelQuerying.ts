@@ -50,12 +50,12 @@ export class ModelQuerying<T extends Record<string, any> = any> extends ModelRel
     return (this as any).query().orderBy(column, direction);
   }
 
-  static orderByRaw<M extends ModelConstructor>(this: M, sql: string): Builder<InstanceType<M>> {
-    return (this as any).query().orderByRaw(sql);
+  static orderByRaw<M extends ModelConstructor>(this: M, sql: string, bindings: readonly unknown[] = []): Builder<InstanceType<M>> {
+    return (this as any).query().orderByRaw(sql, bindings);
   }
 
-  static groupByRaw<M extends ModelConstructor>(this: M, sql: string): Builder<InstanceType<M>> {
-    return (this as any).query().groupByRaw(sql);
+  static groupByRaw<M extends ModelConstructor>(this: M, sql: string, bindings: readonly unknown[] = []): Builder<InstanceType<M>> {
+    return (this as any).query().groupByRaw(sql, bindings);
   }
 
   static orderByDesc<M extends ModelConstructor>(this: M, column: any): Builder<InstanceType<M>> {
@@ -78,12 +78,12 @@ export class ModelQuerying<T extends Record<string, any> = any> extends ModelRel
     return (this as any).query().orHaving(column, operator, value);
   }
 
-  static havingRaw<M extends ModelConstructor>(this: M, sql: string): Builder<InstanceType<M>> {
-    return (this as any).query().havingRaw(sql);
+  static havingRaw<M extends ModelConstructor>(this: M, sql: string, bindings: readonly unknown[] = []): Builder<InstanceType<M>> {
+    return (this as any).query().havingRaw(sql, bindings);
   }
 
-  static orHavingRaw<M extends ModelConstructor>(this: M, sql: string): Builder<InstanceType<M>> {
-    return (this as any).query().orHavingRaw(sql);
+  static orHavingRaw<M extends ModelConstructor>(this: M, sql: string, bindings: readonly unknown[] = []): Builder<InstanceType<M>> {
+    return (this as any).query().orHavingRaw(sql, bindings);
   }
 
   static select<M extends ModelConstructor>(this: M, ...columns: any[]): Builder<InstanceType<M>> {
@@ -94,8 +94,8 @@ export class ModelQuerying<T extends Record<string, any> = any> extends ModelRel
     return (this as any).query().addSelect(...columns);
   }
 
-  static selectRaw<M extends ModelConstructor>(this: M, sql: string): Builder<InstanceType<M>> {
-    return (this as any).query().selectRaw(sql);
+  static selectRaw<M extends ModelConstructor>(this: M, sql: string, bindings: readonly unknown[] = []): Builder<InstanceType<M>> {
+    return (this as any).query().selectRaw(sql, bindings);
   }
 
   static from<M extends ModelConstructor>(this: M, table: string): Builder<InstanceType<M>> {
@@ -195,8 +195,8 @@ export class ModelQuerying<T extends Record<string, any> = any> extends ModelRel
     return (this as any).query().whereNotBetween(column, values);
   }
 
-  static whereRaw<M extends ModelConstructor>(this: M, sql: string): Builder<InstanceType<M>> {
-    return (this as any).query().whereRaw(sql);
+  static whereRaw<M extends ModelConstructor>(this: M, sql: string, bindings: readonly unknown[] = []): Builder<InstanceType<M>> {
+    return (this as any).query().whereRaw(sql, bindings);
   }
 
   static whereColumn<M extends ModelConstructor>(this: M, first: string, operator: string, second: string): Builder<InstanceType<M>> {

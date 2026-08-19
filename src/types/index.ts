@@ -72,12 +72,14 @@ export interface WhereClause {
   not?: boolean;
   dateType?: string;
   query?: WhereClause[];
+  bindings?: readonly unknown[];
 }
 
 export interface OrderClause {
   column: string;
   direction: "asc" | "desc";
   raw?: boolean;
+  bindings?: readonly unknown[];
 }
 
 export interface HavingClause {
@@ -86,6 +88,7 @@ export interface HavingClause {
   value?: any;
   sql?: string;
   boolean: "and" | "or";
+  bindings?: readonly unknown[];
 }
 
 export interface UnionClause {

@@ -119,7 +119,7 @@ export class MorphTo<T extends Record<string, any> = Model> {
   getRelationExistenceSqlForType(parentTable: string, type: string, callback?: (query: Builder<any>) => void | Builder<any>): string {
     const Related = this.resolveRelated(type);
     if (!Related) this.throwMissingMorph(type);
-    const query = (Related as any).on(this.parent.getConnection()).select("1");
+    const query = (Related as any).on(this.parent.getConnection()).selectRaw("1");
     query.whereColumn(`${Related.getQualifiedTable(this.parent.getConnection())}.${Related.primaryKey}`, "=", `${parentTable}.${this.idColumn}`);
     query.where(`${parentTable}.${this.typeColumn}`, type);
     if (callback) callback(query);
@@ -312,7 +312,7 @@ export class MorphOne<T extends Record<string, any> = Model, N extends string = 
   }
 
   protected newExistenceQuery(parentTable: string, aggregate: string, callback?: (query: Builder<any>) => void | Builder<any>): Builder<any> {
-    const query = (this.related as any).on(this.parent.getConnection()).select(aggregate);
+    const query = (this.related as any).on(this.parent.getConnection()).selectRaw(aggregate);
     query.whereColumn(`${this.related.getQualifiedTable(this.parent.getConnection())}.${this.idColumn}`, "=", `${parentTable}.${this.localKey}`);
     query.where(`${this.related.getQualifiedTable(this.parent.getConnection())}.${this.typeColumn}`, this.getMorphType());
     if (callback) callback(query);
@@ -472,7 +472,7 @@ export class MorphMany<T extends Record<string, any> = Model, N extends string =
   }
 
   protected newExistenceQuery(parentTable: string, aggregate: string, callback?: (query: Builder<any>) => void | Builder<any>): Builder<any> {
-    const query = (this.related as any).on(this.parent.getConnection()).select(aggregate);
+    const query = (this.related as any).on(this.parent.getConnection()).selectRaw(aggregate);
     query.whereColumn(`${this.related.getQualifiedTable(this.parent.getConnection())}.${this.idColumn}`, "=", `${parentTable}.${this.localKey}`);
     query.where(`${this.related.getQualifiedTable(this.parent.getConnection())}.${this.typeColumn}`, this.getMorphType());
     if (callback) callback(query);
@@ -964,7 +964,7 @@ export class MorphToMany<
 
   protected newExistenceQuery(parentTable: string, aggregate: string, callback?: (query: Builder<any>) => void | Builder<any>): Builder<any> {
     const relatedTable = this.related.getQualifiedTable(this.parent.getConnection());
-    const query = this.decoratePivotQuery((this.related as any).on(this.parent.getConnection()).select(aggregate));
+    const query = this.decoratePivotQuery((this.related as any).on(this.parent.getConnection()).selectRaw(aggregate));
     query.join(
       this.qualifiedPivotTable(),
       `${this.table}.${this.relatedPivotKey}`,

@@ -255,7 +255,7 @@ export class Migrator {
   private async getLastBatchNumber(): Promise<number> {
     await this.ensureMigrationsTable();
     const result = await this.scopedMigrations()
-      .select("MAX(batch) as batch")
+      .selectRaw("MAX(batch) as batch")
       .first();
     return (result as any)?.batch || 0;
   }

@@ -12,6 +12,7 @@ import type {
   SearchCapabilities,
   SearchableRecord,
 } from "../SearchEngine.js";
+import { finiteSearchNumber, nonNegativeSearchInteger, validSearchOperator } from "../sqlSafety.js";
 import { computeMatchesPosition } from "../matchPositions.js";
 
 /** Type-safe helper for defining an FTS5 schema from a model's attribute interface. */
@@ -95,7 +96,14 @@ export class SqliteFTS5Engine implements SearchEngine {
     }
     this.shared = options.shared === true;
     this.useTriggers = options.useTriggers === true;
-    this.journalModeTarget = options.journalMode ?? (options.walMode ? "WAL" : undefined);
+    const journalMode = options.journalMode ?? (options.walMode ? "WAL" : undefined);
+    if (journalMode) {
+      const normalized = journalMode.toUpperCase();
+      if (!["DELETE", "TRUNCATE", "PERSIST", "MEMORY", "WAL", "OFF"].includes(normalized)) {
+        throw new Error(`Invalid SQLite journal mode: ${journalMode}`);
+      }
+      this.journalModeTarget = normalized;
+    }
     if (options.indexes) {
       for (const [name, cfg] of Object.entries(options.indexes)) {
         this.indexConfigs.set(name, cfg);
@@ -252,7 +260,7 @@ export class SqliteFTS5Engine implements SearchEngine {
       ...cfg.columns.map((c) => this.quoteIdent(c)),
       ...(cfg.unindexed ?? []).map((c) => `${this.quoteIdent(c)} UNINDEXED`),
     ];
-    const tokenizer = cfg.tokenizer ? `tokenize = ${JSON.stringify(cfg.tokenizer)}` : null;
+    const tokenizer = cfg.tokenizer ? `tokenize = ${this.quoteLiteral(cfg.tokenizer)}` : null;
     const contentClause: string[] = [];
     if (cfg.contentTable) contentClause.push(`content = ${this.quoteIdent(cfg.contentTable)}`);
     if (cfg.contentRowid) contentClause.push(`content_rowid = ${this.quoteIdent(cfg.contentRowid)}`);
@@ -508,8 +516,12 @@ export class SqliteFTS5Engine implements SearchEngine {
     const groupClause = havingClause ? ` GROUP BY rowid` : "";
 
     const sortClause = this.compileSort(query);
-    const limitClause = limit !== undefined ? ` LIMIT ${limit}` : "";
-    const offsetClause = offset !== undefined && offset > 0 ? ` OFFSET ${offset}` : "";
+    const limitClause = limit !== undefined
+      ? ` LIMIT ${nonNegativeSearchInteger(limit, "Search limit")}`
+      : "";
+    const offsetClause = offset !== undefined && offset > 0
+      ? ` OFFSET ${nonNegativeSearchInteger(offset, "Search offset")}`
+      : "";
 
     const sql = `SELECT ${selectFrags.join(", ")} FROM ${t}` +
       (where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "") +
@@ -571,8 +583,10 @@ export class SqliteFTS5Engine implements SearchEngine {
       const caseFrags: string[] = [];
       const labels: string[] = [];
       for (let i = 0; i < buckets.length; i++) {
-        const lo = buckets[i];
-        const hi = buckets[i + 1];
+        const lo = finiteSearchNumber(buckets[i], "Facet bucket");
+        const hi = buckets[i + 1] === undefined
+          ? undefined
+          : finiteSearchNumber(buckets[i + 1], "Facet bucket");
         const label = range.labels?.[i] ?? (hi !== undefined ? `${lo}-${hi}` : `${lo}+`);
         labels.push(label);
         if (hi !== undefined) {
@@ -641,8 +655,9 @@ export class SqliteFTS5Engine implements SearchEngine {
   private compileFilter(f: SearchFilter, bindings: any[]): string {
     switch (f.kind) {
       case "cmp": {
+        const operator = validSearchOperator(f.op);
         bindings.push(f.value);
-        return `${this.quoteIdent(f.field)} ${f.op} ?`;
+        return `${this.quoteIdent(f.field)} ${operator} ?`;
       }
       case "in": {
         const ph = f.values.map(() => "?").join(", ");

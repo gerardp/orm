@@ -78,6 +78,16 @@ describe("SearchBuilder filter compilation + execution", () => {
     expect(filters[4]).toMatchObject({ kind: "in", values: ["x"], negate: true });
   });
 
+  test("rejects unsafe operators and numeric SQL clauses at runtime", async () => {
+    await setup();
+    const search = (Post as any).search("");
+
+    expect(() => search.where("rank", "= ? OR 1=1 --", 0)).toThrow("Invalid search comparison operator");
+    expect(() => search.orderBy("rank", "desc; DROP TABLE posts; --")).toThrow("Invalid search order direction");
+    expect(() => search.take("1; DROP TABLE posts; --")).toThrow("non-negative integer");
+    expect(() => search.facetRange("rank", [0, "1); DROP TABLE posts; --"])).toThrow("finite number");
+  });
+
   test("whereBetween + whereNotBetween + whereNull + whereRaw", async () => {
     const engine = await setup();
     await (Post as any).search("")

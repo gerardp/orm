@@ -655,7 +655,7 @@ export abstract class Relation<T extends ModelType = ModelType> {
   }
 
   protected newExistenceQuery(parentQuery: Builder<any>, aggregate: string, callback?: (query: Builder<any>) => void | Builder<any>): Builder<any> {
-    const query = (this.related as any).on(parentQuery.connection).select(aggregate);
+    const query = (this.related as any).on(parentQuery.connection).selectRaw(aggregate);
     query.whereColumn(`${this.related.getQualifiedTable(parentQuery.connection)}.${this.foreignKey}`, "=", `${parentQuery.tableName}.${this.localKey}`);
     if (callback) callback(query);
     return query;
@@ -883,7 +883,7 @@ export class BelongsTo<T extends ModelType = ModelType> extends Relation<T> {
   }
 
   protected newExistenceQuery(parentQuery: Builder<any>, aggregate: string, callback?: (query: Builder<any>) => void | Builder<any>): Builder<any> {
-    const query = (this.related as any).on(parentQuery.connection).select(aggregate);
+    const query = (this.related as any).on(parentQuery.connection).selectRaw(aggregate);
     query.whereColumn(`${this.related.getQualifiedTable(parentQuery.connection)}.${this.localKey}`, "=", `${parentQuery.tableName}.${this.foreignKey}`);
     if (callback) callback(query);
     return query;
@@ -977,7 +977,7 @@ export class HasManyThrough<T extends ModelType = ModelType> extends Relation<T>
   protected newExistenceQuery(parentQuery: Builder<any>, aggregate: string, callback?: (query: Builder<any>) => void | Builder<any>): Builder<any> {
     const throughTable = this.through.getQualifiedTable(parentQuery.connection);
     const relatedTable = this.related.getQualifiedTable(parentQuery.connection);
-    const query = (this.related as any).on(parentQuery.connection).select(aggregate);
+    const query = (this.related as any).on(parentQuery.connection).selectRaw(aggregate);
     query.join(
       throughTable,
       `${throughTable}.${this.secondLocalKey}`,

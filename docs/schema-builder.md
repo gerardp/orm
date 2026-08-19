@@ -169,6 +169,7 @@ table.string("email").unique();              // UNIQUE constraint
 table.string("slug").index();                // INDEX
 table.string("name").nullable();             // NULL allowed
 table.integer("role").default(1);            // DEFAULT 1
+table.timestamp("published_at").default(Schema.raw("CURRENT_TIMESTAMP"));
 table.string("code").comment("SKU code");    // COMMENT
 table.integer("user_id").unsigned();         // UNSIGNED (MySQL)
 table.string("uuid").primary();              // Composite/custom primary key column
@@ -187,6 +188,8 @@ table.string("phone").after("email");        // Column position (MySQL)
 | `.after(column)` | Place a newly added column after another one (MySQL) |
 
 Modifiers are chainable in any order before the next column is added.
+
+String defaults are always literals, including `"CURRENT_TIMESTAMP"`. Use `Schema.raw(...)` only for a trusted database expression; its contents are inserted into migration SQL verbatim.
 
 ## Convenience helpers
 

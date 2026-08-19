@@ -2,7 +2,7 @@ import { Grammar } from "./Grammar.js";
 
 export class MySqlGrammar extends Grammar {
   wrap(value: string): string {
-    if (value.includes(" as ")) {
+    if (/\s+as\s+/i.test(value)) {
       const [column, alias] = value.split(/\s+as\s+/i);
       return `${this.wrap(column)} AS ${this.wrap(alias)}`;
     }
@@ -10,6 +10,7 @@ export class MySqlGrammar extends Grammar {
       return value.split(".").map((v) => this.wrap(v)).join(".");
     }
     if (value === "*") return value;
+    value = this.unwrapIdentifier(value);
     return `\`${value.replaceAll("`", "``")}\``;
   }
 

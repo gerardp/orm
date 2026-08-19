@@ -2,7 +2,7 @@ import { Grammar } from "./Grammar.js";
 
 export class PostgresGrammar extends Grammar {
   wrap(value: string): string {
-    if (value.includes(" as ")) {
+    if (/\s+as\s+/i.test(value)) {
       const [column, alias] = value.split(/\s+as\s+/i);
       return `${this.wrap(column)} AS ${this.wrap(alias)}`;
     }
@@ -10,6 +10,7 @@ export class PostgresGrammar extends Grammar {
       return value.split(".").map((v) => this.wrap(v)).join(".");
     }
     if (value === "*") return value;
+    value = this.unwrapIdentifier(value);
     return `"${value.replaceAll('"', '""')}"`;
   }
 
@@ -57,7 +58,8 @@ export class PostgresGrammar extends Grammar {
   }
 
   compileJsonContains(column: string, value: any, binding?: (value: any) => string): string {
-    return `${column} @> ${binding ? binding(JSON.stringify([value])) : this.escape(JSON.stringify([value]))}`;
+    const expected = binding ? binding(JSON.stringify([value])) : this.escape(JSON.stringify([value]));
+    return `${column}::jsonb @> ${expected}::jsonb`;
   }
 
   compileJsonLength(column: string, operator: string, value: any, binding?: (value: any) => string): string {

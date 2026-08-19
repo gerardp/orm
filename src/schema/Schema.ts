@@ -8,6 +8,7 @@ import { ConnectionManager } from "../connection/ConnectionManager.js";
 import { TenantContext } from "../connection/TenantContext.js";
 import { TransactionContext } from "../connection/TransactionContext.js";
 import { declaredColumnLength } from "../utils.js";
+import { SchemaRawExpression } from "./RawExpression.js";
 
 export interface SchemaColumn {
   name: string;
@@ -38,6 +39,10 @@ export interface SchemaForeignKey {
 
 export class Schema {
   static connection: Connection;
+
+  static raw(sql: string): SchemaRawExpression {
+    return new SchemaRawExpression(sql);
+  }
 
   static setConnection(connection: Connection): void {
     this.connection = connection;

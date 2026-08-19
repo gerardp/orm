@@ -219,8 +219,8 @@ User.where("a", 1).orWhereNull("email");
 // Compare two columns
 User.whereColumn("updated_at", ">", "created_at");
 
-// Raw SQL fragment
-User.whereRaw("LENGTH(name) > 10");
+// Raw SQL fragment; values belong in the bindings array
+User.whereRaw("LENGTH(name) > ?", [10]);
 
 // Subquery EXISTS / NOT EXISTS
 User.whereExists("SELECT 1 FROM orders WHERE orders.user_id = users.id");
@@ -895,9 +895,12 @@ User.fromSub(User.where("price", ">", 100), "expensive");
 User.select("*").distinct();
 User.orderByRaw("LOWER(name) ASC");
 User.selectRaw("DATE(created_at) as day, COUNT(*) as total").groupByRaw("DATE(created_at)");
+User.orderByRaw("CASE WHEN role = ? THEN 0 ELSE 1 END", [preferredRole]);
 ```
 
-`selectRaw` and `orderByRaw` accept the same `?` placeholders as the rest of the builder — never interpolate user input.
+`whereRaw`, `selectRaw`, `orderByRaw`, `groupByRaw`, and `havingRaw` accept `?` placeholders plus a bindings array. The SQL fragment itself is trusted developer input: never interpolate request data, and use the ordinary `select`, `where`, `groupBy`, and `orderBy` methods whenever possible. Ordinary column methods always quote their arguments; SQL expressions must be explicit through a `*Raw` method.
+
+Builder instances passed to `fromSub`, `union`, `unionAll`, and `withRecursive` keep their bindings. A string passed as a subquery is raw SQL and must therefore contain no untrusted input.
 
 ## Locking
 
@@ -1014,7 +1017,7 @@ await Room.whereBetween("capacity", [2, 8]).orderByDesc("capacity").get();
 | `orWhereNotExists(...)` | OR `NOT EXISTS` |
 | `whereColumn(a, op, b)` | Compare two columns |
 | `orWhereColumn(...)` | OR column compare |
-| `whereRaw(sql)` | Raw SQL where clause |
+| `whereRaw(sql, bindings?)` | Raw SQL where clause |
 | `orWhereRaw(...)` | OR raw SQL |
 | `whereDate / whereDay / whereMonth / whereYear / whereTime` | Date-part filters |
 | `whereJsonContains(col, val)` | JSON membership (cross-DB) |
@@ -1026,11 +1029,11 @@ await Room.whereBetween("capacity", [2, 8]).orderByDesc("capacity").get();
 | `whereKeyNot(id \| ids)` | Exclude by primary key |
 | `orderBy(col, dir)` | Sort |
 | `orderByDesc(col)` | Sort descending shorthand |
-| `orderByRaw(sql)` | Raw `ORDER BY` |
+| `orderByRaw(sql, bindings?)` | Raw `ORDER BY` |
 | `latest(col?)` / `oldest(col?)` | Order by timestamp |
 | `inRandomOrder()` | RANDOM ordering |
 | `reorder(col?, dir?)` | Clear / replace orders |
-| `groupBy(...cols)` / `groupByRaw(sql)` | Group |
+| `groupBy(...cols)` / `groupByRaw(sql, bindings?)` | Group |
 | `having / havingRaw / orHaving / orHavingRaw` | Group filters |
 | `join / leftJoin / rightJoin / crossJoin` | Joins |
 | `union(query)` / `unionAll(query)` | Set ops |

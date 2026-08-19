@@ -12,6 +12,7 @@ import type {
   SearchCapabilities,
   SearchableRecord,
 } from "../SearchEngine.js";
+import { finiteSearchNumber, nonNegativeSearchInteger, validSearchOperator } from "../sqlSafety.js";
 import { computeMatchesPosition } from "../matchPositions.js";
 
 export interface PostgresFTSIndexConfig {
@@ -636,8 +637,12 @@ export class PostgresFTSEngine implements SearchEngine {
     const groupClause = havingClause ? ` GROUP BY ${groupBy.join(", ")}` : "";
 
     const sortClause = this.compileSort(query, hasMatch, lang, vectorExpr);
-    const limitClause = limit !== undefined ? ` LIMIT ${limit}` : "";
-    const offsetClause = offset !== undefined && offset > 0 ? ` OFFSET ${offset}` : "";
+    const limitClause = limit !== undefined
+      ? ` LIMIT ${nonNegativeSearchInteger(limit, "Search limit")}`
+      : "";
+    const offsetClause = offset !== undefined && offset > 0
+      ? ` OFFSET ${nonNegativeSearchInteger(offset, "Search offset")}`
+      : "";
 
     const sql = `SELECT ${selectFrags.join(", ")} FROM ${t}` +
       (where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "") +
@@ -731,8 +736,10 @@ export class PostgresFTSEngine implements SearchEngine {
       const f = this.quoteIdent(range.field);
 
       for (let i = 0; i < buckets.length; i++) {
-        const lo = buckets[i];
-        const hi = buckets[i + 1];
+        const lo = finiteSearchNumber(buckets[i], "Facet bucket");
+        const hi = buckets[i + 1] === undefined
+          ? undefined
+          : finiteSearchNumber(buckets[i + 1], "Facet bucket");
         const label = range.labels?.[i] ?? (hi !== undefined ? `${lo}-${hi}` : `${lo}+`);
         labels.push(label);
         if (hi !== undefined) {
@@ -778,17 +785,18 @@ export class PostgresFTSEngine implements SearchEngine {
     const nextPlaceholder = () => `$${counter.val++}`;
     switch (f.kind) {
       case "cmp": {
+        const operator = validSearchOperator(f.op);
         if (f.value === null) {
-          const expr = f.op === "!=" ? `${this.quoteIdent(f.field)} IS NOT NULL` : `${this.quoteIdent(f.field)} IS NULL`;
+          const expr = operator === "!=" ? `${this.quoteIdent(f.field)} IS NOT NULL` : `${this.quoteIdent(f.field)} IS NULL`;
           return f.negate ? `NOT (${expr})` : expr;
         }
         if (typeof f.value === "number") {
           // Cast field to numeric for proper comparison.
           bindings.push(f.value);
-          return `${this.quoteIdent(f.field)}::numeric ${f.op} ${nextPlaceholder()}`;
+          return `${this.quoteIdent(f.field)}::numeric ${operator} ${nextPlaceholder()}`;
         }
         bindings.push(this.textValue(f.value));
-        const expr = `${this.quoteIdent(f.field)} ${f.op} ${nextPlaceholder()}`;
+        const expr = `${this.quoteIdent(f.field)} ${operator} ${nextPlaceholder()}`;
         return f.negate ? `NOT (${expr})` : expr;
       }
       case "in": {

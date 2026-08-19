@@ -3,7 +3,7 @@ import { formatDateForDriver } from "../utils.js";
 import { TransactionContext } from "../connection/TransactionContext.js";
 import { Cache } from "../cache/index.js";
 import { MorphTo } from "../model/MorphRelations.js";
-import type { WhereClause, OrderClause, HavingClause, UnionClause } from "../types/index.js";
+import type { WhereClause, OrderClause, HavingClause } from "../types/index.js";
 import type { AttachedToRelationName, BelongsToRelationName, EagerLoadDefinition, EagerLoadInput, Model, ModelAttributeInput, ModelColumn, ModelColumnValue, ModelConstructor, ModelRelationName, MorphToRelationName, TypedEagerLoad, TypedConstraintMap, TypedConstraintSelection, TypedExistsConstraintMap, ExtractStringPaths, WithLoadedRelations, WithLoadedRelationsFromConstraintMap, WithRelationCount, WithRelationExists, WithRelationExistsMap, Relation, RelationConstraintQuery, NestedRelationPath, LiteralUnion, RelationRelatedModel, MorphToConstraintCallback } from "../model/Model.js";
 import { findRelationMethod, HasMany, Model as BaseModel } from "../model/Model.js";
 import { ObserverRegistry } from "../model/Observer.js";
@@ -44,6 +44,52 @@ type RecursiveCteDefinition = {
   anchor: Builder<any> | string;
   recursive: Builder<any> | string;
 };
+type RawFragment = { sql: string; bindings: readonly unknown[] };
+type UnionDefinition = { query: Builder<any> | string; all: boolean };
+
+const QUERY_OPERATORS = new Set([
+  "=", "!=", "<>", "<", "<=", ">", ">=", "<=>",
+  "LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE",
+  "REGEXP", "NOT REGEXP", "GLOB", "IS", "IS NOT",
+]);
+
+function validOperator(operator: unknown): string {
+  const value = String(operator).trim();
+  if (!QUERY_OPERATORS.has(value.toUpperCase())) {
+    throw new Error(`Invalid query operator: ${String(operator)}`);
+  }
+  return value;
+}
+
+function validBoolean(boolean: unknown): "and" | "or" {
+  const value = String(boolean).toLowerCase();
+  if (value !== "and" && value !== "or") {
+    throw new Error(`Invalid query boolean: ${String(boolean)}`);
+  }
+  return value;
+}
+
+function validDirection(direction: unknown): "asc" | "desc" {
+  const value = String(direction).toLowerCase();
+  if (value !== "asc" && value !== "desc") {
+    throw new Error(`Invalid order direction: ${String(direction)}`);
+  }
+  return value;
+}
+
+function nonNegativeInteger(value: number, label: string): number {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer.`);
+  }
+  return value;
+}
+
+function positiveInteger(value: number, label: string): number {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${label} must be a positive integer.`);
+  }
+  return value;
+}
 type RecursiveTreeConfig = {
   parentColumn: string;
   primaryKey: string;
@@ -234,10 +280,10 @@ export class CursorPaginator<T> {
 export class Builder<T = Record<string, any>, TResult = T> {
   connection: Connection;
   tableName: string;
-  columns: string[] = ["*"];
+  columns: Array<string | RawFragment> = ["*"];
   wheres: WhereClause[] = [];
   orders: OrderClause[] = [];
-  groups: string[] = [];
+  groups: Array<string | RawFragment> = [];
   havings: HavingClause[] = [];
   limitValue?: number;
   offsetValue?: number;
@@ -247,10 +293,12 @@ export class Builder<T = Record<string, any>, TResult = T> {
   eagerLoads: EagerLoadDefinition[] = [];
   randomOrderFlag = false;
   lockMode?: string;
-  unions: UnionClause[] = [];
+  unions: UnionDefinition[] = [];
   recursiveCtes: RecursiveCteDefinition[] = [];
   recursiveTreeConfig?: RecursiveTreeConfig;
   fromRaw?: string;
+  private fromSubQuery?: Builder<any> | string;
+  private fromSubAlias?: string;
   updateJoins: string[] = [];
   bindings: any[] = [];
   private parameterize = false;
@@ -386,6 +434,9 @@ export class Builder<T = Record<string, any>, TResult = T> {
   table(table: string): this {
     this.invalidateSqlCache();
     this.tableName = table;
+    this.fromRaw = undefined;
+    this.fromSubQuery = undefined;
+    this.fromSubAlias = undefined;
     return this;
   }
 
@@ -395,7 +446,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
 
   select(...columns: ModelColumn<T>[]): this {
     this.invalidateSqlCache();
-    this.columns = columns;
+    this.columns = columns as string[];
     return this;
   }
 
@@ -426,7 +477,14 @@ export class Builder<T = Record<string, any>, TResult = T> {
     }
 
     this.invalidateSqlCache();
-    this.wheres.push({ type: "basic", column, operator, value, boolean, scope });
+    this.wheres.push({
+      type: "basic",
+      column,
+      operator: validOperator(operator),
+      value,
+      boolean: validBoolean(boolean),
+      scope,
+    });
     return this;
   }
 
@@ -551,21 +609,43 @@ export class Builder<T = Record<string, any>, TResult = T> {
     return this.whereTime(column, operator, value, "or");
   }
 
-  whereRaw(sql: string, boolean: "and" | "or" = "and", scope?: string): this {
+  whereRaw(sql: string, boolean?: "and" | "or", scope?: string): this;
+  whereRaw(sql: string, bindings?: readonly unknown[], boolean?: "and" | "or", scope?: string): this;
+  whereRaw(
+    sql: string,
+    bindingsOrBoolean: readonly unknown[] | "and" | "or" = [],
+    booleanOrScope: "and" | "or" | string = "and",
+    scope?: string,
+  ): this {
+    const legacy = typeof bindingsOrBoolean === "string";
+    const bindings = legacy ? [] : bindingsOrBoolean;
+    const boolean = validBoolean(legacy ? bindingsOrBoolean : booleanOrScope);
+    const resolvedScope = legacy ? booleanOrScope === "and" || booleanOrScope === "or" ? scope : booleanOrScope : scope;
     this.invalidateSqlCache();
-    this.wheres.push({ type: "raw", column: sql, boolean, scope });
+    this.wheres.push({ type: "raw", column: sql, bindings, boolean, scope: resolvedScope });
     return this;
   }
 
   whereColumn(first: string, operator: string, second: string, boolean: "and" | "or" = "and"): this {
     this.invalidateSqlCache();
-    this.wheres.push({ type: "column", column: first, operator, value: second, boolean });
+    this.wheres.push({ type: "column", column: first, operator: validOperator(operator), value: second, boolean: validBoolean(boolean) });
     return this;
   }
 
-  whereExists(sql: string, boolean: "and" | "or" = "and", not: boolean = false): this {
+  whereExists(sql: string, boolean?: "and" | "or", not?: boolean): this;
+  whereExists(sql: string, bindings?: readonly unknown[], boolean?: "and" | "or", not?: boolean): this;
+  whereExists(
+    sql: string,
+    bindingsOrBoolean: readonly unknown[] | "and" | "or" = [],
+    booleanOrNot: "and" | "or" | boolean = "and",
+    not: boolean = false,
+  ): this {
+    const legacy = typeof bindingsOrBoolean === "string";
+    const bindings = legacy ? [] : bindingsOrBoolean;
+    const boolean = validBoolean(legacy ? bindingsOrBoolean : booleanOrNot);
+    const negate = legacy && typeof booleanOrNot === "boolean" ? booleanOrNot : not;
     this.invalidateSqlCache();
-    this.wheres.push({ type: "exists", column: sql, boolean, operator: not ? "NOT EXISTS" : "EXISTS" });
+    this.wheres.push({ type: "exists", column: sql, bindings, boolean, operator: negate ? "NOT EXISTS" : "EXISTS" });
     return this;
   }
 
@@ -597,20 +677,24 @@ export class Builder<T = Record<string, any>, TResult = T> {
     return this.whereNotIn(column, values, "or", scope);
   }
 
-  orWhereExists(sql: string): this {
-    return this.whereExists(sql, "or");
+  orWhereExists(sql: string, bindings: readonly unknown[] = []): this {
+    return this.whereExists(sql, bindings, "or");
   }
 
-  orWhereNotExists(sql: string): this {
-    return this.whereExists(sql, "or", true);
+  orWhereNotExists(sql: string, bindings: readonly unknown[] = []): this {
+    return this.whereExists(sql, bindings, "or", true);
   }
 
   orWhereColumn(first: string, operator: string, second: string): this {
     return this.whereColumn(first, operator, second, "or");
   }
 
-  orWhereRaw(sql: string, scope?: string): this {
-    return this.whereRaw(sql, "or", scope);
+  orWhereRaw(sql: string, bindings?: readonly unknown[], scope?: string): this;
+  orWhereRaw(sql: string, scope?: string): this;
+  orWhereRaw(sql: string, bindingsOrScope: readonly unknown[] | string = [], scope?: string): this {
+    return Array.isArray(bindingsOrScope)
+      ? this.whereRaw(sql, bindingsOrScope, "or", scope)
+      : this.whereRaw(sql, "or", bindingsOrScope as string);
   }
 
   whereJsonContains(column: ModelColumn<T>, value: any, boolean: "and" | "or" = "and", not: boolean = false): this {
@@ -625,7 +709,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
       operator = "=";
     }
     this.invalidateSqlCache();
-    this.wheres.push({ type: "json_length", column, operator: String(operator), value, boolean, scope: undefined, not });
+    this.wheres.push({ type: "json_length", column, operator: validOperator(operator), value, boolean: validBoolean(boolean), scope: undefined, not });
     return this;
   }
 
@@ -654,25 +738,25 @@ export class Builder<T = Record<string, any>, TResult = T> {
 
   whereAll(columns: ModelColumn<T>[], operator: string, value: any, boolean: "and" | "or" = "and"): this {
     this.invalidateSqlCache();
-    this.wheres.push({ type: "all", column: "", columns: columns as string[], operator, value, boolean, scope: undefined });
+    this.wheres.push({ type: "all", column: "", columns: columns as string[], operator: validOperator(operator), value, boolean: validBoolean(boolean), scope: undefined });
     return this;
   }
 
   whereAny(columns: ModelColumn<T>[], operator: string, value: any, boolean: "and" | "or" = "and"): this {
     this.invalidateSqlCache();
-    this.wheres.push({ type: "any", column: "", columns: columns as string[], operator, value, boolean, scope: undefined });
+    this.wheres.push({ type: "any", column: "", columns: columns as string[], operator: validOperator(operator), value, boolean: validBoolean(boolean), scope: undefined });
     return this;
   }
 
   orderBy(column: ModelColumn<T>, direction: "asc" | "desc" = "asc"): this {
     this.invalidateSqlCache();
-    this.orders.push({ column, direction });
+    this.orders.push({ column, direction: validDirection(direction) });
     return this;
   }
 
-  orderByRaw(sql: string): this {
+  orderByRaw(sql: string, bindings: readonly unknown[] = []): this {
     this.invalidateSqlCache();
-    this.orders.push({ column: sql, direction: "asc", raw: true });
+    this.orders.push({ column: sql, bindings, direction: "asc", raw: true });
     return this;
   }
 
@@ -710,52 +794,63 @@ export class Builder<T = Record<string, any>, TResult = T> {
     return this;
   }
 
-  groupByRaw(sql: string): this {
+  groupByRaw(sql: string, bindings: readonly unknown[] = []): this {
     this.invalidateSqlCache();
-    this.groups.push(sql as any);
+    this.groups.push({ sql, bindings });
     return this;
   }
 
   having(column: ModelColumn<T>, operator: string, value: any): this {
     this.invalidateSqlCache();
-    this.havings.push({ column, operator, value, boolean: "and" });
+    this.havings.push({ column, operator: validOperator(operator), value, boolean: "and" });
     return this;
   }
 
   orHaving(column: ModelColumn<T>, operator: string, value: any): this {
     this.invalidateSqlCache();
-    this.havings.push({ column, operator, value, boolean: "or" });
+    this.havings.push({ column, operator: validOperator(operator), value, boolean: "or" });
     return this;
   }
 
-  havingRaw(sql: string, boolean: "and" | "or" = "and"): this {
+  havingRaw(sql: string, boolean?: "and" | "or"): this;
+  havingRaw(sql: string, bindings?: readonly unknown[], boolean?: "and" | "or"): this;
+  havingRaw(sql: string, bindingsOrBoolean: readonly unknown[] | "and" | "or" = [], boolean: "and" | "or" = "and"): this {
+    const legacy = typeof bindingsOrBoolean === "string";
     this.invalidateSqlCache();
-    this.havings.push({ sql, boolean });
+    this.havings.push({
+      sql,
+      bindings: legacy ? [] : bindingsOrBoolean,
+      boolean: validBoolean(legacy ? bindingsOrBoolean : boolean),
+    });
     return this;
   }
 
-  orHavingRaw(sql: string): this {
-    return this.havingRaw(sql, "or");
+  orHavingRaw(sql: string, bindings: readonly unknown[] = []): this {
+    return this.havingRaw(sql, bindings, "or");
   }
 
   limit(count: number): this {
     this.invalidateSqlCache();
-    this.limitValue = count;
+    this.limitValue = nonNegativeInteger(count, "Limit");
     return this;
   }
 
   offset(count: number): this {
     this.invalidateSqlCache();
-    this.offsetValue = count;
+    this.offsetValue = nonNegativeInteger(count, "Offset");
     return this;
   }
 
   forPage(page: number, perPage: number = 15): this {
-    return this.offset((page - 1) * perPage).limit(perPage);
+    return this.offset((positiveInteger(page, "Page") - 1) * positiveInteger(perPage, "Per-page value")).limit(perPage);
   }
 
   join(table: string, first: string, operator: string, second: string, type: string = "INNER"): this {
-    const joinSql = `${type} JOIN ${this.grammar.wrap(table)} ON ${this.grammar.wrap(first)} ${operator} ${this.grammar.wrap(second)}`;
+    const joinType = String(type).toUpperCase();
+    if (!new Set(["INNER", "LEFT", "RIGHT", "FULL"]).has(joinType)) {
+      throw new Error(`Invalid join type: ${type}`);
+    }
+    const joinSql = `${joinType} JOIN ${this.grammar.wrap(table)} ON ${this.grammar.wrap(first)} ${validOperator(operator)} ${this.grammar.wrap(second)}`;
     this.invalidateSqlCache();
     this.joins.push(joinSql);
     return this;
@@ -776,9 +871,8 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   union(query: Builder<T> | string, all: boolean = false): this {
-    const sql = typeof query === "string" ? query : query.toSql();
     this.invalidateSqlCache();
-    this.unions.push({ query: sql, all });
+    this.unions.push({ query, all });
     return this;
   }
 
@@ -1093,6 +1187,8 @@ export class Builder<T = Record<string, any>, TResult = T> {
       operator = ">=";
       count = 1;
     }
+    operator = validOperator(operator);
+    nonNegativeInteger(count, "Relation count");
     const relation = this.getModelRelation(relationName);
     if (operator === ">=" && count === 1) {
       return this.whereExists(relation.getRelationExistenceSql(this, callback));
@@ -1109,6 +1205,8 @@ export class Builder<T = Record<string, any>, TResult = T> {
       operator = ">=";
       count = 1;
     }
+    operator = validOperator(operator);
+    nonNegativeInteger(count, "Relation count");
     const relation = this.getModelRelation(relationName);
     if (operator === ">=" && count === 1) {
       return this.whereExists(relation.getRelationExistenceSql(this, callback), "or");
@@ -1162,6 +1260,8 @@ export class Builder<T = Record<string, any>, TResult = T> {
     operator: string = ">=",
     count: number = 1
   ): this {
+    operator = validOperator(operator);
+    nonNegativeInteger(count, "Relation count");
     if (!this.model) {
       throw new Error(`Cannot query morph relation "${relationName}" without a model`);
     }
@@ -1213,13 +1313,16 @@ export class Builder<T = Record<string, any>, TResult = T> {
   withCount<A extends string | undefined = undefined>(relationName: LiteralUnion<string & ModelRelationName<TResult>>, alias?: A): Builder<T, WithRelationCount<TResult, string, A>>;
   withCount(relationName: string, alias?: string): any {
     const relation = this.getModelRelation(relationName);
-    this.addSelect(`(${relation.getRelationCountSql(this)}) as ${alias || `${relationName}_count`}`);
+    const resultAlias = alias || `${relationName}_count`;
+    Connection.assertSafeIdentifier(resultAlias, "relation count alias");
+    this.addSelectRaw(`(${relation.getRelationCountSql(this)}) AS ${this.grammar.wrap(resultAlias)}`);
     return this as any;
   }
 
   private addExistsSelect(relationName: string, alias: string, callback?: RelationConstraint<TResult, any>): void {
     const relation = this.getModelRelation(relationName);
-    this.addSelect(`CASE WHEN EXISTS (${relation.getRelationExistenceSql(this, callback)}) THEN 1 ELSE 0 END as ${alias}`);
+    Connection.assertSafeIdentifier(alias, "relation exists alias");
+    this.addSelectRaw(`CASE WHEN EXISTS (${relation.getRelationExistenceSql(this, callback)}) THEN 1 ELSE 0 END AS ${this.grammar.wrap(alias)}`);
     this.booleanResultColumns.add(alias);
   }
 
@@ -1294,22 +1397,36 @@ export class Builder<T = Record<string, any>, TResult = T> {
     return this;
   }
 
-  selectRaw(sql: string): this {
+  selectRaw(sql: string, bindings: readonly unknown[] = []): this {
     this.invalidateSqlCache();
-    this.columns.push(sql);
+    if (this.columns.length === 1 && this.columns[0] === "*") {
+      this.columns = [];
+    }
+    this.columns.push({ sql, bindings });
+    return this;
+  }
+
+  private addSelectRaw(sql: string, bindings: readonly unknown[] = []): this {
+    this.invalidateSqlCache();
+    if (this.columns.length === 1 && this.columns[0] === "*") {
+      this.columns = [`${this.tableName}.*`];
+    }
+    this.columns.push({ sql, bindings });
     return this;
   }
 
   fromSub(query: Builder<any> | string, as: string): this {
-    const sql = typeof query === "string" ? query : query.toSql();
+    Connection.assertSafeIdentifier(as, "subquery alias");
     this.invalidateSqlCache();
-    this.fromRaw = `(${sql}) AS ${this.grammar.wrap(as)}`;
+    this.fromRaw = undefined;
+    this.fromSubQuery = query;
+    this.fromSubAlias = as;
     return this;
   }
 
   updateFrom(table: string, first: string, operator: string, second: string): this {
     this.invalidateSqlCache();
-    this.updateJoins.push(`INNER JOIN ${this.grammar.wrap(table)} ON ${this.grammar.wrap(first)} ${operator} ${this.grammar.wrap(second)}`);
+    this.updateJoins.push(`INNER JOIN ${this.grammar.wrap(table)} ON ${this.grammar.wrap(first)} ${validOperator(operator)} ${this.grammar.wrap(second)}`);
     return this;
   }
 
@@ -1332,6 +1449,8 @@ export class Builder<T = Record<string, any>, TResult = T> {
     cloned.recursiveCtes = [...this.recursiveCtes];
     cloned.recursiveTreeConfig = this.recursiveTreeConfig ? { ...this.recursiveTreeConfig } : undefined;
     cloned.fromRaw = this.fromRaw;
+    cloned.fromSubQuery = this.fromSubQuery;
+    cloned.fromSubAlias = this.fromSubAlias;
     cloned.updateJoins = [...this.updateJoins];
     cloned.bindings = [...this.bindings];
     cloned.parameterize = this.parameterize;
@@ -1355,10 +1474,48 @@ export class Builder<T = Record<string, any>, TResult = T> {
     return this.grammar.placeholder(this.bindings.length);
   }
 
+  private compileRaw(sql: string, bindings: readonly unknown[] = []): string {
+    if (bindings.length === 0) return sql;
+    let index = 0;
+    const compiled = sql.replace(/\?/g, () => {
+      if (index >= bindings.length) {
+        throw new Error("Raw SQL has fewer bindings than placeholders.");
+      }
+      const value = bindings[index++];
+      return this.parameterize ? this.addBinding(value) : this.grammar.escape(value);
+    });
+    if (index !== bindings.length) {
+      throw new Error("Raw SQL has fewer placeholders than bindings.");
+    }
+    return compiled;
+  }
+
+  private compileEmbedded(query: Builder<any> | string): string {
+    if (typeof query === "string") return query;
+    const previousBindings = query.bindings;
+    const previousParameterize = query.parameterize;
+    query.bindings = this.bindings;
+    query.parameterize = this.parameterize;
+    try {
+      return query.toSql();
+    } finally {
+      this.bindings = query.bindings;
+      query.bindings = previousBindings;
+      query.parameterize = previousParameterize;
+    }
+  }
+
+  private compileFrom(): string {
+    if (this.fromSubQuery && this.fromSubAlias) {
+      return `(${this.compileEmbedded(this.fromSubQuery)}) AS ${this.grammar.wrap(this.fromSubAlias)}`;
+    }
+    return this.fromRaw || this.grammar.wrap(this.tableName);
+  }
+
   private compileWhereClause(where: WhereClause, prefix: string): string {
     if (where.type === "basic") {
       const value = this.parameterize ? this.addBinding(where.value) : this.grammar.escape(where.value);
-      return `${prefix} ${this.grammar.wrap(where.column)} ${where.operator} ${value}`;
+      return `${prefix} ${this.grammar.wrap(where.column)} ${validOperator(where.operator)} ${value}`;
     } else if (where.type === "in") {
       const op = where.operator === "NOT IN" ? "NOT IN" : "IN";
       const values = this.parameterize
@@ -1374,7 +1531,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
       const high = this.parameterize ? this.addBinding((where.value as any[])[1]) : this.grammar.escape((where.value as any[])[1]);
       return `${prefix} ${this.grammar.wrap(where.column)} ${op} ${low} AND ${high}`;
     } else if (where.type === "raw") {
-      return `${prefix} ${where.column}`;
+      return `${prefix} ${this.compileRaw(where.column, where.bindings)}`;
     } else if (where.type === "nested") {
       const sql = this.compileWhereClauses(where.query || [], "");
       return `${prefix} (${sql})`;
@@ -1394,30 +1551,30 @@ export class Builder<T = Record<string, any>, TResult = T> {
       if (where.not) sql = `NOT (${sql})`;
       return `${prefix} ${sql}`;
     } else if (where.type === "json_length") {
-      let sql = this.grammar.compileJsonLength(this.grammar.wrap(where.column), where.operator || "=", where.value, this.parameterize ? (v) => this.addBinding(v) : undefined);
+      let sql = this.grammar.compileJsonLength(this.grammar.wrap(where.column), validOperator(where.operator || "="), where.value, this.parameterize ? (v) => this.addBinding(v) : undefined);
       if (where.not) sql = `NOT (${sql})`;
       return `${prefix} ${sql}`;
     } else if (where.type === "date") {
-      const sql = this.grammar.compileDateWhere(where.dateType || "date", this.grammar.wrap(where.column), where.operator || "=", where.value, this.parameterize ? (v) => this.addBinding(v) : undefined);
+      const sql = this.grammar.compileDateWhere(where.dateType || "date", this.grammar.wrap(where.column), validOperator(where.operator || "="), where.value, this.parameterize ? (v) => this.addBinding(v) : undefined);
       return `${prefix} ${sql}`;
     } else if (where.type === "all") {
       const cols = (where.columns || []).map((c) => this.grammar.wrap(c));
       const inner = cols.map((c) => {
         const val = this.parameterize ? this.addBinding(where.value) : this.grammar.escape(where.value);
-        return `${c} ${where.operator} ${val}`;
+        return `${c} ${validOperator(where.operator)} ${val}`;
       }).join(" AND ");
       return `${prefix} (${inner})`;
     } else if (where.type === "any") {
       const cols = (where.columns || []).map((c) => this.grammar.wrap(c));
       const inner = cols.map((c) => {
         const val = this.parameterize ? this.addBinding(where.value) : this.grammar.escape(where.value);
-        return `${c} ${where.operator} ${val}`;
+        return `${c} ${validOperator(where.operator)} ${val}`;
       }).join(" OR ");
       return `${prefix} (${inner})`;
     } else if (where.type === "column") {
-      return `${prefix} ${this.grammar.wrap(where.column)} ${where.operator} ${this.grammar.wrap(where.value)}`;
+      return `${prefix} ${this.grammar.wrap(where.column)} ${validOperator(where.operator)} ${this.grammar.wrap(where.value)}`;
     } else if (where.type === "exists") {
-      return `${prefix} ${where.operator} (${where.column})`;
+      return `${prefix} ${where.operator} (${this.compileRaw(where.column, where.bindings)})`;
     }
     return "";
   }
@@ -1429,7 +1586,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   private compileWhereClauses(wheres: WhereClause[], firstPrefix: string): string {
     if (wheres.length === 0) return "";
     const clauses = wheres.map((where, index) => {
-      const prefix = index === 0 ? "WHERE" : where.boolean.toUpperCase();
+      const prefix = index === 0 ? "WHERE" : validBoolean(where.boolean).toUpperCase();
       const adjustedPrefix = index === 0 ? firstPrefix : prefix;
       return this.compileWhereClause(where, adjustedPrefix);
     });
@@ -1441,23 +1598,29 @@ export class Builder<T = Record<string, any>, TResult = T> {
       return this.grammar.compileRandomOrder();
     }
     if (this.orders.length === 0) return "";
-    return `ORDER BY ${this.orders.map((o) => o.raw ? o.column : `${this.grammar.wrap(o.column)} ${o.direction.toUpperCase()}`).join(", ")}`;
+    return `ORDER BY ${this.orders.map((o) => o.raw
+      ? this.compileRaw(o.column, o.bindings)
+      : `${this.grammar.wrap(o.column)} ${validDirection(o.direction).toUpperCase()}`
+    ).join(", ")}`;
   }
 
   private compileGroups(): string {
     if (this.groups.length === 0) return "";
-    return `GROUP BY ${this.groups.map((c) => String(c).includes("(") || String(c).includes(" ") ? c : this.grammar.wrap(c)).join(", ")}`;
+    return `GROUP BY ${this.groups.map((group) => typeof group === "string"
+      ? this.grammar.wrap(group)
+      : this.compileRaw(group.sql, group.bindings)
+    ).join(", ")}`;
   }
 
   private compileHavings(): string {
     if (this.havings.length === 0) return "";
     const clauses = this.havings.map((h, index) => {
-      const prefix = index === 0 ? "" : h.boolean.toUpperCase() + " ";
+      const prefix = index === 0 ? "" : validBoolean(h.boolean).toUpperCase() + " ";
       if (h.sql) {
-        return prefix + h.sql;
+        return prefix + this.compileRaw(h.sql, h.bindings);
       }
       const value = this.parameterize ? this.addBinding(h.value) : this.grammar.escape(h.value);
-      return prefix + `${this.grammar.wrap(h.column!)} ${h.operator} ${value}`;
+      return prefix + `${this.grammar.wrap(h.column!)} ${validOperator(h.operator)} ${value}`;
     });
     return `HAVING ${clauses.join(" ")}`;
   }
@@ -1473,24 +1636,27 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   private compileColumns(): string {
-    return this.columns.map((c) => (this.isRawColumn(c) ? c : this.grammar.wrap(c))).join(", ");
-  }
-
-  private isRawColumn(column: string): boolean {
-    return column.includes("(") || /\s+as\s+/i.test(column) || /^[0-9]+$/.test(column) || column.endsWith(".*");
+    return this.columns.map((column) => typeof column === "string"
+      ? this.grammar.wrap(column)
+      : this.compileRaw(column.sql, column.bindings)
+    ).join(", ");
   }
 
   private compileRecursiveCtes(): string {
     if (this.recursiveCtes.length === 0) return "";
     const ctes = this.recursiveCtes.map((cte) => {
-      const anchorSql = typeof cte.anchor === "string" ? cte.anchor : cte.anchor.toSql();
-      let recursiveSql = typeof cte.recursive === "string" ? cte.recursive : cte.recursive.toSql();
+      const anchorSql = this.compileEmbedded(cte.anchor);
+      let recursiveSql: string;
       if (this.recursiveTreeConfig && cte.name === this.recursiveTreeConfig.cteName && this.recursiveTreeConfig.maxDepth !== undefined) {
         const recursiveBuilder = typeof cte.recursive === "string" ? null : cte.recursive.clone();
         if (recursiveBuilder) {
-          recursiveBuilder.whereRaw(`${cte.name}.depth < ${this.recursiveTreeConfig.maxDepth}`);
-          recursiveSql = recursiveBuilder.toSql();
+          recursiveBuilder.whereRaw(`${cte.name}.depth < ?`, [this.recursiveTreeConfig.maxDepth]);
+          recursiveSql = this.compileEmbedded(recursiveBuilder);
+        } else {
+          recursiveSql = this.compileEmbedded(cte.recursive);
         }
+      } else {
+        recursiveSql = this.compileEmbedded(cte.recursive);
       }
       return `${this.grammar.wrap(cte.name)} AS (${anchorSql} UNION ALL ${recursiveSql})`;
     });
@@ -1499,9 +1665,11 @@ export class Builder<T = Record<string, any>, TResult = T> {
 
   toSql(): string {
     if (!this.parameterize && this.sqlCache) return this.sqlCache;
+    const cteSql = this.compileRecursiveCtes();
     const distinct = this.distinctFlag ? "DISTINCT " : "";
-    const from = this.fromRaw || this.grammar.wrap(this.tableName);
-    let sql = `SELECT ${distinct}${this.compileColumns()} FROM ${from}`;
+    const columns = this.compileColumns();
+    const from = this.compileFrom();
+    let sql = `SELECT ${distinct}${columns} FROM ${from}`;
     if (this.joins.length > 0) sql += " " + this.joins.join(" ");
     sql += " " + this.compileWheres();
     sql += " " + this.compileGroups();
@@ -1511,9 +1679,8 @@ export class Builder<T = Record<string, any>, TResult = T> {
     sql += " " + this.compileOffset();
     sql += this.grammar.compileLock(this.lockMode);
     for (const union of this.unions) {
-      sql += ` UNION${union.all ? " ALL" : ""} ${union.query}`;
+      sql += ` UNION${union.all ? " ALL" : ""} ${this.compileEmbedded(union.query)}`;
     }
-    const cteSql = this.compileRecursiveCtes();
     if (cteSql) sql = `${cteSql} ${sql}`;
     const compiled = sql.replace(/\s+/g, " ").trim();
     if (!this.parameterize) this.sqlCache = compiled;
@@ -1922,7 +2089,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   private async aggregate(sql: string, alias: string): Promise<any> {
     const query = this.clone();
     query.model = undefined;
-    query.columns = [`${sql} as ${alias}`];
+    query.columns = [{ sql: `${sql} as ${alias}`, bindings: [] }];
     query.orders = [];
     query.limitValue = undefined;
     query.offsetValue = undefined;
@@ -1937,7 +2104,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
     const countSql = column === "*" ? "COUNT(*)" : `COUNT(${this.grammar.wrap(column as string)})`;
     this.bindings = [];
     this.parameterize = true;
-    const from = this.fromRaw || this.grammar.wrap(this.tableName);
+    const from = this.compileFrom();
     const whereSql = this.compileWheres();
     this.parameterize = false;
     const sql = `SELECT ${countSql} as cnt FROM ${from}${whereSql ? " " + whereSql : ""}`;
@@ -1946,9 +2113,9 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async sum(column: ModelColumn<T>): Promise<number> {
-    const sql = `SELECT SUM(${this.grammar.wrap(column as string)}) as sum_val FROM ${this.fromRaw || this.grammar.wrap(this.tableName)}`;
     this.bindings = [];
     this.parameterize = true;
+    const sql = `SELECT SUM(${this.grammar.wrap(column as string)}) as sum_val FROM ${this.compileFrom()}`;
     const whereSql = this.compileWheres();
     this.parameterize = false;
     const fullSql = whereSql ? `${sql}${whereSql}` : sql;
@@ -1957,9 +2124,9 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async avg(column: ModelColumn<T>): Promise<number> {
-    const sql = `SELECT AVG(${this.grammar.wrap(column as string)}) as avg_val FROM ${this.fromRaw || this.grammar.wrap(this.tableName)}`;
     this.bindings = [];
     this.parameterize = true;
+    const sql = `SELECT AVG(${this.grammar.wrap(column as string)}) as avg_val FROM ${this.compileFrom()}`;
     const whereSql = this.compileWheres();
     this.parameterize = false;
     const fullSql = whereSql ? `${sql}${whereSql}` : sql;
@@ -1968,9 +2135,9 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async min<K extends ModelColumn<T>>(column: K): Promise<ModelColumnValue<T, K> | null> {
-    const sql = `SELECT MIN(${this.grammar.wrap(column as string)}) as min_val FROM ${this.fromRaw || this.grammar.wrap(this.tableName)}`;
     this.bindings = [];
     this.parameterize = true;
+    const sql = `SELECT MIN(${this.grammar.wrap(column as string)}) as min_val FROM ${this.compileFrom()}`;
     const whereSql = this.compileWheres();
     this.parameterize = false;
     const fullSql = whereSql ? `${sql}${whereSql}` : sql;
@@ -1979,9 +2146,9 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async max<K extends ModelColumn<T>>(column: K): Promise<ModelColumnValue<T, K> | null> {
-    const sql = `SELECT MAX(${this.grammar.wrap(column as string)}) as max_val FROM ${this.fromRaw || this.grammar.wrap(this.tableName)}`;
     this.bindings = [];
     this.parameterize = true;
+    const sql = `SELECT MAX(${this.grammar.wrap(column as string)}) as max_val FROM ${this.compileFrom()}`;
     const whereSql = this.compileWheres();
     this.parameterize = false;
     const fullSql = whereSql ? `${sql}${whereSql}` : sql;
@@ -1990,6 +2157,8 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async paginate(perPage: number = 15, page: number = 1): Promise<Paginator<TResult>> {
+    positiveInteger(perPage, "Per-page value");
+    positiveInteger(page, "Page");
     const countQuery = this.clone();
     countQuery.limitValue = undefined;
     countQuery.offsetValue = undefined;
@@ -2009,6 +2178,8 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async simplePaginate(perPage: number = 15, page: number = 1): Promise<SimplePaginator<TResult>> {
+    positiveInteger(perPage, "Per-page value");
+    positiveInteger(page, "Page");
     const items = await this.clone().forPage(page, perPage + 1).get() as unknown as Collection<TResult>;
     const hasMore = items.length > perPage;
     const data = new Collection(items.slice(0, perPage));
@@ -2028,6 +2199,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async cursorPaginate(perPage: number = 15, cursor?: string | null): Promise<CursorPaginator<TResult>> {
+    positiveInteger(perPage, "Per-page value");
     if (this.randomOrderFlag) {
       throw new Error("cursorPaginate() does not support inRandomOrder().");
     }
@@ -2067,6 +2239,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async chunk(count: number, callback: (items: Collection<TResult>) => void | Promise<void>): Promise<void> {
+    positiveInteger(count, "Chunk size");
     let page = 1;
     while (true) {
       const items = await this.clone().withoutCache().forPage(page, count).get() as unknown as Collection<TResult>;
@@ -2086,6 +2259,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async chunkById(count: number, callback: (items: Collection<TResult>) => void | Promise<void>, column?: ModelColumn<T>): Promise<void> {
+    positiveInteger(count, "Chunk size");
     const model = this.model;
     const idColumn = column ?? ((model ? (model as any).primaryKey : null) || "id") as ModelColumn<T>;
     const qualifiedColumn = String(idColumn).includes(".") ? String(idColumn) : `${this.tableName}.${String(idColumn)}`;
@@ -2107,6 +2281,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async chunkByIdDesc(count: number, callback: (items: Collection<TResult>) => void | Promise<void>, column?: ModelColumn<T>): Promise<void> {
+    positiveInteger(count, "Chunk size");
     const idColumn = (column ?? this.getModelPrimaryKey()) as ModelColumn<T>;
     const qualifiedColumn = String(idColumn).includes(".") ? String(idColumn) : `${this.tableName}.${String(idColumn)}`;
     const accessColumn = this.getResultAccessColumn(String(idColumn));
@@ -2135,6 +2310,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async *cursor(chunkSize: number = 1000): AsyncGenerator<T> {
+    positiveInteger(chunkSize, "Cursor chunk size");
     // Cursor pagination is incompatible with random ordering
     if (this.randomOrderFlag) {
       throw new Error("cursor() does not support inRandomOrder(). Use lazy() instead.");
@@ -2298,6 +2474,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async *lazy(count: number = 1000): AsyncGenerator<T> {
+    positiveInteger(count, "Lazy chunk size");
     let page = 1;
     while (true) {
       const items = await this.clone().withoutCache().forPage(page, count).get();
@@ -2311,6 +2488,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async *lazyById(count: number = 1000, column?: ModelColumn<T>): AsyncGenerator<TResult> {
+    positiveInteger(count, "Lazy chunk size");
     const idColumn = (column ?? this.getModelPrimaryKey()) as ModelColumn<T>;
     const qualifiedColumn = String(idColumn).includes(".") ? String(idColumn) : `${this.tableName}.${String(idColumn)}`;
     const accessColumn = this.getResultAccessColumn(String(idColumn));
@@ -2593,7 +2771,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
   async exists(): Promise<boolean> {
     this.bindings = [];
     this.parameterize = true;
-    const from = this.fromRaw || this.grammar.wrap(this.tableName);
+    const from = this.compileFrom();
     const whereSql = this.compileWheres();
     this.parameterize = false;
     const sql = `SELECT 1 FROM ${from}${whereSql ? whereSql : ""} LIMIT 1`;
@@ -2691,7 +2869,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
       operator = "=";
     }
     this.invalidateSqlCache();
-    this.wheres.push({ type: "date", column: column as string, operator, value, boolean, scope: undefined, dateType: type });
+    this.wheres.push({ type: "date", column: column as string, operator: validOperator(operator), value, boolean: validBoolean(boolean), scope: undefined, dateType: type });
     return this;
   }
 
@@ -2795,7 +2973,9 @@ export class Builder<T = Record<string, any>, TResult = T> {
     const constraint = typeof aliasOrCallback === "function" ? aliasOrCallback : callback;
     const relation = this.getModelRelation(relationName);
     const defaultAlias = `${relationName}_${fn.toLowerCase()}_${column.replace(/\W+/g, "_")}`;
-    this.addSelect(`(${relation.getRelationAggregateSql(this, `${fn}(${relation.qualifyRelatedColumn(column)})`, constraint)}) as ${alias || defaultAlias}`);
+    Connection.assertSafeIdentifier(alias || defaultAlias, "relation aggregate alias");
+    const aggregate = `${fn}(${this.grammar.wrap(relation.qualifyRelatedColumn(column))})`;
+    this.addSelectRaw(`(${relation.getRelationAggregateSql(this, aggregate, constraint)}) AS ${this.grammar.wrap(alias || defaultAlias)}`);
     return this;
   }
 }

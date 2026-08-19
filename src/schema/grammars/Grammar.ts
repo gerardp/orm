@@ -1,5 +1,6 @@
 import { Blueprint } from "../Blueprint.js";
 import type { ColumnDefinition, IndexDefinition, ForeignKeyDefinition, PrimaryKeyDefinition } from "../../types/index.js";
+import { SchemaRawExpression } from "../RawExpression.js";
 
 export abstract class Grammar {
   protected wrappers: Record<string, string> = { prefix: '"', suffix: '"' };
@@ -97,10 +98,10 @@ export abstract class Grammar {
   }
 
   protected getDefaultValue(value: any): string {
+    if (value instanceof SchemaRawExpression) return value.sql;
     if (value === null) return "NULL";
     if (typeof value === "boolean") return value ? "1" : "0";
     if (typeof value === "number") return String(value);
-    if (typeof value === "string" && value.toUpperCase().includes("CURRENT_TIMESTAMP")) return value;
     return `'${String(value).replace(/'/g, "''")}'`;
   }
 

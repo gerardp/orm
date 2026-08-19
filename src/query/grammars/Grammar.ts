@@ -1,6 +1,20 @@
 export abstract class Grammar {
   abstract wrap(value: string): string;
 
+  protected unwrapIdentifier(value: string): string {
+    const pairs: Array<[string, string, RegExp]> = [
+      ['"', '"', /""/g],
+      ["`", "`", /``/g],
+      ["[", "]", /]]/g],
+    ];
+    for (const [prefix, suffix, escapedSuffix] of pairs) {
+      if (value.startsWith(prefix) && value.endsWith(suffix) && value.length >= 2) {
+        return value.slice(1, -1).replace(escapedSuffix, suffix);
+      }
+    }
+    return value;
+  }
+
   wrapArray(values: string[]): string[] {
     return values.map((v) => this.wrap(v));
   }
@@ -11,7 +25,6 @@ export abstract class Grammar {
     if (value === null) return "NULL";
     if (typeof value === "boolean") return value ? "1" : "0";
     if (typeof value === "number") return String(value);
-    if (typeof value === "string" && value.toUpperCase().includes("CURRENT_TIMESTAMP")) return value;
     return `'${String(value).replace(/'/g, "''")}'`;
   }
 
