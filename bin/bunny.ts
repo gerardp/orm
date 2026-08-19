@@ -315,8 +315,9 @@ function getScopeExclusions(ourModels: string | string[] | undefined, otherModel
 
 function getFlagValue(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
-  if (idx === -1) return undefined;
-  return args[idx + 1];
+  if (idx !== -1) return args[idx + 1];
+  const inline = args.find((arg) => arg.startsWith(`${flag}=`));
+  return inline?.slice(flag.length + 1);
 }
 
 async function walkJobFiles(dir: string): Promise<string[]> {
@@ -947,7 +948,10 @@ async function loadConfig(allowFallback = false): Promise<BunnyConfig> {
 }
 
 async function main() {
-  const args    = process.argv.slice(2);
+  const rawArgs = process.argv.slice(2);
+  // `bunny run foo` is the documented spelling for application commands.
+  // Keep direct `bunny foo` dispatch for backwards compatibility.
+  const args    = rawArgs[0] === "run" ? rawArgs.slice(1) : rawArgs;
   const command = args[0];
   const isInit = command === "init";
 
@@ -1002,6 +1006,13 @@ async function main() {
       }
       console.log("");
     }
+  }
+
+  // These commands bypass CommandRunner, so handle their help before they
+  // start an interactive or long-running process.
+  if (isHelp && (command === "queue" || command === "repl")) {
+    printStaticCommandHelp(CORE_COMMANDS.find((entry) => entry.name === command)!);
+    return;
   }
 
   // REPL runs before configureBunny (uses in-memory SQLite fallback)
