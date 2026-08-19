@@ -1,6 +1,45 @@
 import { ModelPersistence } from "./ModelPersistence.js";
 import type { ModelJson, DotPaths, DeepPick } from "./ModelBase.js";
 
+/**
+ * Whether a stored value already equals what `ModelCore.castAttribute` would
+ * return, letting serialization read `$attributes` directly instead of paying
+ * for the full cast path.
+ *
+ * This mirrors `ModelCore.castAttribute` and must stay in sync with it: change
+ * what a cast returns there and the matching arm here has to change too, or
+ * serialization will hand back the untransformed value. Only bare cast names
+ * are listed, so parameterised casts ("decimal:2", "datetime:…") fall through
+ * to the default. Returning `false` is always safe — it just costs a call.
+ *
+ * `date`/`datetime` are deliberately absent: `castAttribute` builds a fresh
+ * Date, and short-circuiting to the stored instance would leak a mutable
+ * reference to `$attributes` (which `$original` shares), so an in-place
+ * `setUTCFullYear` would silently corrupt the snapshot.
+ */
+function castValueIsReady(cast: unknown, value: unknown): boolean {
+  if (value === null || value === undefined) return true;
+  if (typeof cast !== "string") return false;
+
+  switch (cast) {
+    case "string":
+      return typeof value === "string";
+    case "number":
+    case "integer":
+    case "int":
+    case "float":
+    case "double":
+      return typeof value === "number";
+    case "boolean":
+    case "bool":
+      return typeof value === "boolean";
+    case "enum":
+      return true;
+    default:
+      return false;
+  }
+}
+
 function deepPick(obj: Record<string, any>, paths: string[]): Record<string, any> {
   const groups = new Map<string, string[]>();
   for (const path of paths) {
@@ -62,26 +101,37 @@ export class ModelSerialization<T extends Record<string, any> = any> extends Mod
     return [...new Set([...(constructor.appends || []), ...this.$appends])];
   }
 
-  private isVisible(key: string): boolean {
-    const constructor = this.getModelConstructor();
-    const visible = [...constructor.visible, ...this.$visible];
-    if (visible.length > 0) return visible.includes(key);
-    const hidden = new Set([...constructor.hidden, ...this.$hidden]);
-    return !hidden.has(key);
-  }
-
   private serialize(includeRelations: boolean = true): Record<string, any> {
+    const constructor = this.getModelConstructor();
+    const staticVisible = constructor.visible || [];
+    const staticHidden = constructor.hidden || [];
+    const visible = staticVisible.length > 0 || this.$visible.length > 0
+      ? new Set([...staticVisible, ...this.$visible])
+      : undefined;
+    const hidden = !visible && (staticHidden.length > 0 || this.$hidden.length > 0)
+      ? new Set([...staticHidden, ...this.$hidden])
+      : undefined;
+    const attributes = this.$attributes as Record<string, any>;
+    const accessors = constructor.accessors || {};
+    const casts = this.$mergedCasts;
     const result: Record<string, any> = {};
-    for (const key of Object.keys(this.$attributes)) {
-      if (this.isVisible(key)) result[key] = this.getAttribute(key);
+
+    for (const key of Object.keys(attributes)) {
+      if (visible ? !visible.has(key) : hidden?.has(key)) continue;
+      const value = attributes[key];
+      const cast = casts[key];
+      const needsCastPath = Boolean(accessors[key]?.get) || (cast !== undefined && !castValueIsReady(cast, value));
+      result[key] = needsCastPath ? this.getAttribute(key) : value;
     }
-    for (const key of this.getAppends()) {
-      if (!this.isVisible(key)) continue;
-      result[key] = this.getAttribute(key as any);
+    if ((constructor.appends?.length || 0) > 0 || this.$appends.length > 0) {
+      for (const key of this.getAppends()) {
+        if (visible ? !visible.has(key) : hidden?.has(key)) continue;
+        result[key] = this.getAttribute(key as any);
+      }
     }
     if (includeRelations) {
       for (const key of Object.keys(this.$relations)) {
-        if (!this.isVisible(key)) continue;
+        if (visible ? !visible.has(key) : hidden?.has(key)) continue;
         const value = this.$relations[key];
         if (value === null || value === undefined) {
           result[key] = value;

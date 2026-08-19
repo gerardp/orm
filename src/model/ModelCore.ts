@@ -389,6 +389,8 @@ export class ModelCore<T extends Record<string, any> = any> {
         return String(value);
       case "date":
       case "datetime":
+        // Always a fresh Date: callers get a value they can mutate without
+        // reaching back into `$attributes`, which `$original` shares.
         return new Date(value);
       case "json":
       case "array":

@@ -29,7 +29,7 @@ Most chains follow the same shape: filter, eager-load, order, then terminate wit
 - Tables that exist only as join / pivot tables.
 - One-off analytics or reporting queries.
 - Migrating or backfilling data where a model would be overkill.
-- Scripts that need raw row shapes.
+- Read-only endpoints and scripts that need raw row shapes.
 
 ```ts
 import { DB } from "@bunnykit/orm";
@@ -145,7 +145,9 @@ const users = await User.where("active", true).get();        // Collection<User>
 const arr = await User.where("active", true).getArray();     // plain User[]
 ```
 
-`get()` returns a [Collection](./collections.md) with helpers like `map`, `filter`, `groupBy`. Use `getArray()` if you only need a plain array (e.g. for `Response.json` payloads).
+`get()` returns a [Collection](./collections.md) with helpers like `map`, `filter`, `groupBy`. `getArray()` removes that Collection wrapper, but its entries are still hydrated `User` models with casts, accessors, visibility, relations, and dirty tracking.
+
+For a high-throughput read-only endpoint that only needs database values, query with `DB.table<UserRow>("users")` instead. It returns plain rows and skips model hydration; apply any output-only conversion (for example, `Boolean(row.active)`) explicitly before returning the response.
 
 ### Throw-on-miss variants
 

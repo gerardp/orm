@@ -24,6 +24,17 @@ class UuidUser extends Model {
   static table = "uuid_users";
 }
 
+class SerializedUser extends Model {
+  static timestamps = false;
+  static hidden = ["secret"];
+  static casts = { active: "boolean" };
+  static accessors = {
+    name: {
+      get: (value: unknown) => String(value).toUpperCase(),
+    },
+  };
+}
+
 describe("Model", () => {
   beforeAll(async () => {
     setupTestDb();
@@ -167,6 +178,18 @@ describe("Model", () => {
     expect(json).not.toHaveProperty("$exists");
   });
 
+  test("toJSON preserves visibility, casts, accessors, and relations", () => {
+    const user = new SerializedUser({ name: "ivy", active: 1, secret: "hidden", plain: "value" });
+    user.setRelation("profile", { toJSON: () => ({ role: "admin" }) });
+
+    expect(user.toJSON()).toEqual({
+      name: "IVY",
+      active: true,
+      plain: "value",
+      profile: { role: "admin" },
+    });
+  });
+
   test("json aliases toJSON", async () => {
     const user = await TestUser.create({ name: "Iris" });
     expect(user.json()).toEqual(user.toJSON());
@@ -208,6 +231,18 @@ describe("Model", () => {
     expect(user.getAttribute("name")).toBe("Ada");
     expect(user.getAttribute("active")).toBe(true);
     expect(user.getAttribute("role")).toBe("admin");
+  });
+
+  test("hydrate keeps defaults, isolates the source row, and starts clean", () => {
+    const row = { id: 42, name: "Hydrated", active: 0 };
+    const user = DefaultUser.hydrate(row);
+    row.name = "Changed outside";
+
+    expect(user.name).toBe("Hydrated");
+    expect(user.active).toBe(false);
+    expect(user.role).toBe("member");
+    expect(user.isDirty()).toBe(false);
+    expect(user.getOriginal()).toEqual({ id: 42, name: "Hydrated", active: 0 });
   });
 
   test("create persists default attributes", async () => {

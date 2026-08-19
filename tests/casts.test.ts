@@ -46,6 +46,16 @@ class CachedCastModel extends Model {
   };
 }
 
+class ConstructorCacheModel extends Model {
+  static casts = { metadata: "json" };
+  static attributes = { metadata: { source: "default" } };
+
+  constructor() {
+    super();
+    this.getAttribute("metadata");
+  }
+}
+
 describe("Attribute Casting", () => {
   beforeAll(async () => {
     setupTestDb();
@@ -136,6 +146,29 @@ describe("Attribute Casting", () => {
     expect(record.isDirty()).toBe(false);
     record.metadata.enabled = false;
     expect(record.getDirty()).toMatchObject({ metadata: '{"enabled":false}' });
+  });
+
+  test("hydrate clears values cached by a model constructor", () => {
+    const record = ConstructorCacheModel.hydrate({ metadata: { source: "row" } });
+
+    expect(record.metadata).toEqual({ source: "row" });
+    expect(record.isDirty()).toBe(false);
+  });
+
+  test("date casts hand back a copy, not the stored instance", () => {
+    const date = new Date("2026-01-02T03:04:05.000Z");
+    const record = new CastedModel().mergeCasts({ happened_at: "datetime" });
+    record.$attributes.happened_at = date;
+
+    const read = record.getAttribute("happened_at");
+    expect(read).toEqual(date);
+    expect(read).not.toBe(date);
+
+    // Mutating what a caller was handed must not reach back into $attributes,
+    // which $original shares: that would corrupt the snapshot silently.
+    read.setUTCFullYear(2000);
+    expect(record.$attributes.happened_at).toBe(date);
+    expect(date.toISOString()).toBe("2026-01-02T03:04:05.000Z");
   });
 
   test("supports decimal, base64, runtime, and custom casts", async () => {

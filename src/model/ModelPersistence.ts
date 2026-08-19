@@ -103,7 +103,9 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
     const instance = new this() as InstanceType<M>;
     const hydrated = { ...row };
     for (const [key, cast] of Object.entries(instance.$mergedCasts)) {
-      const type = typeof cast === "string" ? cast.split(":")[0] : undefined;
+      if (typeof cast !== "string") continue;
+      const separator = cast.indexOf(":");
+      const type = separator === -1 ? cast : cast.slice(0, separator);
       if (
         (type === "json" || type === "array" || type === "object") &&
         hydrated[key] !== null &&
@@ -113,14 +115,26 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
         hydrated[key] = JSON.stringify(hydrated[key]);
       }
     }
-    instance.$attributes = { ...(instance.$attributes as Record<string, any>), ...hydrated } as any;
-    instance.$original = { ...hydrated } as any;
-    instance.$castCache = {};
     instance.$dirtyKeys?.clear();
-    instance.$exists = true;
-    if (connection) {
-      instance.setConnection(connection);
-    }
+    const defaults = instance.$attributes as Record<string, any>;
+    const usesDefaultSetConnection = this.prototype.setConnection === ModelCore.prototype.setConnection;
+
+    // Every key below is already an own data property on the instance: the
+    // class fields in ModelCore are emitted as definitions (target ESNext, so
+    // useDefineForClassFields is on), including the ones with no initialiser
+    // like `$connection`. That matters, because `defineProperties` only keeps
+    // writable/enumerable/configurable when the property already exists — on a
+    // fresh key it would default them to false and freeze `$connection`, so a
+    // later `setConnection` would throw. Defining them together also avoids
+    // sending every internal assignment through the model's public Proxy.
+    Object.defineProperties(instance, {
+      $attributes: { value: Object.keys(defaults).length > 0 ? { ...defaults, ...hydrated } : hydrated },
+      $original: { value: { ...hydrated } },
+      $castCache: { value: {} },
+      $exists: { value: true },
+      ...(connection && usesDefaultSetConnection ? { $connection: { value: connection } } : {}),
+    });
+    if (connection && !usesDefaultSetConnection) instance.setConnection(connection);
     return instance;
   }
 
