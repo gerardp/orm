@@ -245,6 +245,25 @@ describe("Model", () => {
     expect(user.getOriginal()).toEqual({ id: 42, name: "Hydrated", active: 0 });
   });
 
+  test("hydrate routes through a setConnection override declared as an instance field", () => {
+    let calls = 0;
+    class FieldOverrideUser extends Model {
+      static table = "field_override_users";
+      // An arrow-function field never lands on the prototype.
+      setConnection = (conn: any): this => {
+        calls++;
+        this.$connection = conn;
+        return this;
+      };
+    }
+
+    const connection = Model.getConnection();
+    const user = FieldOverrideUser.hydrate({ id: 1 }, connection);
+
+    expect(calls).toBe(1);
+    expect(user.$connection).toBe(connection);
+  });
+
   test("create persists default attributes", async () => {
     const user = await DefaultUser.create({ name: "Persisted" });
     const found = await DefaultUser.find(user.getAttribute("id"));

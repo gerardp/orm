@@ -53,13 +53,51 @@ function booleanCastKeys(casts: Record<string, any>): string[] {
   return keys;
 }
 
-function mutableJsonCastKeys(casts: Record<string, any>): string[] {
-  const keys: string[] = [];
-  for (const [key, cast] of Object.entries(casts ?? {})) {
-    const type = typeof cast === "string" ? cast.split(":")[0] : undefined;
-    if (type === "json" || type === "array" || type === "object") keys.push(key);
+/** Cast keys whose decoded value is an object the caller can mutate in place. */
+interface MutableCastKeys {
+  json: Set<string>;
+  date: Set<string>;
+}
+
+const noMutableCastKeys: MutableCastKeys = { json: new Set(), date: new Set() };
+const mutableCastKeysCache = new WeakMap<Record<string, any>, MutableCastKeys>();
+
+/**
+ * Splits a cast map into the casts that decode to a mutable object, so the cast
+ * cache — not `$attributes` — holds the current state and `getDirty` has to
+ * consult it to notice an in-place change.
+ *
+ * Keyed on the cast map object itself, which every model copies fresh, so an
+ * entry can never outlive the casts it describes — the trade is that the cache
+ * amortizes repeated calls on one model rather than across a whole class.
+ * `getDirty` runs on every `save` and `isDirty`, which is why this is one pass
+ * rather than a scan per category.
+ */
+function mutableCastKeys(casts: Record<string, any>): MutableCastKeys {
+  if (!casts) return noMutableCastKeys;
+  const cached = mutableCastKeysCache.get(casts);
+  if (cached) return cached;
+
+  // Built lazily: most models cast nothing mutable, and those should reach the
+  // shared empty pair without allocating a Set they would never fill.
+  let json: Set<string> | null = null;
+  let date: Set<string> | null = null;
+  for (const [key, cast] of Object.entries(casts)) {
+    if (typeof cast !== "string") continue;
+    const separator = cast.indexOf(":");
+    const type = separator === -1 ? cast : cast.slice(0, separator);
+    if (type === "json" || type === "array" || type === "object") (json ??= new Set()).add(key);
+    // Only date/datetime: "timestamp" is a column type dateColumns() cares
+    // about, not a cast castAttribute decodes, so it never yields a Date the
+    // caller could mutate and serializeCastAttribute would pass it through raw.
+    else if (type === "date" || type === "datetime") (date ??= new Set()).add(key);
   }
-  return keys;
+
+  const entry: MutableCastKeys = json || date
+    ? { json: json ?? noMutableCastKeys.json, date: date ?? noMutableCastKeys.date }
+    : noMutableCastKeys;
+  mutableCastKeysCache.set(casts, entry);
+  return entry;
 }
 
 /** Dates compare by instant: two Date objects for the same moment are equal. */
@@ -114,6 +152,9 @@ export class ModelCore<T extends Record<string, any> = any> {
   constructor(attributes?: Partial<T>) {
     const ctor = Object.getPrototypeOf(this).constructor as typeof ModelCore;
     const staticCasts = ctor.casts || {};
+    // A copy, never the static object itself: `casts` is public, and code that
+    // adds a cast in place would otherwise keep the identity that mutableCastKeys
+    // caches against, so the new cast would stay invisible to getDirty.
     this.$mergedCasts = { ...staticCasts, ...this.$casts };
     const defaults = ctor.attributes || {};
     if (Object.keys(defaults).length > 0) {
@@ -514,14 +555,31 @@ export class ModelCore<T extends Record<string, any> = any> {
 
   getDirty(): Partial<T> {
     const dirty: Partial<T> = {};
-    const jsonKeys = new Set(mutableJsonCastKeys(this.$mergedCasts));
+    // json and date casts decode to objects the caller holds by reference, so a
+    // mutation lands in the cast cache and never touches $attributes or the
+    // $dirtyKeys set. Re-serializing the cached value is what surfaces it.
+    const { json: jsonKeys, date: dateKeys } = mutableCastKeys(this.$mergedCasts);
     const keys = new Set(this.$dirtyKeys);
     for (const key of jsonKeys) {
       if (Object.prototype.hasOwnProperty.call(this.$castCache, key)) keys.add(key);
     }
+    for (const key of dateKeys) {
+      if (Object.prototype.hasOwnProperty.call(this.$castCache, key)) keys.add(key);
+    }
 
     for (const key of keys) {
-      const value = jsonKeys.has(key) && Object.prototype.hasOwnProperty.call(this.$castCache, key)
+      const cached = Object.prototype.hasOwnProperty.call(this.$castCache, key);
+      if (cached && dateKeys.has(key)) {
+        // Compare the decoded Date, not its serialization: a "date" cast holds
+        // "2026-01-02" in $original while serializing to a full ISO timestamp,
+        // and comparing those as strings would call every read a change.
+        // sameAttributeValue puts both sides on the same instant.
+        if (!sameAttributeValue((this.$original as any)[key], this.$castCache[key])) {
+          (dirty as any)[key] = this.serializeCastAttribute(key, this.$castCache[key]);
+        }
+        continue;
+      }
+      const value = cached && jsonKeys.has(key)
         ? this.serializeCastAttribute(key, this.$castCache[key])
         : (this.$attributes as any)[key];
       if (!sameAttributeValue((this.$original as any)[key], value)) {

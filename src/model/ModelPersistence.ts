@@ -117,7 +117,9 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
     }
     instance.$dirtyKeys?.clear();
     const defaults = instance.$attributes as Record<string, any>;
-    const usesDefaultSetConnection = this.prototype.setConnection === ModelCore.prototype.setConnection;
+    // Read off the instance, not the prototype: an override can be an instance
+    // field (`setConnection = (conn) => …`), which never reaches the prototype.
+    const usesDefaultSetConnection = instance.setConnection === ModelCore.prototype.setConnection;
 
     // Every key below is already an own data property on the instance: the
     // class fields in ModelCore are emitted as definitions (target ESNext, so

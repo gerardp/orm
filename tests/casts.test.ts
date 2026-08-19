@@ -36,6 +36,7 @@ class CastedModel extends Model {
     price: "decimal:2",
     secret: "base64",
     code: UppercaseCast,
+    happened_at: "datetime",
   };
 }
 
@@ -69,6 +70,7 @@ describe("Attribute Casting", () => {
       table.string("price").nullable();
       table.text("secret").nullable();
       table.string("code").nullable();
+      table.dateTime("happened_at").nullable();
       table.timestamps();
     });
     await Schema.create("cached_casted", (table) => {
@@ -139,6 +141,74 @@ describe("Attribute Casting", () => {
     expect(found!.metadata).toEqual({ profile: { theme: "dark" } });
   });
 
+  test("tracks and persists in-place mutations to date casts", async () => {
+    const record = await CastedModel.create({
+      happened_at: new Date("2026-01-02T03:04:05.000Z"),
+      is_active: 0,
+      count: 0,
+      score: 0,
+    });
+
+    record.happened_at.setUTCFullYear(2000);
+    const rawBeforeCheck = record.$attributes.happened_at;
+    const dirtyKeysBeforeCheck = [...(record.$dirtyKeys ?? [])];
+    expect(record.isDirty()).toBe(true);
+    expect(record.getDirty()).toEqual({ happened_at: "2000-01-02T03:04:05.000Z" });
+    // Reading the dirty state must not disturb it.
+    expect(record.$attributes.happened_at).toBe(rawBeforeCheck);
+    expect([...(record.$dirtyKeys ?? [])]).toEqual(dirtyKeysBeforeCheck);
+    await record.save();
+
+    expect(record.isDirty()).toBe(false);
+    const found = await CastedModel.find(record.id);
+    expect(found!.happened_at.toISOString()).toBe("2000-01-02T03:04:05.000Z");
+  });
+
+  test("mutating a date read from a native row leaves the original snapshot intact", () => {
+    // MySQL and PostgreSQL hand back a Date, so $attributes holds one and
+    // $original shares it through a shallow spread.
+    const stored = new Date("2026-01-02T03:04:05.000Z");
+    const record = CastedModel.hydrate({ id: 99, happened_at: stored });
+    expect(record.isDirty()).toBe(false);
+
+    record.happened_at.setUTCFullYear(2000);
+
+    expect(record.getOriginal("happened_at")).toBe(stored);
+    expect(stored.toISOString()).toBe("2026-01-02T03:04:05.000Z");
+    expect(record.$attributes.happened_at).toBe(stored);
+    expect(record.getDirty()).toEqual({ happened_at: "2000-01-02T03:04:05.000Z" });
+  });
+
+  test("reading a date cast does not by itself mark the model dirty", () => {
+    // The stored text rarely matches the ISO form the cast serializes back to:
+    // MySQL hands over "2026-01-02 03:04:05" and a date column just "2026-01-02".
+    for (const stored of ["2026-01-02 03:04:05", "2026-01-02"]) {
+      const record = CastedModel.hydrate({ id: 7, happened_at: stored });
+      expect(record.happened_at).toBeInstanceOf(Date);
+      expect(record.isDirty()).toBe(false);
+      expect(record.getDirty()).toEqual({});
+      expect(record.getOriginal("happened_at")).toBe(stored);
+    }
+  });
+
+  test("picks up a cast added to the static map after the first model was built", () => {
+    class LateCastModel extends Model {
+      static table = "late_casts";
+      static casts: Record<string, string> = { first: "json" };
+    }
+
+    // Warm whatever caching hangs off the cast map before mutating it.
+    const early = LateCastModel.hydrate({ id: 1, first: { a: 1 } });
+    early.first.a = 2;
+    expect(early.getDirty()).toEqual({ first: '{"a":2}' });
+
+    LateCastModel.casts.second = "json";
+
+    const late = LateCastModel.hydrate({ id: 2, second: { b: 1 } });
+    late.second.b = 2;
+    expect(late.getDirty()).toEqual({ second: '{"b":2}' });
+  });
+
   test("normalizes native json rows without marking an unchanged value dirty", () => {
     const record = CastedModel.hydrate({ id: 99, metadata: { enabled: true } });
 
@@ -157,7 +227,7 @@ describe("Attribute Casting", () => {
 
   test("date casts hand back a copy, not the stored instance", () => {
     const date = new Date("2026-01-02T03:04:05.000Z");
-    const record = new CastedModel().mergeCasts({ happened_at: "datetime" });
+    const record = new CastedModel();
     record.$attributes.happened_at = date;
 
     const read = record.getAttribute("happened_at");
