@@ -10,6 +10,7 @@ const MODEL_ROOT_A = join(process.cwd(), "tests", "temp_models_a");
 const MODEL_ROOT_B = join(process.cwd(), "tests", "temp_models_b");
 const MODEL_DISCOVERY_DIR = join(process.cwd(), "tests", "temp_model_discovery");
 const MODEL_LOWERCASE_DIR = join(process.cwd(), "tests", "temp_model_lowercase");
+const TSCONFIG_JSONC_DIR = join(process.cwd(), "tests", "temp_tsconfig_jsonc");
 
 describe("TypeGenerator", () => {
   let connection: ReturnType<typeof setupTestDb>;
@@ -33,7 +34,7 @@ describe("TypeGenerator", () => {
   });
 
   afterAll(async () => {
-    for (const dir of [OUT_DIR, DECL_OUT_DIR, MODEL_ROOT_A, MODEL_ROOT_B, MODEL_DISCOVERY_DIR, MODEL_LOWERCASE_DIR]) {
+    for (const dir of [OUT_DIR, DECL_OUT_DIR, MODEL_ROOT_A, MODEL_ROOT_B, MODEL_DISCOVERY_DIR, MODEL_LOWERCASE_DIR, TSCONFIG_JSONC_DIR]) {
       await rm(dir, { recursive: true, force: true });
     }
   });
@@ -237,6 +238,37 @@ describe("TypeGenerator", () => {
 
     await rm(aliasDir, { recursive: true, force: true });
     await rm(modelRoot, { recursive: true, force: true });
+  });
+
+  test("reads commented tsconfig aliases with Bun.JSONC", async () => {
+    const modelRoot = join(TSCONFIG_JSONC_DIR, "models");
+    await mkdir(modelRoot, { recursive: true });
+    await Bun.write(
+      join(modelRoot, "User.ts"),
+      `import { Model } from "../../../src/index.js";\nexport class User extends Model {\n  static table = "users";\n}\n`
+    );
+    await Bun.write(
+      join(TSCONFIG_JSONC_DIR, "tsconfig.json"),
+      `{
+        // TypeScript config files allow comments and trailing commas.
+        "compilerOptions": {
+          "baseUrl": ".",
+          "paths": { "$models/*": ["models/*"], },
+        },
+      }`
+    );
+
+    const generator = new TypeGenerator(connection, {
+      outDir: join(TSCONFIG_JSONC_DIR, "types"),
+      declarations: true,
+      modelDirectories: [modelRoot],
+      allowedTables: ["users"],
+      tsconfigPath: join(TSCONFIG_JSONC_DIR, "tsconfig.json"),
+    });
+    await generator.generate();
+
+    const content = await Bun.file(join(modelRoot, "types", "users.d.ts")).text();
+    expect(content).toContain('declare module "$models/User" {');
   });
 
   test("generate returns the list of generated tables", async () => {

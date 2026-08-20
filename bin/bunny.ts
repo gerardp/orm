@@ -10,9 +10,10 @@ import { MigrationCreator } from "../src/migration/MigrationCreator.js";
 import { SeederRunner } from "../src/seeding/Seeder.js";
 import { TypeGenerator } from "../src/typegen/TypeGenerator.js";
 import { existsSync } from "fs";
-import { mkdir, readdir, rm, writeFile } from "fs/promises";
+import { mkdir, mkdtempDisposable, readdir, writeFile } from "fs/promises";
 import { basename, extname, join, resolve, sep } from "path";
 import { pathToFileURL } from "url";
+import { styleText } from "node:util";
 import { normalizePathList, snakeCase } from "../src/utils.js";
 import { discoverModelTables } from "../src/typegen/discoverModelTables.js";
 import type { ModelsPath } from "../src/config/BunnyConfig.js";
@@ -235,16 +236,16 @@ async function runInitCommand(rawArgs: string[]): Promise<number> {
 
   if ((tsExists || jsExists) && !force) {
     const existing = tsExists ? tsConfigPath : jsConfigPath;
-    console.error(`\x1b[31mConfig already exists:\x1b[0m ${existing}`);
+    console.error(`${styleText("red", "Config already exists:", { stream: process.stderr })} ${existing}`);
     console.error("Use `bunny init --force` to overwrite `bunny.config.ts`.");
     return 1;
   }
 
   const template = await buildInitTemplateFromPrompts();
   await writeFile(tsConfigPath, template, "utf-8");
-  console.log(`\x1b[32mCreated:\x1b[0m ${tsConfigPath}`);
+  console.log(`${styleText("green", "Created:")} ${tsConfigPath}`);
   if (jsExists) {
-    console.warn(`\x1b[33mNote:\x1b[0m ${jsConfigPath} still exists and may cause confusion.`);
+    console.warn(`${styleText("yellow", "Note:", { stream: process.stderr })} ${jsConfigPath} still exists and may cause confusion.`);
   }
   return 0;
 }
@@ -612,11 +613,8 @@ async function runConfiguredMigrationCommandWithoutSqlLogging(
   await runAllTenants();
 }
 
-async function createReplBootstrap(config: BunnyConfig): Promise<string> {
-  const tmpRoot = resolveReplTmpRoot();
-  const dir = join(tmpRoot, "bunny-repl");
-  await mkdir(dir, { recursive: true });
-  const bootstrapPath = join(dir, `bootstrap-${Date.now()}-${Math.random().toString(36).slice(2)}.ts`);
+async function createReplBootstrap(config: BunnyConfig, dir: string): Promise<string> {
+  const bootstrapPath = join(dir, "bootstrap.ts");
   const modelRoots = normalizePathList(
     typeof config.modelsPath === "object" && !Array.isArray(config.modelsPath)
       ? ([config.modelsPath.landlord, config.modelsPath.tenant].filter(Boolean) as string[]).flat()
@@ -831,31 +829,34 @@ async function createReplBootstrap(config: BunnyConfig): Promise<string> {
 
 async function runRepl(config: BunnyConfig, replArgs: string[]): Promise<number> {
   const tmpRoot = resolveReplTmpRoot();
-  const bootstrapPath = await createReplBootstrap(config);
+  await mkdir(tmpRoot, { recursive: true });
+  await using tmpDir = await mkdtempDisposable(join(tmpRoot, "bunny-repl-"));
+  const bootstrapPath = await createReplBootstrap(config, tmpDir.path);
+  // The transpiler cache must outlive the disposable bootstrap dir so repeated
+  // REPL sessions reuse it instead of transpiling the ORM from scratch.
   const cachePath = join(tmpRoot, "bunny-repl-cache");
   await mkdir(cachePath, { recursive: true });
+  await using terminal = new Bun.Terminal({
+    cols: process.stdout.columns || 80,
+    rows: process.stdout.rows || 24,
+    data(_terminal, data) {
+      const text = Buffer.from(data).toString("binary");
+      const rewritten = text.replace(/\x1b\[2K> /g, "\x1b[2Kbunny> ");
+      process.stdout.write(Buffer.from(rewritten, "binary"));
+    },
+  });
   const proc = Bun.spawn(["bun", "repl", ...replArgs], {
     env: {
       ...process.env,
-      TMPDIR: tmpRoot,
-      TEMP: tmpRoot,
-      TMP: tmpRoot,
+      TMPDIR: tmpDir.path,
+      TEMP: tmpDir.path,
+      TMP: tmpDir.path,
       BUN_RUNTIME_TRANSPILER_CACHE_PATH: cachePath,
     },
-    terminal: {
-      cols: process.stdout.columns || 80,
-      rows: process.stdout.rows || 24,
-      data(_terminal, data) {
-        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-        const text = buf.toString("binary");
-        const rewritten = text.replace(/\x1b\[2K> /g, "\x1b[2Kbunny> ");
-        process.stdout.write(Buffer.from(rewritten, "binary"));
-      },
-    },
+    terminal,
   });
 
   const stdin = process.stdin;
-  const terminal = proc.terminal!;
   const restoreRawMode = stdin.isTTY && typeof stdin.setRawMode === "function";
 
   if (restoreRawMode) {
@@ -868,27 +869,25 @@ async function runRepl(config: BunnyConfig, replArgs: string[]): Promise<number>
   };
   stdin.on("data", onData);
 
-  const cleanup = async () => {
+  const cleanup = () => {
     stdin.off("data", onData);
     if (restoreRawMode) {
       stdin.setRawMode(false);
     }
-    terminal.close();
-    await rm(bootstrapPath, { force: true });
   };
 
-  process.once("SIGINT", () => {
-    terminal.close();
-  });
-  process.once("SIGTERM", () => {
-    terminal.close();
-  });
+  const stop = () => terminal.close();
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
 
-  terminal.write(`.load ${bootstrapPath}\n`);
-
-  const exitCode = await proc.exited;
-  await cleanup();
-  return exitCode;
+  try {
+    terminal.write(`.load ${bootstrapPath}\n`);
+    return await proc.exited;
+  } finally {
+    cleanup();
+    process.off("SIGINT", stop);
+    process.off("SIGTERM", stop);
+  }
 }
 
 async function loadConfig(allowFallback = false): Promise<BunnyConfig> {
@@ -981,28 +980,28 @@ async function main() {
 
   function printStaticHelp() {
     console.log("\nUsage: bunny <command> [options]\n");
-    console.log("Run \x1b[33mbunny <command> --help\x1b[0m for command-specific usage.\n");
+    console.log(`Run ${styleText("yellow", "bunny <command> --help")} for command-specific usage.\n`);
     console.log("Core commands:\n");
     for (const { name, desc } of [...CORE_COMMANDS].sort((a, b) => a.name.localeCompare(b.name))) {
-      const color = (name === "queue" || name === "repl") ? "\x1b[32m" : "\x1b[33m";
-      console.log(`  ${color}${name.padEnd(30)}\x1b[0m${desc}`);
+      const color = (name === "queue" || name === "repl") ? "green" : "yellow";
+      console.log(`  ${styleText(color, name.padEnd(30))}${desc}`);
     }
     console.log("");
   }
 
   function printStaticCommandHelp(meta: (typeof CORE_COMMANDS)[number]) {
-    console.log(`\n\x1b[1m${meta.desc}\x1b[0m\n`);
-    console.log(`\x1b[1mUsage:\x1b[0m  bunny \x1b[33m${meta.sig}\x1b[0m\n`);
+    console.log(`\n${styleText("bold", meta.desc)}\n`);
+    console.log(`${styleText("bold", "Usage:")}  bunny ${styleText("yellow", meta.sig)}\n`);
     const tokens = meta.sig.match(/\{[^}]+\}/g) ?? [];
     const opts   = tokens.filter((t) => t.startsWith("{--"));
     if (opts.length > 0) {
-      console.log("\x1b[1mOptions:\x1b[0m");
+      console.log(styleText("bold", "Options:"));
       for (const opt of opts) {
         const inner   = opt.slice(1, -1);
         const hasVal  = inner.endsWith("=");
         const optName = hasVal ? inner.slice(0, -1) : inner;
         const valHint = hasVal ? " <value>" : "";
-        console.log(`  \x1b[36m${(optName + valHint).padEnd(28)}\x1b[0m`);
+        console.log(`  ${styleText("cyan", (optName + valHint).padEnd(28))}`);
       }
       console.log("");
     }
@@ -1040,7 +1039,7 @@ async function main() {
       && err.message.includes("No database configuration found")
       && !hasLocalBunnyConfig();
     if (missingConfig) {
-      console.error("\x1b[31mNo bunny.config.ts found.\x1b[0m");
+      console.error(styleText("red", "No bunny.config.ts found.", { stream: process.stderr }));
       if (process.stdin.isTTY && process.stdout.isTTY) {
         const shouldInit = await promptYesNo("Initialize bunny.config.ts now?", true);
         if (shouldInit) {
@@ -1164,8 +1163,8 @@ async function main() {
           [["queue", "Start the background job worker"], ["repl", "Start an interactive REPL"]],
         ).sort(([a], [b]) => a.localeCompare(b));
         for (const [name, desc] of allEntries) {
-          const color = (name === "queue" || name === "repl") ? "\x1b[32m" : "\x1b[33m";
-          console.log(`  ${color}${name.padEnd(30)}\x1b[0m${desc}`);
+          const color = (name === "queue" || name === "repl") ? "green" : "yellow";
+          console.log(`  ${styleText(color, name.padEnd(30))}${desc}`);
         }
         console.log("");
       }
@@ -1174,16 +1173,16 @@ async function main() {
 
     const entry = resolveCommand(command);
     if (!entry) {
-      console.error(`\x1b[31mUnknown command:\x1b[0m ${command}`);
-      console.error(`Run \x1b[33mbunny --help\x1b[0m to list available commands.`);
+      console.error(`${styleText("red", "Unknown command:", { stream: process.stderr })} ${command}`);
+      console.error(`Run ${styleText("yellow", "bunny --help", { stream: process.stderr })} to list available commands.`);
       process.exit(1);
     }
 
     try {
       await new CommandRunner().run(entry, args.slice(1));
     } catch (err) {
-      console.error(`\x1b[31mError:\x1b[0m ${err instanceof Error ? err.message : String(err)}`);
-      console.error(`\nRun \x1b[33mbunny ${command} --help\x1b[0m for usage.`);
+      console.error(`${styleText("red", "Error:", { stream: process.stderr })} ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`\nRun ${styleText("yellow", `bunny ${command} --help`, { stream: process.stderr })} for usage.`);
       process.exit(1);
     }
   } finally {

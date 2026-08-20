@@ -27,7 +27,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.3.12"
+          bun-version: "1.4.0"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -36,15 +36,13 @@ jobs:
         run: bun run build
 
       - name: Test
-        run: bun test
+        run: bun run test
 
       - name: Determine next version
         id: version
         run: |
-          node <<'NODE' >> "$GITHUB_OUTPUT"
-          const { readFileSync } = require("fs");
-
-          const current = JSON.parse(readFileSync("package.json", "utf8")).version;
+          bun - <<'BUN' >> "$GITHUB_OUTPUT"
+          const { version: current } = await Bun.file("package.json").json();
           const parts = String(current).split(".").map((part) => Number(part));
           const major = Number.isFinite(parts[0]) ? parts[0] : 0;
           const minor = Number.isFinite(parts[1]) ? parts[1] : 0;
@@ -53,10 +51,10 @@ jobs:
 
           console.log(`current=${current}`);
           console.log(`next=${next}`);
-          NODE
+          BUN
 
       - name: Update package version
-        run: npm version "${{ steps.version.outputs.next }}" --no-git-tag-version
+        run: bun pm version "${{ steps.version.outputs.next }}" --no-git-tag-version
 
       - name: Publish
         env:

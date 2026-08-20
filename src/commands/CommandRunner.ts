@@ -1,4 +1,4 @@
-import { parseArgs } from "node:util";
+import { parseArgs, styleText } from "node:util";
 import { parseSignature, type ParsedSignature } from "./SignatureParser.js";
 import { getPromptService } from "./Prompt.js";
 import {
@@ -9,9 +9,9 @@ import {
 } from "./Command.js";
 
 const ANSI = {
-  green:  (s: string) => `\x1b[32m${s}\x1b[0m`,
-  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
-  red:    (s: string) => `\x1b[41m\x1b[97m${s}\x1b[0m`,
+  green:  (s: string) => styleText("green", s),
+  yellow: (s: string) => styleText("yellow", s, { stream: process.stderr }),
+  red:    (s: string) => styleText(["bgRed", "whiteBright"], s, { stream: process.stderr }),
 };
 
 function format(msg: string | object): string {
@@ -159,11 +159,11 @@ export class CommandRunner {
   private printHelp(sig: ParsedSignature, description?: string): void {
     const out = console.log;
     const c = {
-      dim:    (s: string) => `\x1b[2m${s}\x1b[0m`,
-      bold:   (s: string) => `\x1b[1m${s}\x1b[0m`,
-      green:  (s: string) => `\x1b[32m${s}\x1b[0m`,
-      yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
-      cyan:   (s: string) => `\x1b[36m${s}\x1b[0m`,
+      dim:    (s: string) => styleText("dim", s),
+      bold:   (s: string) => styleText("bold", s),
+      green:  (s: string) => styleText("green", s),
+      yellow: (s: string) => styleText("yellow", s),
+      cyan:   (s: string) => styleText("cyan", s),
     };
 
     const usageArgs = sig.args.map((a) => {

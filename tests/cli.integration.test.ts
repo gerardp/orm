@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm } from "fs/promises";
+import { mkdir, mkdtemp, readdir, rm } from "fs/promises";
 import { join } from "path";
 import { pathToFileURL } from "url";
 import { Connection } from "../src/index.js";
@@ -15,12 +15,16 @@ const cli = join(process.cwd(), "bin", "bunny.ts");
 let project: string;
 let databasePath: string;
 
-async function runCli(args: string[], options: { input?: string; timeoutMs?: number } = {}): Promise<CliResult> {
+async function runCli(
+  args: string[],
+  options: { input?: string; timeoutMs?: number; env?: Record<string, string> } = {}
+): Promise<CliResult> {
   const proc = Bun.spawn(["bun", cli, ...args], {
     cwd: project,
     env: {
       ...process.env,
       BUNNY_REPL_TMPDIR: project,
+      ...options.env,
     },
     stdin: options.input === undefined ? "ignore" : "pipe",
     stdout: "pipe",
@@ -107,6 +111,7 @@ export default class SmokeCommand extends Command.define("smoke:hello {name} {--
     const help = await runCli(["--help"]);
     expect(help.exitCode).toBe(0);
     expect(help.stdout).toContain("Usage: bunny");
+    expect(help.stdout).not.toContain("\x1b[");
 
     const custom = await runCli(["run", "smoke:hello", "Ada", "--loud"]);
     expect(custom.exitCode).toBe(0);
@@ -185,4 +190,33 @@ export default class SmokeCommand extends Command.define("smoke:hello {name} {--
     expect(repl.stdout).toContain("Bunny REPL ready.");
     expect(repl.stdout).toContain("REPL_SMOKE function object");
   }, 20_000);
+
+  test("creates BUNNY_REPL_TMPDIR and keeps the transpiler cache across sessions", async () => {
+    const missingRoot = join(project, "missing-repl-root", "nested");
+    const runRepl = () =>
+      runCli(["repl"], {
+        input: `console.log("REPL_SMOKE", typeof Model, typeof connection)\n.exit\n`,
+        timeoutMs: 15_000,
+        env: { BUNNY_REPL_TMPDIR: missingRoot },
+      });
+
+    const first = await runRepl();
+    expect(first.timedOut).toBe(false);
+    expect(first.stderr).toBe("");
+    expect(first.exitCode).toBe(0);
+    expect(first.stdout).toContain("REPL_SMOKE function object");
+
+    const cacheDir = join(missingRoot, "bunny-repl-cache");
+    const cachedAfterFirst = await readdir(cacheDir);
+    expect(cachedAfterFirst.length).toBeGreaterThan(0);
+
+    const second = await runRepl();
+    expect(second.exitCode).toBe(0);
+    expect(second.stdout).toContain("REPL_SMOKE function object");
+    expect((await readdir(cacheDir)).length).toBeGreaterThan(0);
+
+    // The disposable bootstrap dirs must not survive either session.
+    const leftovers = (await readdir(missingRoot)).filter((entry) => entry !== "bunny-repl-cache");
+    expect(leftovers).toEqual([]);
+  }, 40_000);
 });

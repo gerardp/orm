@@ -1,5 +1,6 @@
 import { parseSignatureName } from "./SignatureParser.js";
 import { getPromptService } from "./Prompt.js";
+import { styleText } from "node:util";
 
 // ─── Type-level signature parsing ─────────────────────────────────────────────
 
@@ -117,9 +118,9 @@ export function isCommandConstructor(entry: CommandEntry): entry is CommandConst
 // ─── ANSI helpers ──────────────────────────────────────────────────────────────
 
 const ANSI = {
-  green:  (s: string) => `\x1b[32m${s}\x1b[0m`,
-  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
-  red:    (s: string) => `\x1b[31m${s}\x1b[0m`,
+  green:  (s: string) => styleText("green", s),
+  yellow: (s: string) => styleText("yellow", s, { stream: process.stderr }),
+  red:    (s: string) => styleText("red", s, { stream: process.stderr }),
 };
 
 function format(msg: string | object): string {

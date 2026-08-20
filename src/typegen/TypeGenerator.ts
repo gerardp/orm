@@ -140,9 +140,11 @@ export class TypeGenerator {
     const result = new Map<string, string>();
     try {
       const content = await readFile(tsconfigPath, "utf-8");
-      const parsed = JSON.parse(content);
-      const paths: Record<string, string[]> = parsed.compilerOptions?.paths || {};
-      const baseUrl: string = parsed.compilerOptions?.baseUrl || ".";
+      const parsed = Bun.JSONC.parse(content) as {
+        compilerOptions?: { paths?: Record<string, string[]>; baseUrl?: string };
+      };
+      const paths = parsed.compilerOptions?.paths ?? {};
+      const baseUrl = parsed.compilerOptions?.baseUrl ?? ".";
       const baseDir = join(dirname(tsconfigPath), baseUrl);
 
       for (const [pattern, values] of Object.entries(paths)) {
