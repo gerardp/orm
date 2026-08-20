@@ -202,6 +202,14 @@ SQLite uses `filename` instead of `host`/`port`:
 connection: { driver: "sqlite", filename: "./app.db" }
 ```
 
+Bunny forwards the driver config to Bun's SQL client as-is and does not substitute defaults of its own. Every field you omit is therefore resolved by Bun from the adapter's standard environment variables — `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` for Postgres, and the `MYSQL_*` equivalents for MySQL — falling back to `localhost` and the adapter's default port when the variable is unset. So `{ driver: "postgres" }` in an environment with `PGHOST` set connects to that host, not to `localhost`. Pass the field explicitly whenever you need it to win over the environment:
+
+```ts
+connection: { driver: "postgres", host: "localhost", database: "mydb" }
+```
+
+Credentials in this form are handed to the driver verbatim instead of being assembled into a URL, so usernames and passwords containing `/`, `?`, `#`, `@` or `%` need no escaping. The `url` form is parsed as a URL and still requires percent-encoded credentials.
+
 For PostgreSQL, `prepare` defaults to `false`. Bunny generates dynamic SQL for model queries, validation checks, migrations, and schema-qualified tenant queries; disabling named prepared statements avoids intermittent stale-plan errors after schema changes or when a long-running server reuses pooled connections. Set `prepare: true` only when you know your Postgres deployment benefits from Bun's persisted named prepared statements and your query result shapes are stable.
 
 For PostgreSQL, the pool `max` defaults to `10` when unset (`Connection.defaultPostgresPoolMax`). Override per-connection with `max`, or globally before constructing connections:

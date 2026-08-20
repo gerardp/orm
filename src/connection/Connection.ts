@@ -36,36 +36,46 @@ export class Connection {
     this.config = config;
     this.schema = options.schema || ("schema" in config ? config.schema : undefined);
     this.ownsDriver = options.ownsDriver ?? !options.driver;
-    let url: string;
+    let url: string | undefined;
     if ("url" in config && config.url) {
       url = config.url;
+      this.driverName = url.startsWith("sqlite")
+        ? "sqlite"
+        : url.startsWith("mysql")
+        ? "mysql"
+        : "postgres";
     } else if ("driver" in config) {
-      const c = config as any;
-      if (c.driver === "sqlite") {
-        url = `sqlite://${c.filename || c.database || ":memory:"}`;
-      } else {
-        const protocol = c.driver === "mysql" ? "mysql" : "postgres";
-        url = `${protocol}://${c.username || ""}:${c.password || ""}@${c.host || "localhost"}:${c.port || (c.driver === "mysql" ? 3306 : 5432)}/${c.database || ""}`;
+      this.driverName = config.driver;
+      if (config.driver === "sqlite") {
+        url = `sqlite://${config.filename || config.database || ":memory:"}`;
       }
     } else {
       throw new Error("Invalid connection configuration. Provide a url or driver config.");
     }
 
-    this.driverName = url.startsWith("sqlite")
-      ? "sqlite"
-      : url.startsWith("mysql")
-      ? "mysql"
-      : "postgres";
     this.driver = options.driver || (() => {
       if (this.driverName === "sqlite") {
-        return new SQL(url);
+        return new SQL(url!);
       }
 
       const prepare = config.prepare ?? (this.driverName === "postgres" ? false : undefined);
       const max = config.max ?? (this.driverName === "postgres" ? Connection.defaultPostgresPoolMax : undefined);
       const bigint = config.bigint;
+      if ("driver" in config) {
+        return new SQL({
+          adapter: config.driver,
+          ...(config.host !== undefined ? { hostname: config.host } : {}),
+          port: config.port,
+          database: config.database,
+          username: config.username,
+          password: config.password,
+          ...(max !== undefined ? { max } : {}),
+          ...(prepare !== undefined ? { prepare } : {}),
+          ...(bigint !== undefined ? { bigint } : {}),
+        });
+      }
       return new SQL({
-        url,
+        url: url!,
         ...(max !== undefined ? { max } : {}),
         ...(prepare !== undefined ? { prepare } : {}),
         ...(bigint !== undefined ? { bigint } : {}),

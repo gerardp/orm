@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.1 - 2026-08-20
+
+### Fixed
+
+- Driver connection configs are handed to Bun's SQL client as-is instead of
+  being assembled into a URL first, so usernames and passwords containing `/`,
+  `?`, `#`, `@` or `%` no longer produce an `Invalid URL` error. The `url`
+  connection form still requires percent-encoded credentials.
+- Driver configs no longer force `host` to `localhost` while leaving `port`,
+  `database`, `username`, and `password` to be resolved from the environment.
+  All five fields now behave alike: whatever you omit is resolved by Bun from
+  the adapter's standard variables (`PGHOST`, `PGPORT`, `PGUSER`, ... and the
+  `MYSQL_*` equivalents), falling back to `localhost` and the default port when
+  unset. Previously an environment that supplied credentials and port would
+  still be pointed at `localhost`. Pass `host` explicitly to override the
+  environment; see `docs/configuration.md` for the full contract.
+
 ## 0.7.0 - 2026-08-19
 
 ### Changed

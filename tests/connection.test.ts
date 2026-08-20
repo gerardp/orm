@@ -24,9 +24,54 @@ describe("Connection", () => {
     expect(conn.getDriverName()).toBe("sqlite");
   });
 
-  test("creates connection from driver config (mysql)", () => {
-    const conn = new Connection({ driver: "mysql", host: "localhost", database: "db" });
+  test("passes driver config directly to Bun.SQL", async () => {
+    const conn = new Connection({
+      driver: "mysql",
+      host: "127.0.0.1",
+      port: 3306,
+      database: "valdyr",
+      username: "root",
+      password: "con/barra?#@",
+    });
+
     expect(conn.getDriverName()).toBe("mysql");
+    expect(conn.driver.options).toMatchObject({
+      adapter: "mysql",
+      hostname: "127.0.0.1",
+      port: 3306,
+      database: "valdyr",
+      username: "root",
+      password: "con/barra?#@",
+    });
+    await conn.close();
+  });
+
+  test("leaves omitted driver fields to Bun's environment resolution", async () => {
+    const previous = { PGHOST: process.env.PGHOST, PGDATABASE: process.env.PGDATABASE };
+    process.env.PGHOST = "db.internal";
+    process.env.PGDATABASE = "envdb";
+
+    try {
+      const fromEnv = new Connection({ driver: "postgres" });
+      expect(fromEnv.driver.options).toMatchObject({
+        adapter: "postgres",
+        hostname: "db.internal",
+        database: "envdb",
+      });
+      await fromEnv.close();
+
+      const explicit = new Connection({ driver: "postgres", host: "127.0.0.1" });
+      expect(explicit.driver.options).toMatchObject({
+        hostname: "127.0.0.1",
+        database: "envdb",
+      });
+      await explicit.close();
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   test("applies SQLite foreign keys, WAL, and synchronous NORMAL before first statement", async () => {
