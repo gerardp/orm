@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.12.0 - 2026-08-21
+
+### Added
+
+- `MassAssignmentError` exposes the affected model and attribute names when a
+  fully guarded model receives mass-assigned data. Partial policies can opt into
+  the same protection per model or globally with
+  `preventSilentlyDiscardingAttributes`.
+- Models can configure their managed timestamp names with `createdAtColumn` and
+  `updatedAtColumn`. All model persistence paths, model-derived schemas, and the
+  default columns used by `latest()` / `oldest()` honor the public timestamp
+  getters while keeping `created_at` / `updated_at` as compatible defaults.
+- `Blueprint.timestamps()` accepts either no arguments or an explicit created-at
+  and updated-at column pair, with matching compile-time and runtime validation.
+- Native JavaScript getters listed in `appends` are included by `toJSON()`,
+  `json()`, and `JSON.stringify()` without becoming stored or dirty attributes.
+  Existing `static accessors` keep precedence.
+
+### Fixed
+
+- Fully guarded models now reject discarded mass-assignment input instead of
+  silently inserting incomplete rows. Empty input and trusted assignment paths
+  such as `forceFill()` and `forceCreate()` remain valid.
+- `saveMany(models, { events: false })` now preserves each new model's trusted
+  attributes instead of filtering and replacing them a second time.
+
 ## 0.11.2 - 2026-08-21
 
 ### Fixed

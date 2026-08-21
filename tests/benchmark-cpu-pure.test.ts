@@ -11,6 +11,7 @@ function setupDb() {
 
 class CpuUser extends Model {
   static table = "cpu_users";
+  static fillable = ["name", "email", "active", "score", "meta"];
   static casts = { active: "boolean", score: "number", meta: "json" };
 }
 
@@ -98,6 +99,7 @@ describe("Benchmark: Pure CPU (no DB)", () => {
   test("Observer dispatch x20000 (event-indexed)", () => {
     class TestUser extends Model {
       static table = "cpu_users";
+      static fillable = ["name"];
     }
     const events: string[] = [];
     class TestObserver extends Observer<TestUser> {

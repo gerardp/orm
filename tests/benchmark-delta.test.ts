@@ -11,6 +11,7 @@ function setupDb() {
 
 class BenchUser extends Model {
   static table = "bench_users";
+  static fillable = ["name", "email", "active", "score", "meta"];
   static casts = { active: "boolean", score: "number", meta: "json" };
 }
 

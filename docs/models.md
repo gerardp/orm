@@ -85,6 +85,50 @@ This is mostly useful when you're combining the ORM with generated `.d.ts` files
 - **Timestamps** — `created_at` and `updated_at` are managed automatically. Disable with `static timestamps = false`.
 - **Connection** — uses the default connection. Override per model with `static connection = "..."` plus `ConnectionManager.add(...)`.
 
+## Timestamps
+
+Models manage `created_at` and `updated_at` by default. Override both column names
+when a table uses another convention:
+
+```ts
+class User extends Model {
+  static override createdAtColumn = "createdAt";
+  static override updatedAtColumn = "updatedAt";
+}
+```
+
+`User.getCreatedAtColumn()` and `User.getUpdatedAtColumn()` expose the resolved
+names. Model writes, `dateColumns()`, `schema()`, `replicate()`, `latest()`, and
+`oldest()` use these getters, so a model may override either the property or its
+getter. Names must be non-empty and different.
+
+Ordinary JavaScript static inheritance applies. A Bunny base model can set both
+names once, and subclasses may override either name independently:
+
+```ts
+class CamelModel extends Model {
+  static override createdAtColumn = "createdAt";
+  static override updatedAtColumn = "updatedAt";
+}
+
+class User extends CamelModel {}
+
+class ImportedRecord extends CamelModel {
+  static override createdAtColumn = "createdOn";
+}
+```
+
+Set `static override timestamps = false` when Bunny must not manage timestamp
+fields. Inactive timestamp settings are not validated during ordinary model use
+or model-derived schema generation; explicit timestamp APIs such as the public
+getters, `latest()`, and `replicate()` still validate the names they need.
+`withoutTimestamps()` temporarily disables writes and restores the inherited
+setting afterward.
+
+Valdyr applications keep Valdyr's direct `extends Model` requirement for static
+analysis; Bunny's support for inherited settings does not introduce an
+application `BaseModel` convention there.
+
 ## Schema Resolution (PostgreSQL tenancy)
 
 When using schema-per-tenant tenancy, models resolve table names in this order:
@@ -300,8 +344,9 @@ Computed accessors are picked up by `toJSON()` when listed in `static appends` (
 
 ## Mass assignment
 
-Models without a policy allow every non-internal attribute for backwards compatibility.
-Declare either `fillable` (allow list) or `guarded` (deny list), never both:
+Models without an explicit policy are fully guarded. Mass-assigning any
+non-internal attribute to them throws `MassAssignmentError`. Declare either
+`fillable` (allow list) or `guarded` (deny list), never both:
 
 ```ts
 class User extends Model {
@@ -314,15 +359,29 @@ await User.create({ name: "Alice", email: "a@b.com", is_admin: true });
 // is_admin is silently dropped (guarded)
 ```
 
-Empty arrays are explicit policies: `fillable = []` blocks everything and
-`guarded = []` allows everything. `guarded = ["*"]` blocks everything. A subclass
-inherits its parent's policy unless it declares a replacement policy of its own.
-Internal keys such as `$attributes`, `$exists`, `__proto__`, `prototype`, and
-`constructor` are never mass assigned.
+Partial policies silently discard protected attributes by default. Set
+`preventSilentlyDiscardingAttributes` globally or on one model to throw instead:
 
-Factories use the same protected path as `create()`. A model with
-`guarded = ["*"]` therefore discards attributes returned by `definition()` and
-factory states; use an explicit writable policy when creating that model through a factory.
+```ts
+Model.preventSilentlyDiscardingAttributes = true; // all models
+
+class StrictUser extends Model {
+  static guarded = ["is_admin"];
+  static preventSilentlyDiscardingAttributes = true; // or only this model
+}
+```
+
+Empty arrays are explicit policies: `fillable = []` is fully guarded and
+`guarded = []` allows everything. `guarded = ["*"]` is also fully guarded. Fully
+guarded policies throw only when input is discarded, so `create({})` remains valid
+for tables backed entirely by database defaults. A subclass inherits its parent's
+policy unless it declares a replacement policy of its own. Internal keys such as
+`$attributes`, `$exists`, `__proto__`, `prototype`, and `constructor` are always
+discarded silently and never trigger `MassAssignmentError`.
+
+Factories use the same protected path as `create()`. A model with a fully guarded
+policy therefore throws when its factory supplies attributes; declare an explicit
+writable policy when creating that model through a factory.
 
 Bypass the guard with `forceCreate` / `forceFill` when an admin or migration script needs it:
 
@@ -487,7 +546,9 @@ await User.withoutTimestamps(async () => {
 
 ## Bulk operations
 
-All bulk methods apply fillable rules, casts, timestamps, and UUID key generation automatically.
+Bulk input methods apply fillable rules, casts, timestamps, and UUID key generation
+automatically. `saveMany()` receives model instances, so it persists their existing
+trusted attributes; `createMany()` still filters its input while constructing them.
 
 ### `insert` / `insertOrIgnore` / `upsert`
 
@@ -655,7 +716,9 @@ users.json("id", "name", "posts.title")
 
 ### Appended attributes
 
-Use `static appends` to include computed attributes in serialized output. The `declare` line gives TypeScript awareness so `json()` is fully typed:
+Use `static appends` to include native getters in serialized output. Because the
+getter is a real TypeScript member, no separate `declare` or Bunny-specific
+accessor is needed:
 
 ```ts
 type UserAttrs = {
@@ -665,33 +728,33 @@ type UserAttrs = {
 };
 
 class User extends Model.define<UserAttrs>("users") {
-  declare full_name: string;
-  declare initials: string;
+  static appends = ["fullName"];
 
-  static appends = ["full_name"];
+  get fullName(): string {
+    return `${this.first_name} ${this.last_name}`.trim();
+  }
 
-  static accessors: AccessorMap<UserAttrs, User> = {
-    full_name: {
-      get: (_value, attrs) => `${attrs.first_name} ${attrs.last_name}`.trim(),
-    },
-    initials: {
-      get: (_value, attrs) =>
-        `${attrs.first_name[0] ?? ""}${attrs.last_name[0] ?? ""}`.toUpperCase(),
-    },
-  };
+  get initials(): string {
+    return `${this.first_name[0] ?? ""}${this.last_name[0] ?? ""}`.toUpperCase();
+  }
 }
 
 const user = await User.firstOrFail();
-user.json().full_name;            // included via static appends
+user.fullName;                    // normal property access
+user.json().fullName;             // included via static appends
 
 const withInitials = user.append("initials");
 withInitials.json().initials;     // included for this instance only
 
 user.setAppends(["initials"]);    // replace the list
-user.getAppends();                // ["full_name", "initials"]
+user.getAppends();                // ["fullName", "initials"]
 ```
 
-Visibility still applies — `makeHidden("full_name")` drops the computed value from serialized output.
+Visibility is applied before a getter runs, and a getter is evaluated at most
+once per serialization. Its result is never written to `$attributes`, marked
+dirty, or included in SQL. `static accessors` remains supported for persisted
+attribute getters and setters; if both mechanisms use the same name, the static
+accessor takes precedence.
 
 ## Soft deletes
 

@@ -23,6 +23,7 @@ import type {
   BulkModelOptions,
 } from "./ModelBase.js";
 import { formatDecimal, snakeCase } from "../utils.js";
+import { MassAssignmentError } from "./MassAssignmentError.js";
 
 /**
  * The old `encrypted` cast only Base64-encoded values, so it read as a security
@@ -142,11 +143,24 @@ function isDangerousMassAssignmentKey(key: string): boolean {
   return key.startsWith("$") || key === "__proto__" || key === "prototype" || key === "constructor";
 }
 
+function policyAllows(policy: MassAssignmentPolicy, key: string): boolean {
+  if (policy.kind === "fillable") return policy.attributes.includes(key);
+  return !policy.attributes.includes("*") && !policy.attributes.includes(key);
+}
+
+function isTotallyGuarded(policy: MassAssignmentPolicy): boolean {
+  return policy.kind === "fillable"
+    ? policy.attributes.length === 0
+    : policy.attributes.includes("*");
+}
+
 export class ModelCore<T extends Record<string, any> = any> {
   static table: string;
   static modelSchema?: string;
   static primaryKey = "id";
   static timestamps = true;
+  static createdAtColumn = "created_at";
+  static updatedAtColumn = "updated_at";
   static connection?: Connection;
   static dateFormat = "YYYY-MM-DD HH:mm:ss";
   static keyType: "int" | "string" | "uuid" = "int";
@@ -160,6 +174,7 @@ export class ModelCore<T extends Record<string, any> = any> {
   static softDeletes = false;
   static deletedAtColumn = "deleted_at";
   static preventLazyLoading = false;
+  static preventSilentlyDiscardingAttributes = false;
   static hidden: string[] = [];
   static visible: string[] = [];
   static appends: string[] = [];
@@ -231,6 +246,31 @@ export class ModelCore<T extends Record<string, any> = any> {
     return this.table || snakeCase(this.name) + "s";
   }
 
+  static getCreatedAtColumn(): string {
+    const column = this.createdAtColumn;
+    if (typeof column !== "string" || column.length === 0) {
+      throw new Error(`${this.name}.createdAtColumn must be a non-empty string.`);
+    }
+    return column;
+  }
+
+  static getUpdatedAtColumn(): string {
+    const column = this.updatedAtColumn;
+    if (typeof column !== "string" || column.length === 0) {
+      throw new Error(`${this.name}.updatedAtColumn must be a non-empty string.`);
+    }
+    return column;
+  }
+
+  protected static getTimestampColumns(): { createdAt: string; updatedAt: string } {
+    const createdAt = this.getCreatedAtColumn();
+    const updatedAt = this.getUpdatedAtColumn();
+    if (createdAt === updatedAt) {
+      throw new Error(`${this.name} must use different created-at and updated-at columns.`);
+    }
+    return { createdAt, updatedAt };
+  }
+
   static resolveSchema(connection?: Connection): string | undefined {
     const configured = Object.prototype.hasOwnProperty.call(this, "modelSchema") ? this.modelSchema : undefined;
     if (configured) {
@@ -268,7 +308,10 @@ export class ModelCore<T extends Record<string, any> = any> {
    */
   static dateColumns(): string[] {
     const keys = dateCastKeys(this.casts);
-    if (this.timestamps) keys.push("created_at", "updated_at");
+    if (this.timestamps) {
+      const { createdAt, updatedAt } = this.getTimestampColumns();
+      keys.push(createdAt, updatedAt);
+    }
     if (this.softDeletes) keys.push(this.deletedAtColumn);
     return [...new Set(keys)];
   }
@@ -279,6 +322,7 @@ export class ModelCore<T extends Record<string, any> = any> {
   }
 
   static schema(): ModelSchemaBuilder {
+    const timestampColumns = this.timestamps ? this.getTimestampColumns() : undefined;
     return new ModelSchemaBuilder(this.getTable(), this.getConnection(), {
       casts: this.casts,
       fillable: this.fillable ?? [],
@@ -287,6 +331,8 @@ export class ModelCore<T extends Record<string, any> = any> {
       keyType: this.keyType,
       incrementing: this.incrementing,
       timestamps: this.timestamps,
+      createdAtColumn: timestampColumns?.createdAt ?? this.createdAtColumn,
+      updatedAtColumn: timestampColumns?.updatedAt ?? this.updatedAtColumn,
       softDeletes: this.softDeletes,
       deletedAtColumn: this.deletedAtColumn,
       schemaDefinition: (this as any).schemaDefinition,
@@ -376,8 +422,22 @@ export class ModelCore<T extends Record<string, any> = any> {
   }
 
   fill(attributes: ModelMassAssignmentInput<this>): this {
-    for (const [key, value] of Object.entries(attributes)) {
-      if (this.isFillable(key)) {
+    const constructor = this.getModelConstructor();
+    const policy = resolveMassAssignmentPolicy(constructor);
+    const entries = Object.entries(attributes);
+    const discarded = entries
+      .filter(([key]) => !isDangerousMassAssignmentKey(key) && !policyAllows(policy, key))
+      .map(([key]) => key);
+
+    if (
+      discarded.length > 0 &&
+      (isTotallyGuarded(policy) || constructor.preventSilentlyDiscardingAttributes)
+    ) {
+      throw new MassAssignmentError(constructor.name, discarded);
+    }
+
+    for (const [key, value] of entries) {
+      if (!isDangerousMassAssignmentKey(key) && policyAllows(policy, key)) {
         this.setAttribute(key as any, value as any);
       }
     }
@@ -407,8 +467,7 @@ export class ModelCore<T extends Record<string, any> = any> {
   isFillable(key: string): boolean {
     if (isDangerousMassAssignmentKey(key)) return false;
     const policy = resolveMassAssignmentPolicy(this.getModelConstructor());
-    if (policy.kind === "fillable") return policy.attributes.includes(key);
-    return !policy.attributes.includes("*") && !policy.attributes.includes(key);
+    return policyAllows(policy, key);
   }
 
   getAttribute<K extends keyof T>(key: K): T[K];
@@ -654,7 +713,8 @@ export class ModelCore<T extends Record<string, any> = any> {
   replicate(except?: string[]): this {
     const constructor = this.getModelConstructor();
     const pk = constructor.primaryKey;
-    const exclude = new Set([pk, "created_at", "updated_at", ...(except || [])]);
+    const { createdAt, updatedAt } = constructor.getTimestampColumns();
+    const exclude = new Set([pk, createdAt, updatedAt, ...(except || [])]);
     const attrs: Record<string, any> = {};
     for (const [key, value] of Object.entries(this.$attributes)) {
       if (!exclude.has(key)) attrs[key] = value;
@@ -695,12 +755,13 @@ export class ModelCore<T extends Record<string, any> = any> {
   updateTimestamps(): void {
     const constructor = this.getModelConstructor();
     if (!constructor.timestamps) return;
+    const { createdAt, updatedAt } = constructor.getTimestampColumns();
     const now = this.freshTimestamp();
-    (this.$attributes as any)["updated_at"] = now;
-    delete this.$castCache.updated_at;
+    (this.$attributes as any)[updatedAt] = now;
+    delete this.$castCache[updatedAt];
     if (!this.$exists) {
-      (this.$attributes as any)["created_at"] = now;
-      delete this.$castCache.created_at;
+      (this.$attributes as any)[createdAt] = now;
+      delete this.$castCache[createdAt];
     }
   }
 }

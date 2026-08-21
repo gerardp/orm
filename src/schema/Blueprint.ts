@@ -344,9 +344,28 @@ export class Blueprint {
     });
   }
 
-  timestamps(): void {
-    this.timestamp("created_at").nullable();
-    this.timestamp("updated_at").nullable();
+  timestamps(): void;
+  timestamps(createdAtColumn: string, updatedAtColumn: string): void;
+  timestamps(createdAtColumn?: string, updatedAtColumn?: string): void {
+    const argumentCount = arguments.length;
+    if (argumentCount !== 0 && argumentCount !== 2) {
+      throw new Error("timestamps() expects either zero or two column names.");
+    }
+
+    const created = argumentCount === 0 ? "created_at" : createdAtColumn;
+    const updated = argumentCount === 0 ? "updated_at" : updatedAtColumn;
+    if (typeof created !== "string" || created.length === 0) {
+      throw new Error("timestamps() created-at column must be a non-empty string.");
+    }
+    if (typeof updated !== "string" || updated.length === 0) {
+      throw new Error("timestamps() updated-at column must be a non-empty string.");
+    }
+    if (created === updated) {
+      throw new Error("timestamps() must use different created-at and updated-at columns.");
+    }
+
+    this.timestamp(created).nullable();
+    this.timestamp(updated).nullable();
   }
 
   softDeletes(): void {

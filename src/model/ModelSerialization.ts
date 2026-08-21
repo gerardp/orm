@@ -71,6 +71,16 @@ function deepPick(obj: Record<string, any>, paths: string[]): Record<string, any
   return result;
 }
 
+function findNativeGetter(model: object, key: string): (() => unknown) | undefined {
+  let prototype = Object.getPrototypeOf(model);
+  while (prototype) {
+    const getter = Object.getOwnPropertyDescriptor(prototype, key)?.get;
+    if (getter) return getter;
+    prototype = Object.getPrototypeOf(prototype);
+  }
+  return undefined;
+}
+
 export class ModelSerialization<T extends Record<string, any> = any> extends ModelPersistence<T> {
   makeHidden(...keys: (string | string[])[]): this {
     const flat = keys.flat();
@@ -126,7 +136,8 @@ export class ModelSerialization<T extends Record<string, any> = any> extends Mod
     if ((constructor.appends?.length || 0) > 0 || this.$appends.length > 0) {
       for (const key of this.getAppends()) {
         if (visible ? !visible.has(key) : hidden?.has(key)) continue;
-        result[key] = this.getAttribute(key as any);
+        const nativeGetter = accessors[key]?.get ? undefined : findNativeGetter(this, key);
+        result[key] = nativeGetter ? nativeGetter.call(this) : this.getAttribute(key as any);
       }
     }
     if (includeRelations) {

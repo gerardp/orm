@@ -21,6 +21,35 @@ describe("Schema Builder", () => {
     expect(sql).toContain('"created_at" TEXT');
   });
 
+  test("timestamps supports default or custom column pairs", () => {
+    const defaults = new Blueprint("default_timestamps");
+    defaults.timestamps();
+    expect(defaults.columns.map((column) => column.name)).toEqual(["created_at", "updated_at"]);
+
+    const custom = new Blueprint("custom_timestamps");
+    custom.timestamps("createdAt", "updatedAt");
+    expect(custom.columns.map((column) => column.name)).toEqual(["createdAt", "updatedAt"]);
+  });
+
+  test("timestamps rejects invalid runtime arity and names", () => {
+    const blueprint = new Blueprint("invalid_timestamps");
+    expect(() => (blueprint.timestamps as any)("createdAt")).toThrow(
+      "timestamps() expects either zero or two column names.",
+    );
+    expect(() => (blueprint.timestamps as any)("a", "b", "c")).toThrow(
+      "timestamps() expects either zero or two column names.",
+    );
+    expect(() => (blueprint.timestamps as any)(undefined, undefined)).toThrow(
+      "timestamps() created-at column must be a non-empty string.",
+    );
+    expect(() => blueprint.timestamps("", "updatedAt")).toThrow(
+      "timestamps() created-at column must be a non-empty string.",
+    );
+    expect(() => blueprint.timestamps("changedAt", "changedAt")).toThrow(
+      "timestamps() must use different created-at and updated-at columns.",
+    );
+  });
+
   test("mysql grammar compileCreate", () => {
     const grammar = new MySqlGrammar();
     const blueprint = new Blueprint("users");

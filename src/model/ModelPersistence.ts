@@ -16,6 +16,8 @@ import { isNumericColumnType, shouldGeneratePrimaryKeyForColumn } from "../utils
 import type { Connection } from "../connection/Connection.js";
 import { insertAndResolveKey, type PrimaryKeyColumn } from "./PrimaryKeyResolution.js";
 
+type TimestampColumns = { createdAt: string; updatedAt: string };
+
 export class ModelPersistence<T extends Record<string, any> = any> extends ModelCore<T> {
   /**
    * How this model's primary key gets its value: whether we generate it, plus
@@ -36,20 +38,30 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
 
   static async prepareBulkRecords<M extends ModelConstructor>(
     this: M,
-    records: ModelMassAssignmentInput<InstanceType<M>>[]
+    records: ModelMassAssignmentInput<InstanceType<M>>[],
+    resolvedTimestampColumns?: TimestampColumns | null,
+    trusted = false,
   ): Promise<Record<string, any>[]> {
     const generatePk = await (this as any).shouldAutoGeneratePrimaryKey();
-    const now = this.timestamps ? new Date().toISOString() : null;
+    const timestampColumns = resolvedTimestampColumns === undefined
+      ? (this.timestamps ? (this as any).getTimestampColumns() as TimestampColumns : null)
+      : resolvedTimestampColumns;
+    const now = timestampColumns ? new Date().toISOString() : null;
     const prepared: Record<string, any>[] = [];
 
     for (const record of records) {
-      const instance = new this() as InstanceType<M>;
-      instance.fill(record as any);
-      const attributes = { ...(instance.$attributes as Record<string, any>) };
+      let attributes: Record<string, any>;
+      if (trusted) {
+        attributes = { ...record };
+      } else {
+        const instance = new this() as InstanceType<M>;
+        instance.fill(record as any);
+        attributes = { ...(instance.$attributes as Record<string, any>) };
+      }
 
-      if (now) {
-        if (attributes.created_at === undefined) attributes.created_at = now;
-        if (attributes.updated_at === undefined) attributes.updated_at = now;
+      if (now && timestampColumns) {
+        if (attributes[timestampColumns.createdAt] === undefined) attributes[timestampColumns.createdAt] = now;
+        if (attributes[timestampColumns.updatedAt] === undefined) attributes[timestampColumns.updatedAt] = now;
       }
 
       if (generatePk) {
@@ -68,16 +80,29 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
   static async prepareBulkRecord<M extends ModelConstructor>(
     this: M,
     record: ModelMassAssignmentInput<InstanceType<M>>,
-    options: { touchCreatedAt?: boolean; touchUpdatedAt?: boolean; generatePrimaryKey?: boolean } = {}
+    options: { touchCreatedAt?: boolean; touchUpdatedAt?: boolean; generatePrimaryKey?: boolean; trusted?: boolean } = {},
+    resolvedTimestampColumns?: TimestampColumns | null,
   ): Promise<Record<string, any>> {
     const instance = new this() as InstanceType<M>;
-    instance.fill(record as any);
-    const attributes = { ...(instance.$attributes as Record<string, any>) };
+    let attributes: Record<string, any>;
+    if (options.trusted) {
+      attributes = { ...record };
+    } else {
+      instance.fill(record as any);
+      attributes = { ...(instance.$attributes as Record<string, any>) };
+    }
 
-    if (this.timestamps) {
+    const timestampColumns = resolvedTimestampColumns === undefined
+      ? (this.timestamps ? (this as any).getTimestampColumns() as TimestampColumns : null)
+      : resolvedTimestampColumns;
+    if (timestampColumns) {
       const now = instance.freshTimestamp();
-      if (options.touchCreatedAt !== false && attributes.created_at === undefined) attributes.created_at = now;
-      if (options.touchUpdatedAt !== false && attributes.updated_at === undefined) attributes.updated_at = now;
+      if (options.touchCreatedAt !== false && attributes[timestampColumns.createdAt] === undefined) {
+        attributes[timestampColumns.createdAt] = now;
+      }
+      if (options.touchUpdatedAt !== false && attributes[timestampColumns.updatedAt] === undefined) {
+        attributes[timestampColumns.updatedAt] = now;
+      }
     }
 
     if (options.generatePrimaryKey !== false) {
@@ -208,12 +233,20 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
     updateColumns?: any[],
     options: Omit<BulkModelOptions, "events"> = {}
   ): Promise<any> {
-    const prepared = await (this as any).prepareBulkRecords(Array.isArray(records) ? records : [records]);
+    const timestampColumns = this.timestamps
+      ? (this as any).getTimestampColumns() as TimestampColumns
+      : null;
+    const prepared = await (this as any).prepareBulkRecords(
+      Array.isArray(records) ? records : [records],
+      timestampColumns,
+    );
     const chunkSize = options.chunkSize || prepared.length || 1;
     let columns = updateColumns;
-    if (!columns && this.timestamps) {
+    if (!columns && timestampColumns) {
       const uniqueColumns = new Set(Array.isArray(uniqueBy) ? uniqueBy : [uniqueBy]);
-      columns = Object.keys(prepared[0] || {}).filter((column) => column !== "created_at" && !uniqueColumns.has(column as any)) as any;
+      columns = Object.keys(prepared[0] || {}).filter(
+        (column) => column !== timestampColumns.createdAt && !uniqueColumns.has(column as any)
+      ) as any;
     }
     let result: any;
     for (let i = 0; i < prepared.length; i += chunkSize) {
@@ -264,6 +297,10 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
       return models;
     }
 
+    const timestampColumns = this.timestamps
+      ? (this as any).getTimestampColumns() as TimestampColumns
+      : null;
+
     for (let i = 0; i < models.length; i += chunkSize) {
       const chunk = models.slice(i, i + chunkSize);
       const newModels = chunk.filter((model) => !model.$exists);
@@ -276,7 +313,11 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
         for (const model of newModels) {
           const pk = model.getAttribute(this.primaryKey);
           if (!shouldGeneratePrimaryKey && (pk === null || pk === undefined || pk === "")) {
-            const record = await (this as any).prepareBulkRecord(model.$attributes as any);
+            const record = await (this as any).prepareBulkRecord(
+              model.$attributes as any,
+              { trusted: true },
+              timestampColumns,
+            );
             const connection = (this as any).getConnection();
             const id = await insertAndResolveKey(
               connection,
@@ -296,7 +337,11 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
         }
 
         if (bulkModels.length > 0) {
-          const records = await (this as any).prepareBulkRecords(bulkModels.map((model) => model.$attributes as any));
+          const records = await (this as any).prepareBulkRecords(
+            bulkModels.map((model) => model.$attributes as any),
+            timestampColumns,
+            true,
+          );
           await (this as any).query().insert(records as any);
           for (let index = 0; index < bulkModels.length; index++) {
             bulkModels[index].$attributes = records[index] as any;
@@ -310,11 +355,11 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
       for (const model of existingModels) {
         let dirty = model.getDirty();
         Object.assign(model.$attributes, dirty);
-        if (Object.keys(dirty).length > 0 && this.timestamps) {
+        if (Object.keys(dirty).length > 0 && timestampColumns) {
           const now = model.freshTimestamp();
-          (model.$attributes as any).updated_at = now;
-          delete model.$castCache.updated_at;
-          dirty["updated_at"] = now;
+          (model.$attributes as any)[timestampColumns.updatedAt] = now;
+          delete model.$castCache[timestampColumns.updatedAt];
+          (dirty as any)[timestampColumns.updatedAt] = now;
         }
         if (Object.keys(dirty).length === 0) continue;
         await (this as any).query().where(this.primaryKey, model.getAttribute(this.primaryKey)).update(dirty as any);
@@ -414,10 +459,11 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
       let dirty = this.getDirty();
       Object.assign(this.$attributes, dirty);
       if (Object.keys(dirty).length > 0 && constructor.timestamps) {
+        const { updatedAt } = constructor.getTimestampColumns();
         const now = this.freshTimestamp();
-        (this.$attributes as any)["updated_at"] = now;
-        delete this.$castCache.updated_at;
-        (dirty as any)["updated_at"] = now;
+        (this.$attributes as any)[updatedAt] = now;
+        delete this.$castCache[updatedAt];
+        (dirty as any)[updatedAt] = now;
       }
       if (Object.keys(dirty).length > 0) {
         const pk = this.getAttribute(constructor.primaryKey);
@@ -447,11 +493,12 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
       if (events) await ObserverRegistry.dispatch("saving", this as any);
 
       if (constructor.timestamps) {
+        const { createdAt, updatedAt } = constructor.getTimestampColumns();
         const now = this.freshTimestamp();
-        (this.$attributes as any)["created_at"] = now;
-        (this.$attributes as any)["updated_at"] = now;
-        delete this.$castCache.created_at;
-        delete this.$castCache.updated_at;
+        (this.$attributes as any)[createdAt] = now;
+        (this.$attributes as any)[updatedAt] = now;
+        delete this.$castCache[createdAt];
+        delete this.$castCache[updatedAt];
       }
 
       const primaryKey = constructor.primaryKey;
@@ -534,14 +581,15 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
     if (!this.$exists) return false;
     const constructor = this.getModelConstructor() as typeof ModelPersistence;
     if (!constructor.timestamps) return false;
+    const { updatedAt } = constructor.getTimestampColumns();
     const now = this.freshTimestamp();
     const pk = this.getAttribute(constructor.primaryKey);
     const connection = this.getConnection();
     await new Builder(connection, constructor.getQualifiedTable(connection))
       .where(constructor.primaryKey, pk)
-      .update(this.attributesForDriver(connection, { updated_at: now }) as any);
-    (this.$attributes as any)["updated_at"] = now;
-    delete this.$castCache.updated_at;
+      .update(this.attributesForDriver(connection, { [updatedAt]: now }) as any);
+    (this.$attributes as any)[updatedAt] = now;
+    delete this.$castCache[updatedAt];
     this.$original = { ...this.$attributes };
     this.$dirtyKeys?.clear();
     return true;
@@ -558,7 +606,8 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
       .where(constructor.primaryKey, pk);
 
     if (constructor.timestamps) {
-      extra = { ...extra, updated_at: this.freshTimestamp() };
+      const { updatedAt } = constructor.getTimestampColumns();
+      extra = { ...extra, [updatedAt]: this.freshTimestamp() };
     }
 
     await builder.increment(column, amount, extra);

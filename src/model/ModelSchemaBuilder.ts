@@ -14,6 +14,8 @@ export interface ModelInfo {
   keyType: "int" | "string" | "uuid";
   incrementing: boolean;
   timestamps: boolean;
+  createdAtColumn: string;
+  updatedAtColumn: string;
   softDeletes: boolean;
   deletedAtColumn: string;
   schemaDefinition?: (blueprint: Blueprint) => void;
@@ -35,7 +37,19 @@ function castToColumnType(cast: any): string {
 }
 
 function buildBlueprintFromModel(blueprint: Blueprint, info: ModelInfo): void {
-  const { primaryKey, keyType, incrementing, timestamps, softDeletes, deletedAtColumn, casts, fillable, attributes } = info;
+  const {
+    primaryKey,
+    keyType,
+    incrementing,
+    timestamps,
+    createdAtColumn,
+    updatedAtColumn,
+    softDeletes,
+    deletedAtColumn,
+    casts,
+    fillable,
+    attributes,
+  } = info;
 
   // Primary key
   if (keyType === "uuid") {
@@ -47,7 +61,11 @@ function buildBlueprintFromModel(blueprint: Blueprint, info: ModelInfo): void {
   }
 
   // Known fields (fillable + casts keys, minus pk and timestamp columns)
-  const reserved = new Set([primaryKey, "created_at", "updated_at", deletedAtColumn]);
+  const reserved = new Set([primaryKey, deletedAtColumn]);
+  if (timestamps) {
+    reserved.add(createdAtColumn);
+    reserved.add(updatedAtColumn);
+  }
   const fields = [...new Set([...fillable, ...Object.keys(casts), ...Object.keys(attributes)])].filter(
     (f) => !reserved.has(f)
   );
@@ -79,7 +97,7 @@ function buildBlueprintFromModel(blueprint: Blueprint, info: ModelInfo): void {
     if (def !== undefined) col.default(def);
   }
 
-  if (timestamps) blueprint.timestamps();
+  if (timestamps) blueprint.timestamps(createdAtColumn, updatedAtColumn);
   if (softDeletes) blueprint.softDeletes();
 }
 

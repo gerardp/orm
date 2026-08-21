@@ -16,6 +16,10 @@ class BulkUuidUser extends Model {
   static fillable = ["name"];
 }
 
+class ProtectedBulkUser extends BulkUser {
+  static override fillable = ["name", "email", "active"];
+}
+
 describe("Bulk model operations", () => {
   beforeAll(async () => {
     setupTestDb();
@@ -30,6 +34,7 @@ describe("Bulk model operations", () => {
     await Schema.create("bulk_uuid_users", (table) => {
       table.uuid("id").primary();
       table.string("name");
+      table.string("role").nullable();
       table.timestamps();
     });
   });
@@ -126,5 +131,28 @@ describe("Bulk model operations", () => {
     expect(events).toEqual([]);
     expect(created.$exists).toBe(true);
     expect(refreshed?.getAttribute("name")).toBe("Silent A Updated");
+  });
+
+  test("saveMany without events preserves trusted attributes on new models", async () => {
+    const integerKey = new ProtectedBulkUser().forceFill({
+      name: "Trusted integer",
+      email: "trusted-integer@example.test",
+      active: true,
+      role: "admin",
+    });
+    const generatedKey = new BulkUuidUser().forceFill({
+      name: "Trusted UUID",
+      role: "admin",
+    });
+
+    await ProtectedBulkUser.saveMany([integerKey], { events: false });
+    await BulkUuidUser.saveMany([generatedKey], { events: false });
+
+    const integerRow = await ProtectedBulkUser.where("email", "trusted-integer@example.test").firstOrFail();
+    const generatedRow = await BulkUuidUser.findOrFail(generatedKey.getAttribute("id"));
+    expect(integerKey.getAttribute("role")).toBe("admin");
+    expect(integerRow.getAttribute("role")).toBe("admin");
+    expect(generatedKey.getAttribute("role")).toBe("admin");
+    expect(generatedRow.getAttribute("role")).toBe("admin");
   });
 });

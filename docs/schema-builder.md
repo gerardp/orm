@@ -206,11 +206,15 @@ String defaults are always literals, including `"CURRENT_TIMESTAMP"`. Use `Schem
 
 ```ts
 table.timestamps();        // adds nullable created_at + updated_at TIMESTAMP columns
+table.timestamps("createdAt", "updatedAt"); // explicit column names
 table.softDeletes();       // adds nullable deleted_at TIMESTAMP
 table.rememberToken();     // adds nullable remember_token VARCHAR(100)
 ```
 
-`timestamps()` and `softDeletes()` produce the same columns Bunny's [soft delete model trait](./models.md#soft-deletes) and [auto-timestamps](./models.md#timestamps) expect, so they're worth using on every table that needs them.
+`timestamps()` accepts exactly zero arguments or two non-empty, different column
+names. The zero-argument form creates Bunny's defaults; the two-argument form
+matches models that configure `createdAtColumn` and `updatedAtColumn`.
+`softDeletes()` remains independent and always creates `deleted_at`.
 
 `rememberToken()` is the "remember me" column: a session cookie carries the token and the login lookup matches it. It is `string("remember_token", 100).nullable()`, and returns the blueprint with that column current, so modifiers still chain:
 

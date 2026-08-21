@@ -283,9 +283,11 @@ Useful in scopes and policies — they read better than `where("id", …)` and a
 ```ts
 User.orderBy("name", "asc");
 User.orderByDesc("created_at");
-User.latest();                     // orderBy(created_at, desc)
+User.latest();                     // model's getCreatedAtColumn(), descending
 User.latest("published_at");
-User.oldest();                     // orderBy(created_at, asc)
+User.oldest();                     // model's getCreatedAtColumn(), ascending
+DB.table("users").latest();       // generic builders fall back to created_at
+DB.table("users").latest("createdAt"); // explicit generic custom column
 User.inRandomOrder();              // RANDOM() / RAND() — use sparingly on large tables
 User.orderBy("name").reorder();    // clear orders
 User.orderBy("name").reorder("id"); // replace

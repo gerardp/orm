@@ -76,6 +76,43 @@ class Post extends Model.define<{ id: number; user_id: number; title: string }>(
 }
 ```
 
+Tables with camelCase timestamps can configure the model and migration directly:
+
+```ts
+import { Model, Schema } from "@bunnykit/orm";
+
+interface CamelUserAttributes {
+  id: number;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+class CamelUser extends Model.define<CamelUserAttributes>("camel_users") {
+  static override createdAtColumn = "createdAt";
+  static override updatedAtColumn = "updatedAt";
+}
+
+await Schema.create("camel_users", (table) => {
+  table.increments("id");
+  table.string("name");
+  table.timestamps("createdAt", "updatedAt");
+});
+```
+
+Native getters can be serialized with `appends` without duplicating them in
+`static accessors`:
+
+```ts
+class User extends Model.define<{ firstName: string; lastName: string }>("users") {
+  static override appends = ["fullName"];
+
+  get fullName(): string {
+    return `${this.firstName} ${this.lastName}`.trim();
+  }
+}
+```
+
 Point the ORM at a database and run a query:
 
 ```ts

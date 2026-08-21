@@ -760,12 +760,14 @@ export class Builder<T = Record<string, any>, TResult = T> {
     return this;
   }
 
-  latest(column: ModelColumn<T> = "created_at"): this {
-    return this.orderBy(column, "desc");
+  latest(column?: ModelColumn<T>): this {
+    const selected = column ?? (this.model ? this.model.getCreatedAtColumn() : "created_at");
+    return this.orderBy(selected as ModelColumn<T>, "desc");
   }
 
-  oldest(column: ModelColumn<T> = "created_at"): this {
-    return this.orderBy(column, "asc");
+  oldest(column?: ModelColumn<T>): this {
+    const selected = column ?? (this.model ? this.model.getCreatedAtColumn() : "created_at");
+    return this.orderBy(selected as ModelColumn<T>, "asc");
   }
 
   inRandomOrder(): this {

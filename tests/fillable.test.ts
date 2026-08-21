@@ -1,5 +1,5 @@
 import { expect, test, describe, beforeAll } from "bun:test";
-import { Factory, Model, Schema } from "../src/index.js";
+import { Factory, MassAssignmentError, Model, Schema } from "../src/index.js";
 import { setupTestDb } from "./helpers.js";
 
 class GuardedModel extends Model {
@@ -26,6 +26,11 @@ class EmptyGuardedModel extends Model {
 
 class FullyGuardedModel extends Model {
   static guarded = ["*"];
+}
+
+class StrictGuardedModel extends Model {
+  static guarded = ["role"];
+  static preventSilentlyDiscardingAttributes = true;
 }
 
 class DefaultedGuardedModel extends Model {
@@ -204,18 +209,25 @@ describe("Mass Assignment Protection", () => {
     expect(record.getAttribute("secret")).toBe("set directly");
   });
 
-  test("protects models without an explicit policy in the constructor and fill", () => {
-    const unconfigured = new NoPolicyModel({ name: "Blocked" });
-    expect(unconfigured.getAttribute("name")).toBeUndefined();
+  test("throws for mass assignment without an explicit policy", () => {
+    expect(() => new NoPolicyModel({ name: "Blocked" })).toThrow(MassAssignmentError);
 
-    unconfigured.fill({ name: "Still blocked" });
-    expect(unconfigured.getAttribute("name")).toBeUndefined();
+    const unconfigured = new NoPolicyModel();
+    expect(() => unconfigured.fill({ name: "Still blocked" })).toThrow(MassAssignmentError);
+
+    let caught: unknown;
+    try {
+      unconfigured.fill({ name: "Still blocked", role: "admin" } as any);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(MassAssignmentError);
+    expect((caught as MassAssignmentError).model).toBe("NoPolicyModel");
+    expect((caught as MassAssignmentError).attributes).toEqual(["name", "role"]);
   });
 
   test("distinguishes the protected default from explicit empty arrays", () => {
-
-    const emptyFillable = new EmptyFillableModel({ name: "Blocked" });
-    expect(emptyFillable.getAttribute("name")).toBeUndefined();
+    expect(() => new EmptyFillableModel({ name: "Blocked" })).toThrow(MassAssignmentError);
 
     const emptyGuarded = new EmptyGuardedModel({ name: "Allowed" });
     expect(emptyGuarded.getAttribute("name")).toBe("Allowed");
@@ -240,16 +252,21 @@ describe("Mass Assignment Protection", () => {
     expect(created.getAttribute("name")).toBe("Force create");
   });
 
-  test("create and instance update respect the protected default", async () => {
-    const created = await NoPolicyModel.create({ name: "Blocked create" });
-    expect(created.getAttribute("name")).toBeUndefined();
+  test("create and instance update throw for the protected default", async () => {
+    await expect(NoPolicyModel.create({ name: "Blocked create" })).rejects.toBeInstanceOf(MassAssignmentError);
 
     const existing = await NoPolicyModel.forceCreate({ name: "Before update" });
-    await existing.update({ name: "Blocked update" });
+    await expect(existing.update({ name: "Blocked update" })).rejects.toBeInstanceOf(MassAssignmentError);
     expect(existing.getAttribute("name")).toBe("Before update");
     expect(
       (await NoPolicyModel.findOrFail(existing.getAttribute("id"))).getAttribute("name")
     ).toBe("Before update");
+  });
+
+  test("allows empty input on a fully guarded model", async () => {
+    expect(() => new NoPolicyModel({})).not.toThrow();
+    const created = await NoPolicyModel.create({});
+    expect(created.$exists).toBe(true);
   });
 
   test("Model.define generates fillable from columns and otherwise stays protected", () => {
@@ -260,13 +277,26 @@ describe("Mass Assignment Protection", () => {
     expect(withColumns.getAttribute("name")).toBe("Allowed");
     expect(withColumns.getAttribute("secret")).toBeUndefined();
 
-    const withoutColumns = new DefinedWithoutColumnsModel({ name: "Blocked" });
-    expect(withoutColumns.getAttribute("name")).toBeUndefined();
+    expect(() => new DefinedWithoutColumnsModel({ name: "Blocked" })).toThrow(MassAssignmentError);
   });
 
-  test("guarded wildcard blocks every attribute", () => {
-    const record = new FullyGuardedModel({ name: "Blocked", role: "admin" });
-    expect(record.$attributes).toEqual({});
+  test("guarded wildcard throws when it discards attributes", () => {
+    expect(() => new FullyGuardedModel({ name: "Blocked", role: "admin" })).toThrow(MassAssignmentError);
+  });
+
+  test("partial policies stay silent unless strict mode is enabled", () => {
+    const partial = new GuardedModel({ name: "Allowed", role: "blocked" });
+    expect(partial.getAttribute("name")).toBe("Allowed");
+    expect(partial.getAttribute("role")).toBeUndefined();
+
+    expect(() => new StrictGuardedModel({ name: "Allowed", role: "blocked" })).toThrow(MassAssignmentError);
+
+    Model.preventSilentlyDiscardingAttributes = true;
+    try {
+      expect(() => new GuardedModel({ name: "Allowed", role: "blocked" })).toThrow(MassAssignmentError);
+    } finally {
+      Model.preventSilentlyDiscardingAttributes = false;
+    }
   });
 
   test("rejects declaring fillable and guarded on the same class", () => {
@@ -305,6 +335,14 @@ describe("Mass Assignment Protection", () => {
       expect(Object.hasOwn(record.$attributes, key)).toBe(false);
     }
     expect(record.$exists).toBe(false);
+
+    const protectedRecord = new NoPolicyModel(Object.fromEntries([
+      ["$attributes", { compromised: true }],
+      ["__proto__", { compromised: true }],
+      ["prototype", { compromised: true }],
+      ["constructor", { compromised: true }],
+    ]));
+    expect(protectedRecord.$attributes).toEqual({});
   });
 
   test("forceFill and forceCreate bypass the declared policy", async () => {

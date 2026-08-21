@@ -19,6 +19,13 @@ class Reading extends Model {
   static override casts = { taken_at: "datetime" };
 }
 
+class CamelReading extends Model {
+  static override table = "camel_readings";
+  static override fillable = ["label"];
+  static override createdAtColumn = "createdAt";
+  static override updatedAtColumn = "updatedAt";
+}
+
 describe.serial("Date storage across drivers", () => {
   afterAll(async () => {
     for (const created of contexts) await created.dispose();
@@ -52,6 +59,18 @@ describe.serial("Date storage across drivers", () => {
     expect(new Date(rows[0].taken_at).toISOString()).toBe("2026-08-19T14:00:00.123Z");
     expect(rows[0].created_at).not.toBeNull();
     expect((reading as any).taken_at.toISOString()).toBe("2026-08-19T14:00:00.123Z");
+  });
+
+  runIfMySql("MySQL serializes configured model timestamp columns", async () => {
+    const { connection } = await context("mysql");
+    await connection.run(
+      "CREATE TABLE camel_readings (id BIGINT AUTO_INCREMENT PRIMARY KEY, label VARCHAR(20), createdAt DATETIME(3), updatedAt DATETIME(3))"
+    );
+
+    await CamelReading.create({ label: "camel" });
+    const [row] = await connection.query("SELECT createdAt, updatedAt FROM camel_readings");
+    expect(row.createdAt).not.toBeNull();
+    expect(row.updatedAt).not.toBeNull();
   });
 
   runIfMySql("MySQL accepts a fractional value on a whole-second column", async () => {
@@ -166,6 +185,19 @@ describe.serial("Date storage across drivers", () => {
     // `dateTime()` compiles to TIMESTAMP(0) here, so the column itself drops the
     // milliseconds — the instant survives to the second.
     expect((reloaded as any).taken_at.toISOString()).toBe("2026-08-19T14:00:00.000Z");
+  });
+
+  runIfPostgres("PostgreSQL persists configured model timestamp columns", async () => {
+    const { connection } = await context("postgres");
+    await Schema.create("camel_readings", (table) => {
+      table.increments("id");
+      table.string("label");
+      table.timestamps("createdAt", "updatedAt");
+    });
+
+    const reading = await CamelReading.create({ label: "camel" });
+    expect(reading.getAttribute("createdAt")).toBeDefined();
+    expect(reading.getAttribute("updatedAt")).toBeDefined();
   });
 
   runIfPostgres("PostgreSQL keeps milliseconds when the column has the precision", async () => {

@@ -12,6 +12,7 @@ function setupDb() {
 
 class BenchUser extends Model {
   static table = "bench_users";
+  static fillable = ["name", "email", "active", "score"];
   static casts = { active: "boolean", score: "number" };
 }
 
@@ -126,6 +127,7 @@ describe("Benchmark: CPU Optimizations", () => {
   test("Observer dispatch x5000 (event-indexed dispatch)", async () => {
     class TestUser extends Model {
       static table = "bench_users";
+      static fillable = ["name"];
     }
 
     const events: string[] = [];
