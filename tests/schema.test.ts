@@ -335,6 +335,19 @@ describe("Schema Builder", () => {
     expect(sql).not.toContain("CONSTRAINT");
   });
 
+  test("constrained() infers snake_case tables from snake_case and camelCase keys", () => {
+    const blueprint = new Blueprint("posts");
+    blueprint.string("user_id").constrained();
+    blueprint.string("userId").constrained();
+    blueprint.string("blogPostId").constrained();
+
+    expect(blueprint.foreignKeys.map((foreignKey) => foreignKey.onTable)).toEqual([
+      "users",
+      "users",
+      "blog_posts",
+    ]);
+  });
+
   test("foreign key actions reject SQL fragments and invalid SET NULL columns", () => {
     const injected = new Blueprint("posts");
     injected.foreignId("user_id");

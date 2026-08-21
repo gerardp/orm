@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.2 - 2026-08-21
+
+### Fixed
+
+- `constrained()` now recognizes camelCase foreign keys ending in `Id` and
+  applies Bunny's `snakeCase` table convention: `userId` targets `users` and
+  `blogPostId` targets `blog_posts`. Code that relied on the previous inferred
+  names such as `userIds` must pass that table name explicitly.
+
 ## 0.11.1 - 2026-08-21
 
 ### Changed

@@ -6,6 +6,7 @@ import type {
   ForeignKeyDefinition,
   ReferentialAction,
 } from "../types/index.js";
+import { snakeCase } from "../utils.js";
 
 const REFERENTIAL_ACTIONS = new Set<ReferentialAction>([
   "cascade",
@@ -424,8 +425,12 @@ export class Blueprint {
   }
 
   private guessConstrainedTable(column: string): string {
-    const base = column.endsWith("_id") ? column.slice(0, -3) : column;
-    return `${base}s`;
+    const base = column.endsWith("_id")
+      ? column.slice(0, -3)
+      : column.endsWith("Id")
+        ? column.slice(0, -2)
+        : column;
+    return `${snakeCase(base)}s`;
   }
 
   dropColumn(column: string | string[]): void {
