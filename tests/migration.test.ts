@@ -122,7 +122,10 @@ export default class CreateTestItems extends Migration {
     await Bun.write(filePath, content);
 
     const migrator = new Migrator(connection, TEST_MIGRATIONS_DIR);
-    await migrator.run();
+    const applied = await migrator.runWithResult();
+    expect(applied).toEqual([`tests/temp_migrations/${fileName}`]);
+    const compatibleRun: () => Promise<void> = () => migrator.run();
+    expect(await compatibleRun()).toBeUndefined();
     expect(await Schema.hasTable("test_items", connection)).toBe(true);
   });
 
@@ -215,6 +218,70 @@ export default class CreateNoQueryLogItems extends Migration {
     expect(logs.some((args) => args[0] === "[QUERY]")).toBe(false);
     expect(logs.some((args) => args[0] === "Landlord migrations")).toBe(true);
     expect(logs.some((args) => args[0] === "Tenant: acme")).toBe(true);
+  });
+
+  test("emits one JSON document for a landlord + tenants run, progress on stderr", async () => {
+    const dir = join(process.cwd(), "tests", "temp_migrations_json_scopes");
+    await mkdir(dir, { recursive: true });
+    await Bun.write(
+      join(dir, "20260101000000_create_json_scope_table.ts"),
+      `
+import { Migration, Schema } from "../../src/index.js";
+export default class CreateJsonScopeTable extends Migration {
+  async up(): Promise<void> {
+    await Schema.create("json_scope", (table) => { table.increments("id"); });
+  }
+  async down(): Promise<void> {
+    await Schema.dropIfExists("json_scope");
+  }
+}`
+    );
+    const isolated = setupTestDb();
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const previousStdout = process.stdout.write;
+    const previousStderr = process.stderr.write;
+    process.stdout.write = ((chunk: any) => { stdout.push(String(chunk)); return true; }) as any;
+    process.stderr.write = ((chunk: any) => { stderr.push(String(chunk)); return true; }) as any;
+
+    try {
+      await runConfiguredMigrationCommand(
+        "migrate:status",
+        {
+          migrations: { landlord: dir, tenant: dir },
+          tenancy: {
+            listTenants: async () => ["acme", "globex"],
+            resolveTenant: async (tenantId: string) => ({
+              strategy: "database",
+              name: `tenant:${tenantId}`,
+              config: { url: "sqlite://:memory:" },
+            }),
+          },
+        } as any,
+        isolated,
+        { scope: "default" },
+        { json: true },
+      );
+    } finally {
+      process.stdout.write = previousStdout;
+      process.stderr.write = previousStderr;
+      await ConnectionManager.closeAll();
+      await isolated.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+
+    // One document for the whole run, not one per tenant.
+    const documents = stdout.join("").trim().split("\n").filter(Boolean);
+    expect(documents).toHaveLength(1);
+    const payload = JSON.parse(documents[0]);
+    expect(payload.migrations.map((row: any) => row.tenant)).toEqual([null, "acme", "globex"]);
+    expect(payload.migrations.every((row: any) => row.status === "Pending")).toBe(true);
+
+    const progress = stderr.join("");
+    expect(progress).toContain("Landlord migrations");
+    expect(progress).toContain("Tenant: acme");
+    expect(stdout.join("")).not.toContain("Tenant: acme");
   });
 
   test("status shows ran migrations", async () => {

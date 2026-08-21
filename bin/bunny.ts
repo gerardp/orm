@@ -19,9 +19,10 @@ import type { QueueDriver } from "../src/queue/QueueDriver.js";
 import { Worker } from "../src/queue/Worker.js";
 import { registerJob } from "../src/queue/Job.js";
 import { registerCommand, resolveCommand, listCommands, isCommandConstructor } from "../src/commands/Command.js";
-import { CommandRunner } from "../src/commands/CommandRunner.js";
+import { CommandRunner, parseBooleanOptionValue } from "../src/commands/CommandRunner.js";
 import { parseSignatureName } from "../src/commands/SignatureParser.js";
 import { registerOrmCommands } from "../src/cli/index.js";
+import { relayStdoutToStderr } from "../src/cli/StdoutContract.js";
 import {
   BelongsTo,
   BelongsToMany,
@@ -46,6 +47,16 @@ import {
   Builder,
   Model,
 } from "../src/index.js";
+
+/** The commands whose stdout is a machine contract under `--json`. */
+const JSON_CONTRACT_COMMANDS = new Set<string>([
+  "migrate",
+  "migrate:rollback",
+  "migrate:status",
+  "migrate:reset",
+  "migrate:refresh",
+  "migrate:fresh",
+]);
 
 function parseEnvPathSetting(value?: string): string | string[] | undefined {
   if (!value) return undefined;
@@ -541,7 +552,69 @@ async function runRepl(config: BunnyConfig, replArgs: string[]): Promise<number>
   }
 }
 
-async function loadConfig(allowFallback = false): Promise<BunnyConfig> {
+/**
+ * Pulls the global `--config <path>` / `--config=<path>` out of the argument
+ * list. It is global rather than per-command so that one flag points every
+ * command at the application's own config module, and it is removed from the
+ * args before dispatch so the command's own parser never sees it.
+ */
+function extractConfigOption(args: string[]): { args: string[]; configPath?: string } {
+  const remaining: string[] = [];
+  let configPath: string | undefined;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--config") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("-")) throw new Error("--config needs a path, e.g. --config config/database.ts");
+      configPath = value;
+      index++;
+      continue;
+    }
+    if (arg.startsWith("--config=")) {
+      const value = arg.slice("--config=".length);
+      if (!value) throw new Error("--config needs a path, e.g. --config config/database.ts");
+      configPath = value;
+      continue;
+    }
+    remaining.push(arg);
+  }
+  return { args: remaining, configPath };
+}
+
+/** Read the last `--name` / `--name=true|false` occurrence, like parseArgs. */
+function extractBooleanOption(args: string[], name: string): boolean {
+  const flag = `--${name}`;
+  let value: string | boolean | undefined;
+  for (const arg of args) {
+    if (arg === "--") break;
+    if (arg === flag) value = true;
+    else if (arg.startsWith(`${flag}=`)) value = arg.slice(flag.length + 1);
+  }
+  return parseBooleanOptionValue(value, name) ?? false;
+}
+
+/** A configuration that does not load or does not connect is a user error, not a crash. */
+function failWithConfigError(err: unknown): never {
+  console.error(`${styleText("red", "Error:", { stream: process.stderr })} ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+}
+
+async function loadExplicitConfig(path: string): Promise<BunnyConfig> {
+  const resolved = resolve(process.cwd(), path);
+  if (!existsSync(resolved)) {
+    throw new Error(`Config file not found: ${resolved}`);
+  }
+  const mod = await import(pathToFileURL(resolved).href);
+  const config = mod.default || mod;
+  if (!config || typeof config !== "object") {
+    throw new Error(`${resolved} does not export a configuration object.`);
+  }
+  return config as BunnyConfig;
+}
+
+async function loadConfig(allowFallback = false, explicitPath?: string): Promise<BunnyConfig> {
+  if (explicitPath) return await loadExplicitConfig(explicitPath);
+
   const configPath = join(process.cwd(), "bunny.config.ts");
   if (existsSync(configPath)) {
     const mod = await import(configPath);
@@ -567,6 +640,12 @@ async function loadConfig(allowFallback = false): Promise<BunnyConfig> {
 
   const driver = process.env.DB_CONNECTION as any;
   if (driver) {
+    if (!Connection.SUPPORTED_DRIVERS.includes(driver)) {
+      throw new Error(
+        `DB_CONNECTION=${driver} is not a supported driver. Use one of: ${Connection.SUPPORTED_DRIVERS.join(", ")}, ` +
+          `or point bunny at your application's config with --config <path>.`
+      );
+    }
     return {
       connection: {
         driver,
@@ -598,21 +677,42 @@ async function loadConfig(allowFallback = false): Promise<BunnyConfig> {
 }
 
 async function main() {
-  const rawArgs = process.argv.slice(2);
+  const { args: rawArgs, configPath } = (() => {
+    try {
+      return extractConfigOption(process.argv.slice(2));
+    } catch (err) {
+      console.error(`${styleText("red", "Error:", { stream: process.stderr })} ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  })();
   // `bunny run foo` is the documented spelling for application commands.
   // Keep direct `bunny foo` dispatch for backwards compatibility.
   const args    = rawArgs[0] === "run" ? rawArgs.slice(1) : rawArgs;
   const command = args[0];
   const isInit = command === "init";
 
+  // `--json` on a migration command makes stdout a contract. Relay everything
+  // else — including whatever the config module or a migration prints — to
+  // stderr from here on, before the config is even imported.
+  if (JSON_CONTRACT_COMMANDS.has(command ?? "")) {
+    try {
+      // This outer relay intentionally stays installed until process exit so a
+      // config or migration cannot corrupt the payload from a late callback.
+      if (extractBooleanOption(args, "json")) relayStdoutToStderr();
+    } catch (err) {
+      console.error(`${styleText("red", "Error:", { stream: process.stderr })} ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  }
+
   // Static metadata for built-in commands — shown before config loads
   const CORE_COMMANDS: Array<{ name: string; sig: string; desc: string }> = [
-    { name: "migrate",          sig: "migrate {--landlord} {--tenants} {--tenant=}",              desc: "Run pending migrations" },
-    { name: "migrate:rollback", sig: "migrate:rollback {--steps=} {--landlord} {--tenants} {--tenant=}", desc: "Rollback the last batch" },
-    { name: "migrate:reset",    sig: "migrate:reset {--landlord} {--tenants} {--tenant=}",        desc: "Rollback all migrations" },
-    { name: "migrate:refresh",  sig: "migrate:refresh {--landlord} {--tenants} {--tenant=}",      desc: "Reset and rerun all migrations" },
-    { name: "migrate:fresh",    sig: "migrate:fresh {--landlord} {--tenants} {--tenant=}",        desc: "Drop all tables and rerun migrations" },
-    { name: "migrate:status",   sig: "migrate:status {--landlord} {--tenants} {--tenant=}",       desc: "Show migration status" },
+    { name: "migrate",          sig: "migrate {--landlord} {--tenants} {--tenant=} {--allow-changed} {--json}", desc: "Run pending migrations" },
+    { name: "migrate:rollback", sig: "migrate:rollback {--step=} {--steps=} {--landlord} {--tenants} {--tenant=} {--json}", desc: "Rollback the last batch" },
+    { name: "migrate:reset",    sig: "migrate:reset {--landlord} {--tenants} {--tenant=} {--json}", desc: "Rollback all migrations" },
+    { name: "migrate:refresh",  sig: "migrate:refresh {--landlord} {--tenants} {--tenant=} {--json}", desc: "Reset and rerun all migrations" },
+    { name: "migrate:fresh",    sig: "migrate:fresh {--landlord} {--tenants} {--tenant=} {--json}", desc: "Drop all tables and rerun migrations" },
+    { name: "migrate:status",   sig: "migrate:status {--landlord} {--tenants} {--tenant=} {--json}", desc: "Show migration status" },
     { name: "make:migration",   sig: "make:migration {name} {--model} {--m} {--dir=} {--models-dir=}", desc: "Create a new migration file" },
     { name: "make:model",       sig: "make:model {name} {--migration} {--m} {--dir=}",           desc: "Create a new model file" },
     { name: "migrate:make",    sig: "migrate:make {name} {dir?}",                                desc: "Create a new migration file" },
@@ -630,8 +730,9 @@ async function main() {
   const isTopHelp = !command || command === "--help" || command === "-h";
 
   function printStaticHelp() {
-    console.log("\nUsage: bunny <command> [options]\n");
-    console.log(`Run ${styleText("yellow", "bunny <command> --help")} for command-specific usage.\n`);
+    console.log("\nUsage: bunny [--config <path>] <command> [options]\n");
+    console.log(`Run ${styleText("yellow", "bunny <command> --help")} for command-specific usage.`);
+    console.log(`${styleText("yellow", "--config <path>")} loads that module instead of ./bunny.config.ts.\n`);
     console.log("Core commands:\n");
     for (const { name, desc } of [...CORE_COMMANDS].sort((a, b) => a.name.localeCompare(b.name))) {
       const color = (name === "queue" || name === "repl") ? "green" : "yellow";
@@ -667,7 +768,7 @@ async function main() {
 
   // REPL runs before configureBunny (uses in-memory SQLite fallback)
   if (command === "repl") {
-    const config = await loadConfig(true);
+    const config = await loadConfig(true, configPath);
     process.exit(await runRepl(config, args.slice(1)));
   }
 
@@ -679,7 +780,7 @@ async function main() {
   // Load config — if it fails and the user asked for help, show static fallback
   let config: BunnyConfig;
   try {
-    config = await loadConfig();
+    config = await loadConfig(false, configPath);
   } catch (err) {
     if (isTopHelp) { printStaticHelp(); return; }
     if (isHelp) {
@@ -688,6 +789,7 @@ async function main() {
     }
     const missingConfig = err instanceof Error
       && err.message.includes("No database configuration found")
+      && !configPath
       && !hasLocalBunnyConfig();
     if (missingConfig) {
       console.error(styleText("red", "No bunny.config.ts found.", { stream: process.stderr }));
@@ -704,10 +806,20 @@ async function main() {
       console.error("Run `bunny init` to create a starter config.");
       process.exit(1);
     }
-    throw err;
+    // A config that does not load is the user's problem, not a crash: say what
+    // is wrong on stderr instead of dumping a stack trace at them.
+    failWithConfigError(err);
   }
 
-  const { connection } = configureBunny(config);
+  // Building the connection is still configuration work — an unsupported driver
+  // or URL scheme surfaces here, and deserves the same treatment as a config
+  // file that would not load.
+  let connection: Connection;
+  try {
+    ({ connection } = configureBunny(config));
+  } catch (err) {
+    failWithConfigError(err);
+  }
   registerOrmCommands(config, connection);
 
   // Walk user commandsPath and register user-defined commands
@@ -841,7 +953,13 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+// Top-level await rather than `main().catch(...)`: a pending top-level await is
+// a reference Bun counts, so the process cannot drain the event loop and exit 0
+// half way through a command. That is a second line of defence behind the MySQL
+// keep-alive in Connection — see docs/bun-mysql-event-loop.md.
+try {
+  await main();
+} catch (err) {
   console.error(err);
   process.exit(1);
-});
+}

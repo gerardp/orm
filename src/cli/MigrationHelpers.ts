@@ -4,9 +4,10 @@ import { TenantContext } from "../connection/TenantContext.js";
 import { Migrator } from "../migration/Migrator.js";
 import { SeederRunner } from "../seeding/Seeder.js";
 import { normalizePathList } from "../utils.js";
+import { relayStdoutToStderr, writeToStdout } from "./StdoutContract.js";
 import { resolve, sep } from "path";
 import type { BunnyConfig, ModelsPath } from "../config/BunnyConfig.js";
-import type { MigratorOptions } from "../migration/Migrator.js";
+import type { MigrationStatusRow, MigratorOptions } from "../migration/Migrator.js";
 
 export type MigrationCommand =
   | "migrate"
@@ -15,6 +16,29 @@ export type MigrationCommand =
   | "migrate:reset"
   | "migrate:refresh"
   | "migrate:fresh";
+
+/** Flags a migration command takes beyond its target. */
+export interface MigrationCommandOptions {
+  /** Regenerate model types once the command is done. */
+  generateTypes?: boolean;
+  /** Print the result as one JSON document on stdout, progress on stderr. */
+  json?: boolean;
+  /** `migrate:rollback` only: how many batches to undo. Defaults to 1. */
+  steps?: number;
+  /** `migrate` only: migrate even though applied migration files have changed. */
+  allowChanged?: boolean;
+}
+
+/**
+ * What a migration command did. Every key is filled in for the command it
+ * belongs to, so `{"applied":[]}` says "nothing to migrate" rather than leaving
+ * the consumer to guess from a missing field.
+ */
+export interface MigrationCommandResult {
+  applied?: string[];
+  rolledBack?: string[];
+  migrations?: MigrationStatusRow[];
+}
 
 export type MigrationTarget =
   | { scope: "default" }
@@ -31,6 +55,61 @@ export function parseTargetFromOptions(cmd: {
   const tenant = cmd.option("tenant");
   if (tenant && typeof tenant === "string") return { scope: "tenant", tenantId: tenant };
   return { scope: "default" };
+}
+
+/** Reads `--step=` / `--steps=` into a batch count. */
+export function parseStepsOption(value: string | boolean | undefined): number | undefined {
+  if (value === undefined || value === true || value === false || value === "") return undefined;
+  const steps = Number(value);
+  if (!Number.isInteger(steps) || steps < 1) {
+    throw new Error(`--step must be a positive whole number of batches, got "${value}".`);
+  }
+  return steps;
+}
+
+/** Accepts the old `generateTypes` boolean in the options position. */
+function normalizeCommandOptions(options: boolean | MigrationCommandOptions = {}): MigrationCommandOptions {
+  return typeof options === "boolean" ? { generateTypes: options } : options;
+}
+
+/**
+ * Under --json stdout carries the payload and nothing else, so every progress
+ * line — including the ones the Migrator writes — is redirected to stderr.
+ */
+function progressWriter(options: MigrationCommandOptions): (line: string) => void {
+  return options.json ? (line: string) => process.stderr.write(`${line}\n`) : (line: string) => console.log(line);
+}
+
+function migratorOptions(options: MigrationCommandOptions): Partial<MigratorOptions> {
+  return {
+    allowChanged: options.allowChanged,
+    output: progressWriter(options),
+    // Warnings are diagnostics, not results: stderr in either mode.
+    warn: (line: string) => process.stderr.write(`${line}\n`),
+  };
+}
+
+function mergeResult(target: MigrationCommandResult, next: MigrationCommandResult): MigrationCommandResult {
+  if (next.applied)    (target.applied    ??= []).push(...next.applied);
+  if (next.rolledBack) (target.rolledBack ??= []).push(...next.rolledBack);
+  if (next.migrations) (target.migrations ??= []).push(...next.migrations);
+  return target;
+}
+
+/** The keys a given command always emits, empty or not. */
+function jsonPayload(command: MigrationCommand, result: MigrationCommandResult): Record<string, unknown> {
+  switch (command) {
+    case "migrate":
+    case "migrate:fresh":
+      return { applied: result.applied ?? [] };
+    case "migrate:rollback":
+    case "migrate:reset":
+      return { rolledBack: result.rolledBack ?? [] };
+    case "migrate:refresh":
+      return { rolledBack: result.rolledBack ?? [], applied: result.applied ?? [] };
+    default:
+      return { migrations: result.migrations ?? [] };
+  }
 }
 
 export function getDefaultMigrationsPath(config: BunnyConfig): string | string[] {
@@ -97,16 +176,20 @@ export function buildMigrator(
 export async function runMigratorCommand(
   command: MigrationCommand,
   migrator: Migrator,
+  options: MigrationCommandOptions = {},
   statusLabel?: string,
-): Promise<void> {
-  if (command === "migrate")           { await migrator.run();      return; }
-  if (command === "migrate:rollback")  { await migrator.rollback(); return; }
-  if (command === "migrate:reset")     { await migrator.reset();    return; }
-  if (command === "migrate:refresh")   { await migrator.refresh();  return; }
-  if (command === "migrate:fresh")     { await migrator.fresh();    return; }
-  const status = await migrator.status();
-  if (statusLabel) console.log(statusLabel);
-  console.table(status);
+): Promise<MigrationCommandResult> {
+  if (command === "migrate")           return { applied: await migrator.runWithResult() };
+  if (command === "migrate:rollback")  return { rolledBack: await migrator.rollbackWithResult(options.steps ?? 1) };
+  if (command === "migrate:reset")     return { rolledBack: await migrator.resetWithResult() };
+  if (command === "migrate:refresh")   return await migrator.refreshWithResult();
+  if (command === "migrate:fresh")     return { applied: await migrator.freshWithResult() };
+  const migrations = await migrator.status();
+  if (!options.json) {
+    if (statusLabel) console.log(statusLabel);
+    console.table(migrations);
+  }
+  return { migrations };
 }
 
 export async function getTenantIds(config: BunnyConfig): Promise<string[]> {
@@ -121,15 +204,25 @@ export async function runTenantMigrator(
   config: BunnyConfig,
   connectionPath: string | string[],
   tenantId: string,
-  generateTypes: boolean = false,
-): Promise<void> {
+  options: boolean | MigrationCommandOptions = {},
+): Promise<MigrationCommandResult> {
+  const commandOptions = normalizeCommandOptions(options);
+  let result: MigrationCommandResult = {};
   await TenantContext.run(tenantId, async () => {
     const context = TenantContext.current();
     if (!context) throw new Error(`Tenant "${tenantId}" did not resolve to an active context.`);
-    console.log(`Tenant: ${tenantId}`);
-    const migrator = buildMigrator(config, context.connection, connectionPath, "tenant", { tenantId }, generateTypes);
-    await runMigratorCommand(command, migrator);
+    progressWriter(commandOptions)(`Tenant: ${tenantId}`);
+    const migrator = buildMigrator(
+      config,
+      context.connection,
+      connectionPath,
+      "tenant",
+      { ...migratorOptions(commandOptions), tenantId },
+      commandOptions.generateTypes,
+    );
+    result = await runMigratorCommand(command, migrator, commandOptions);
   });
+  return result;
 }
 
 export async function runTenantMigrationCommand(
@@ -137,10 +230,10 @@ export async function runTenantMigrationCommand(
   config: BunnyConfig,
   tenantPath: string | string[],
   tenantId: string,
-  generateTypes: boolean = false,
-): Promise<void> {
+  options: boolean | MigrationCommandOptions = {},
+): Promise<MigrationCommandResult> {
   try {
-    await runTenantMigrator(command, config, tenantPath, tenantId, generateTypes);
+    return await runTenantMigrator(command, config, tenantPath, tenantId, options);
   } finally {
     const context = ConnectionManager.getResolvedTenant(tenantId);
     ConnectionManager.purgeTenant(tenantId);
@@ -155,15 +248,24 @@ export async function runConfiguredMigrationCommand(
   config: BunnyConfig,
   connection: Connection,
   target: MigrationTarget,
-  generateTypes: boolean = false,
-): Promise<void> {
+  options: boolean | MigrationCommandOptions = {},
+): Promise<MigrationCommandResult> {
+  const commandOptions = normalizeCommandOptions(options);
   const previousConnectionLogQueries = connection.logQueries;
   const previousGlobalLogQueries = Connection.logQueries;
   connection.logQueries = false;
   Connection.logQueries = false;
+  // Anything the run prints — a console.log inside a migration's up(), an event
+  // listener, listTenants() — would otherwise corrupt the document on stdout.
+  const restoreStdout = commandOptions.json ? relayStdoutToStderr() : undefined;
   try {
-    await runConfiguredMigrationCommandWithoutSqlLogging(command, config, connection, target, generateTypes);
+    const result = await runConfiguredMigrationCommandWithoutSqlLogging(command, config, connection, target, commandOptions);
+    // One JSON document per invocation, written last: a tenant loop must not
+    // produce one payload per tenant.
+    if (commandOptions.json) writeToStdout(`${JSON.stringify(jsonPayload(command, result))}\n`);
+    return result;
   } finally {
+    restoreStdout?.();
     connection.logQueries = previousConnectionLogQueries;
     Connection.logQueries = previousGlobalLogQueries;
   }
@@ -174,8 +276,13 @@ async function runConfiguredMigrationCommandWithoutSqlLogging(
   config: BunnyConfig,
   connection: Connection,
   target: MigrationTarget,
-  generateTypes: boolean = false,
-): Promise<void> {
+  options: MigrationCommandOptions = {},
+): Promise<MigrationCommandResult> {
+  const result: MigrationCommandResult = {};
+  const progress = progressWriter(options);
+  const landlordMigrator = (path: string | string[]) =>
+    buildMigrator(config, connection, path, "landlord", migratorOptions(options), options.generateTypes);
+
   if (!config.migrations) {
     const defaultPath = getDefaultMigrationsPath(config);
     if (target.scope === "tenant" || target.scope === "tenants") {
@@ -184,16 +291,14 @@ async function runConfiguredMigrationCommandWithoutSqlLogging(
       }
       ConnectionManager.setTenantResolver(config.tenancy.resolveTenant);
       if (target.scope === "tenant") {
-        await runTenantMigrationCommand(command, config, defaultPath, target.tenantId, generateTypes);
-        return;
+        return mergeResult(result, await runTenantMigrationCommand(command, config, defaultPath, target.tenantId, options));
       }
       for (const tenantId of await getTenantIds(config)) {
-        await runTenantMigrationCommand(command, config, defaultPath, tenantId, generateTypes);
+        mergeResult(result, await runTenantMigrationCommand(command, config, defaultPath, tenantId, options));
       }
-      return;
+      return result;
     }
-    await runMigratorCommand(command, buildMigrator(config, connection, defaultPath, "landlord", {}, generateTypes));
-    return;
+    return mergeResult(result, await runMigratorCommand(command, landlordMigrator(defaultPath), options));
   }
 
   const landlordPath = config.migrations.landlord;
@@ -201,8 +306,8 @@ async function runConfiguredMigrationCommandWithoutSqlLogging(
 
   const runLandlord = async () => {
     if (!landlordPath) return;
-    console.log("Landlord migrations");
-    await runMigratorCommand(command, buildMigrator(config, connection, landlordPath, "landlord", {}, generateTypes));
+    progress("Landlord migrations");
+    mergeResult(result, await runMigratorCommand(command, landlordMigrator(landlordPath), options));
   };
 
   const runAllTenants = async () => {
@@ -212,20 +317,19 @@ async function runConfiguredMigrationCommandWithoutSqlLogging(
     }
     ConnectionManager.setTenantResolver(config.tenancy.resolveTenant);
     for (const tenantId of await getTenantIds(config)) {
-      await runTenantMigrationCommand(command, config, tenantPath, tenantId, generateTypes);
+      mergeResult(result, await runTenantMigrationCommand(command, config, tenantPath, tenantId, options));
     }
   };
 
-  if (target.scope === "landlord") { await runLandlord(); return; }
-  if (target.scope === "tenants")  { await runAllTenants(); return; }
+  if (target.scope === "landlord") { await runLandlord(); return result; }
+  if (target.scope === "tenants")  { await runAllTenants(); return result; }
   if (target.scope === "tenant") {
-    if (!tenantPath) return;
+    if (!tenantPath) return result;
     if (!config.tenancy?.resolveTenant) {
       throw new Error("Tenant migrations require tenancy.resolveTenant() in bunny.config.ts.");
     }
     ConnectionManager.setTenantResolver(config.tenancy.resolveTenant);
-    await runTenantMigrationCommand(command, config, tenantPath, target.tenantId, generateTypes);
-    return;
+    return mergeResult(result, await runTenantMigrationCommand(command, config, tenantPath, target.tenantId, options));
   }
 
   // default: landlord first, then tenants (rollback reverses order)
@@ -236,6 +340,7 @@ async function runConfiguredMigrationCommandWithoutSqlLogging(
     await runLandlord();
     await runAllTenants();
   }
+  return result;
 }
 
 export async function runSeederCommand(

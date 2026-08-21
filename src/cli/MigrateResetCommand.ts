@@ -4,10 +4,13 @@ import type { Connection } from "../connection/Connection.js";
 import type { BunnyConfig } from "../config/BunnyConfig.js";
 
 export function makeMigrateResetCommand(config: BunnyConfig, connection: Connection) {
-  return class extends Command.define("migrate:reset {--landlord : Run on landlord connection} {--tenants : Run on all tenants} {--tenant= : Run on a specific tenant} {--types : Generate types after reset}") {
+  return class extends Command.define("migrate:reset {--landlord : Run on landlord connection} {--tenants : Run on all tenants} {--tenant= : Run on a specific tenant} {--types : Generate types after reset} {--json : Print {\"rolledBack\":[...]} on stdout, progress on stderr}") {
     static description = "Rollback all migrations.";
     async handle() {
-      await runConfiguredMigrationCommand("migrate:reset", config, connection, parseTargetFromOptions(this), !!this.option("types"));
+      await runConfiguredMigrationCommand("migrate:reset", config, connection, parseTargetFromOptions(this), {
+        generateTypes: !!this.option("types"),
+        json: !!this.option("json"),
+      });
     }
   };
 }

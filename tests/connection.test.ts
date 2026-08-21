@@ -19,6 +19,12 @@ describe("Connection", () => {
     expect(conn.getDriverName()).toBe("postgres");
   });
 
+  test("rejects sqlite3 URLs before handing them to Bun", () => {
+    expect(() => new Connection({ url: "sqlite3://app.db" })).toThrow(
+      '"sqlite3" is not a supported database URL scheme',
+    );
+  });
+
   test("creates connection from driver config (sqlite)", () => {
     const conn = new Connection({ driver: "sqlite", filename: ":memory:" });
     expect(conn.getDriverName()).toBe("sqlite");

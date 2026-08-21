@@ -49,15 +49,28 @@ The timestamp prefix dictates run order, so always create new migrations via the
 |---|---|
 | `bunny migrate:make <Name> [dir]` | Scaffold a new migration file. |
 | `bunny migrate` | Run all pending migrations. |
-| `bunny migrate:rollback` | Reverse the last batch. |
+| `bunny migrate:rollback [--step=N]` | Reverse the last batch, or the last `N` batches. |
 | `bunny migrate:reset` | Roll back every migration. |
 | `bunny migrate:refresh` | `reset` + `migrate`. |
 | `bunny migrate:fresh` | Drop every table + `migrate`. |
-| `bunny migrate:status` | Tabular report of ran / pending migrations. |
+| `bunny migrate:status` | Report of ran / pending migrations, with the batch each ran in. |
 | `bunny schema:dump <path>` | Dump current schema to a SQL file. |
 | `bunny schema:squash <path>` | Dump schema *and* mark configured migrations as ran. |
 
 Each command honors `migrationsPath` (single path) or `migrations.landlord` / `migrations.tenant` (grouped) from `bunny.config.ts`. See [Configuration](./configuration.md#migrationspath-vs-migrations).
+
+### `--config <path>`
+
+A global flag, valid before any command, that loads a specific config module
+instead of looking for `./bunny.config.ts`:
+
+```bash
+bunny --config config/database.ts migrate
+```
+
+Use it when the application already owns its database configuration and you do
+not want a second source of truth for the connection. The module is imported and
+its `default` export (or the module itself) is used as the config.
 
 ### `--types`
 
@@ -73,6 +86,70 @@ bunny migrate:reset --types
 
 Without the flag the schema changes apply but no types are emitted — keeping plain `migrate` fast and side-effect-free. Use `--types` in development (or a post-migrate step) when you want declarations refreshed. See [Type Generation](./type-generation.md).
 
+### `--json`
+
+For scripts and tools driving the CLI. Every migration command accepts it, and
+the contract is the same in all of them:
+
+- **stdout carries one JSON document and nothing else.** Not just the ORM's own
+  progress: output through `console`, `process.stdout` or `Bun.stdout` — including
+  late callbacks registered by a migration or config module — is relayed to
+  stderr until the CLI process exits, so `JSON.parse(stdout)` cannot be broken by
+  application output.
+- Progress (`Migrating: …`, `Nothing to migrate.`, `Tenant: …`) goes to stderr,
+  and so do warnings — those go to stderr in plain text mode too.
+- Paths are relative to the directory the command ran in.
+- The key for the command is always present, empty or not — `{"applied":[]}`
+  means "nothing to migrate", never "something went wrong".
+
+```bash
+$ bunny migrate --json
+{"applied":["database/migrations/20260101000000_create_users_table.ts"]}
+
+$ bunny migrate:rollback --step=2 --json
+{"rolledBack":["database/migrations/20260101000000_create_users_table.ts"]}
+
+$ bunny migrate:status --json
+{"migrations":[{"migration":"database/migrations/20260101000000_create_users_table.ts","status":"Ran","tenant":null,"batch":1,"checksum":"…","storedChecksum":"…"}]}
+```
+
+`status` is `Pending`, `Ran` or `Changed`. `migrate:refresh` emits both keys
+(`{"rolledBack":[…],"applied":[…]}`), `migrate:reset` emits `rolledBack`, and
+`migrate:fresh` emits `applied`.
+
+A failing command writes its error — and any usage help — to stderr and exits
+non-zero, so stdout stays parseable or empty. Under `--tenants`, one document
+covers the whole run rather than one per tenant.
+
+### `--step=N`
+
+`rollback` reverses one batch by default. `--step=N` reverses the last `N`
+batches, in reverse order of application:
+
+```bash
+bunny migrate:rollback --step=2
+```
+
+`--steps=` is accepted as an alias. Anything that is not a positive whole number
+is rejected before the database is touched.
+
+### `--allow-changed`
+
+`migrate` refuses to run when a migration file's checksum no longer matches what
+was recorded for it, because such a file is neither pending nor faithfully
+applied:
+
+```console
+$ bunny migrate
+ Error: 1 migration file has changed since it ran: database/migrations/20260101000000_create_users_table.ts. …
+$ echo $?
+1
+```
+
+Pass `--allow-changed` to migrate whatever else is pending and leave the changed
+files alone; the warning still goes to stderr. The clean fix is to roll the
+migration back and re-apply it, or to add a new migration.
+
 ## Batches and `migrations` table
 
 Bunny records every applied migration in a `migrations` table (auto-created on first run). The table tracks:
@@ -82,7 +159,7 @@ Bunny records every applied migration in a `migrations` table (auto-created on f
 - `checksum` — used to detect file content drift.
 - `batch` — incremented per `migrate` run.
 
-`rollback` reverses one batch at a time. If your last `migrate` ran three new migrations, the next `rollback` reverses all three together.
+`rollback` reverses one batch at a time. If your last `migrate` ran three new migrations, the next `rollback` reverses all three together. `migrate:status` reports the batch of every applied migration (`null` while pending), so you can see what a `--step=N` rollback is about to undo before running it.
 
 ## Auto-create database and schema
 
@@ -187,7 +264,14 @@ await migrator.rollback(2);
 await migrator.reset();
 await migrator.refresh();
 await migrator.fresh();
-const status = await migrator.status();
+
+// Result-returning variants for tooling; the original methods remain Promise<void>.
+const applied    = await migrator.runWithResult();
+const rolledBack = await migrator.rollbackWithResult(2);
+await migrator.resetWithResult();   // string[]
+await migrator.refreshWithResult(); // { rolledBack: string[]; applied: string[] }
+await migrator.freshWithResult();   // string[]
+const status = await migrator.status(); // includes `batch` per row
 
 await migrator.dumpSchema("./database/schema.sql");
 await migrator.squash("./database/schema.sql");
@@ -257,7 +341,7 @@ See [Type Generation](./type-generation.md) for what is emitted and how IntelliS
 
 ## Common pitfalls
 
-- **Editing a migration after it has run.** Bunny stores a checksum per migration. Changing a file's contents after it has been applied breaks the assumption that `up()` already produced the recorded schema. Add a new migration instead.
+- **Editing a migration after it has run.** Bunny stores a checksum per migration. Changing a file's contents after it has been applied breaks the assumption that `up()` already produced the recorded schema, so `migrate` stops and says which files drifted rather than reporting "Nothing to migrate." over a schema that no longer matches. Add a new migration instead, or pass `--allow-changed` to proceed deliberately.
 - **Missing `down()`.** Tools and dev workflows assume `down()` is the inverse of `up()`. Skipping it makes `rollback` unsafe. If a change is truly irreversible, throw with a clear message inside `down()`.
 - **Non-idempotent `up()`.** If `up()` calls `Schema.table()` to add a column that already exists (e.g. from a fresh dump-and-reload), the migration fails. Use `Schema.hasColumn()` guards in long-running projects.
 - **Running migrations without `createIfMissing` on a fresh DB.** You'll see "database does not exist" / "schema does not exist" errors. Enable `createIfMissing` or create the target manually first.

@@ -18,6 +18,17 @@ function format(msg: string | object): string {
   return typeof msg === "string" ? msg : JSON.stringify(msg, null, 2);
 }
 
+/** Normalize the forms accepted by parseArgs for a declared boolean option. */
+export function parseBooleanOptionValue(
+  value: string | boolean | undefined,
+  name: string,
+): boolean | undefined {
+  if (value === undefined || typeof value === "boolean") return value;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`--${name} must be true or false, got "${value}".`);
+}
+
 export class CommandRunner {
   async run(entry: CommandEntry, rawArgs: string[]): Promise<void> {
     const signature = isCommandConstructor(entry) ? entry.signature : entry.signature;
@@ -35,7 +46,7 @@ export class CommandRunner {
       ({ args, options } = this.parseRawArgs(sig, rawArgs));
     } catch (err) {
       console.error(ANSI.red(`\n Error: ${err instanceof Error ? err.message : String(err)} `));
-      this.printHelp(sig, isCommandConstructor(entry) ? entry.description : entry.description);
+      this.printHelp(sig, isCommandConstructor(entry) ? entry.description : entry.description, "stderr");
       process.exitCode = 1;
       return;
     }
@@ -52,7 +63,7 @@ export class CommandRunner {
       }
     } catch (err) {
       console.error(ANSI.red(`\n Error: ${err instanceof Error ? err.message : String(err)} `));
-      this.printHelp(sig, isCommandConstructor(entry) ? entry.description : entry.description);
+      this.printHelp(sig, isCommandConstructor(entry) ? entry.description : entry.description, "stderr");
       process.exitCode = 1;
     }
   }
@@ -109,7 +120,9 @@ export class CommandRunner {
     for (const opt of sig.options) {
       const val = values[opt.name];
       if (val !== undefined) {
-        parsedOptions[opt.name] = val as string | boolean;
+        parsedOptions[opt.name] = opt.type === "boolean"
+          ? parseBooleanOptionValue(val as string | boolean, opt.name)
+          : val as string;
       } else if (opt.defaultValue !== undefined) {
         parsedOptions[opt.name] = opt.type === "boolean" ? opt.defaultValue === "true" : opt.defaultValue;
       } else if (opt.type === "boolean") {
@@ -156,8 +169,10 @@ export class CommandRunner {
     };
   }
 
-  private printHelp(sig: ParsedSignature, description?: string): void {
-    const out = console.log;
+  // Usage printed because something failed goes to stderr: a command's stdout
+  // may be a contract (`--json`), and help text would corrupt it.
+  private printHelp(sig: ParsedSignature, description?: string, stream: "stdout" | "stderr" = "stdout"): void {
+    const out = stream === "stderr" ? console.error : console.log;
     const c = {
       dim:    (s: string) => styleText("dim", s),
       bold:   (s: string) => styleText("bold", s),

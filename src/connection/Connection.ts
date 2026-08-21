@@ -6,6 +6,8 @@ import { MySqlGrammar } from "../query/grammars/MySqlGrammar.js";
 import { PostgresGrammar } from "../query/grammars/PostgresGrammar.js";
 
 export class Connection {
+  /** Every driver the ORM has a grammar for. Anything else is rejected up front. */
+  static readonly SUPPORTED_DRIVERS = ["sqlite", "mysql", "postgres"] as const;
   readonly driver: SQL;
   private driverName: "sqlite" | "mysql" | "postgres";
   private grammar: Grammar;
@@ -39,12 +41,13 @@ export class Connection {
     let url: string | undefined;
     if ("url" in config && config.url) {
       url = config.url;
-      this.driverName = url.startsWith("sqlite")
-        ? "sqlite"
-        : url.startsWith("mysql")
-        ? "mysql"
-        : "postgres";
+      this.driverName = Connection.driverFromUrl(url);
     } else if ("driver" in config) {
+      if (!Connection.SUPPORTED_DRIVERS.includes(config.driver as any)) {
+        throw new Error(
+          `"${config.driver}" is not a supported database driver. Use one of: ${Connection.SUPPORTED_DRIVERS.join(", ")}.`
+        );
+      }
       this.driverName = config.driver;
       if (config.driver === "sqlite") {
         url = `sqlite://${config.filename || config.database || ":memory:"}`;
@@ -96,6 +99,29 @@ export class Connection {
     this.sqliteDefaultsApplied =
       this.driverName !== "sqlite" ||
       options.sqliteDefaultsApplied === true;
+  }
+
+  /**
+   * A URL's scheme picks the driver. An unknown one is an error rather than a
+   * silent fallback: `maria://…` used to be treated as PostgreSQL and failed
+   * later, deep inside the driver, with nothing pointing at the URL.
+   */
+  private static driverFromUrl(url: string): "sqlite" | "mysql" | "postgres" {
+    const separator = url.indexOf(":");
+    const scheme = (separator === -1 ? url : url.slice(0, separator)).toLowerCase();
+    switch (scheme) {
+      case "sqlite":
+        return "sqlite";
+      case "mysql":
+        return "mysql";
+      case "postgres":
+      case "postgresql":
+        return "postgres";
+      default:
+        throw new Error(
+          `"${scheme}" is not a supported database URL scheme. Use one of: sqlite://, mysql://, postgres://, postgresql://.`
+        );
+    }
   }
 
   getDriverName(): "sqlite" | "mysql" | "postgres" {
@@ -164,12 +190,80 @@ export class Connection {
     return this.reservedDriver || this.driver;
   }
 
+  // ---------------------------------------------------------------------------
+  // WORKAROUND(bun-mysql-eventloop) — delete once Bun fixes the upstream bug.
+  // Full story, repro, probe and removal checklist: docs/bun-mysql-event-loop.md
+  //
+  // Bun 1.4.0 stops holding the event loop open for an in-flight MySQL query as
+  // soon as that client's pool has had more than one connection in play — a
+  // second `new SQL()`, a `reserve()`, or just two concurrent queries. Nothing
+  // is wrong with the query itself: the server answers and the bytes are on the
+  // socket. What is missing is the reference that tells Bun "work is still
+  // pending", so the loop drains, `beforeExit` fires, and the process exits with
+  // code **0** while the query's promise never settles. Everything after that
+  // await — the rest of a migration, a seeder, a deploy script — silently never
+  // runs, and the exit code says it all went fine.
+  //
+  // It reproduces without the ORM (Bun 1.4.0, MySQL 9.7):
+  //
+  //   const a = new SQL({ adapter: "mysql", ...creds });
+  //   async function main() {
+  //     await a.unsafe("SELECT 1");
+  //     (await a.reserve()).release();            // or a.begin(), or a 2nd client
+  //     console.log(await a.unsafe("SELECT 2"));  // never resolves
+  //   }
+  //   main().catch(console.error);                // no output, exit 0
+  //
+  // The same script with a top-level `await main()` works, because a pending
+  // top-level await is itself a reference Bun counts. SQLite and PostgreSQL are
+  // not affected. Upstream: oven-sh/bun#27362 documents the same timer
+  // workaround for remote sequential queries; oven-sh/bun#27102 is the related
+  // open connection/transaction report, not the exact local reserve repro;
+  // oven-sh/bun#26235 covers the now-flaky pooled-query shape. The probe, not an
+  // issue's open/closed label, is the removal gate.
+  //
+  // So the reference is added by hand: while any MySQL driver operation is in
+  // flight, one ref'd timer sits in the loop. Its delay is the largest a timer
+  // accepts, so it never fires — it exists only to be counted, and costs nothing
+  // while it waits. The counter is static because the event loop is per process,
+  // not per connection.
+  // ---------------------------------------------------------------------------
+
+  /** Escape hatch for the workaround below: set to false to get Bun's raw behaviour. */
+  static keepMysqlEventLoopAlive = true;
+  /** Largest delay a timer accepts; anything above it is clamped to 1ms and would fire. */
+  private static readonly EVENT_LOOP_HOLD_MS = 2 ** 31 - 1;
+  private static eventLoopHolds = 0;
+  private static eventLoopHandle?: ReturnType<typeof setInterval>;
+
+  /**
+   * Runs one driver operation with the event loop pinned open for its duration.
+   * No-op outside MySQL. See the WORKAROUND note above.
+   */
+  private async keepEventLoopAlive<T>(operation: () => PromiseLike<T>): Promise<T> {
+    if (this.driverName !== "mysql" || !Connection.keepMysqlEventLoopAlive) {
+      return await operation();
+    }
+    if (Connection.eventLoopHolds++ === 0) {
+      Connection.eventLoopHandle = setInterval(() => {}, Connection.EVENT_LOOP_HOLD_MS);
+    }
+    try {
+      return await operation();
+    } finally {
+      if (--Connection.eventLoopHolds <= 0) {
+        Connection.eventLoopHolds = 0;
+        clearInterval(Connection.eventLoopHandle);
+        Connection.eventLoopHandle = undefined;
+      }
+    }
+  }
+
   private async reserveRootTransaction(): Promise<void> {
     if (this.driverName === "sqlite" || this.dedicated || this.reservedDriver) return;
     if (typeof (this.driver as any).reserve !== "function") {
       throw new Error(`${this.driverName} transactions require a driver that can reserve one pooled session.`);
     }
-    this.reservedDriver = await (this.driver as any).reserve();
+    this.reservedDriver = await this.keepEventLoopAlive(() => (this.driver as any).reserve());
   }
 
   private log(sqlString: string, bindings?: any[]): void {
@@ -223,8 +317,10 @@ export class Connection {
       const normalizedBindings = this.normalizeBindings(bindings);
       this.log(sqlString, normalizedBindings);
       if (hasDate) await this.assertMysqlUtc(driver, this.dedicated || !!this.reservedDriver);
-      await driver.unsafe(sqlString, normalizedBindings);
-      const rows = await driver.unsafe("SELECT LAST_INSERT_ID() AS bunny_insert_id") as any[];
+      await this.keepEventLoopAlive(() => driver.unsafe(sqlString, normalizedBindings));
+      const rows = await this.keepEventLoopAlive(
+        () => driver.unsafe("SELECT LAST_INSERT_ID() AS bunny_insert_id")
+      ) as any[];
       return rows[0]?.bunny_insert_id ?? null;
     };
 
@@ -234,7 +330,7 @@ export class Connection {
       return await execute(driver);
     }
 
-    const reserved = await (driver as any).reserve() as SQL & { release?: () => void };
+    const reserved = await this.keepEventLoopAlive(() => (driver as any).reserve()) as SQL & { release?: () => void };
     try {
       return await execute(reserved);
     } finally {
@@ -253,23 +349,23 @@ export class Connection {
 
     const driver = this.getDriver();
     if (this.driverName !== "mysql" || !hasDate) {
-      return await driver.unsafe(sqlString, normalizedBindings);
+      return await this.keepEventLoopAlive(() => driver.unsafe(sqlString, normalizedBindings));
     }
 
     // A pool may hand two consecutive queries to different sessions. Reserve
     // one so the UTC assertion and the date-bearing query cannot be separated.
     if (!this.transactionActive && !this.dedicated && !this.reservedDriver && typeof (driver as any).reserve === "function") {
-      const reserved = await (driver as any).reserve() as SQL & { release?: () => void };
+      const reserved = await this.keepEventLoopAlive(() => (driver as any).reserve()) as SQL & { release?: () => void };
       try {
         await this.assertMysqlUtc(reserved);
-        return await reserved.unsafe(sqlString, normalizedBindings);
+        return await this.keepEventLoopAlive(() => reserved.unsafe(sqlString, normalizedBindings));
       } finally {
         reserved.release?.();
       }
     }
 
     await this.assertMysqlUtc(driver, this.dedicated || !!this.reservedDriver);
-    return await driver.unsafe(sqlString, normalizedBindings);
+    return await this.keepEventLoopAlive(() => driver.unsafe(sqlString, normalizedBindings));
   }
 
   /** Whether a binding contains a semantic date rather than date-looking text. */
@@ -289,8 +385,8 @@ export class Connection {
    */
   private async assertMysqlUtc(driver: SQL, cache: boolean = false): Promise<void> {
     if (cache && this.mysqlUtcChecked) return;
-    const rows = (await driver.unsafe(
-      "SELECT TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW()) AS offset_seconds"
+    const rows = (await this.keepEventLoopAlive(() =>
+      driver.unsafe("SELECT TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW()) AS offset_seconds")
     )) as any[];
     const offset = Number(rows?.[0]?.offset_seconds ?? 0);
     if (offset === 0) {
@@ -356,7 +452,7 @@ export class Connection {
     if (this.transactionDepth === 0 && !this.transactionActive) {
       await this.reserveRootTransaction();
       try {
-        await this.getDriver().unsafe("BEGIN");
+        await this.keepEventLoopAlive(() => this.getDriver().unsafe("BEGIN"));
       } catch (error) {
         this.releaseReservedDriver();
         throw error;
@@ -368,7 +464,7 @@ export class Connection {
       return;
     }
 
-    await this.getDriver().unsafe(`SAVEPOINT bunny_trans_${++this.savepointId}`);
+    await this.keepEventLoopAlive(() => this.getDriver().unsafe(`SAVEPOINT bunny_trans_${++this.savepointId}`));
     this.transactionDepth++;
   }
 
@@ -387,7 +483,7 @@ export class Connection {
       // never committed or rolled back. Force-rollback and release the slot.
       if (!this.transactionActive || !this.reservedDriver) return;
       void Promise.resolve()
-        .then(() => this.getDriver().unsafe("ROLLBACK"))
+        .then(() => this.keepEventLoopAlive(() => this.getDriver().unsafe("ROLLBACK")))
         .catch(() => null)
         .finally(() => {
           this.transactionDepth = 0;
@@ -411,9 +507,9 @@ export class Connection {
     if (this.transactionDepth <= 0) return;
     if (this.transactionDepth === 1 && this.transactionRoot) {
       try {
-        await this.getDriver().unsafe("COMMIT");
+        await this.keepEventLoopAlive(() => this.getDriver().unsafe("COMMIT"));
       } catch (error) {
-        await this.getDriver().unsafe("ROLLBACK").catch(() => null);
+        await this.keepEventLoopAlive(() => this.getDriver().unsafe("ROLLBACK")).catch(() => null);
         throw error;
       } finally {
         this.transactionDepth = 0;
@@ -422,7 +518,7 @@ export class Connection {
         this.releaseReservedDriver();
       }
     } else {
-      await this.getDriver().unsafe(`RELEASE SAVEPOINT bunny_trans_${this.savepointId--}`);
+      await this.keepEventLoopAlive(() => this.getDriver().unsafe(`RELEASE SAVEPOINT bunny_trans_${this.savepointId--}`));
       this.transactionDepth--;
     }
   }
@@ -431,7 +527,7 @@ export class Connection {
     if (this.transactionDepth <= 0) return;
     if (this.transactionDepth === 1 && this.transactionRoot) {
       try {
-        await this.getDriver().unsafe("ROLLBACK");
+        await this.keepEventLoopAlive(() => this.getDriver().unsafe("ROLLBACK"));
       } finally {
         this.transactionDepth = 0;
         this.transactionActive = false;
@@ -439,8 +535,8 @@ export class Connection {
         this.releaseReservedDriver();
       }
     } else {
-      await this.getDriver().unsafe(`ROLLBACK TO SAVEPOINT bunny_trans_${this.savepointId}`);
-      await this.getDriver().unsafe(`RELEASE SAVEPOINT bunny_trans_${this.savepointId--}`);
+      await this.keepEventLoopAlive(() => this.getDriver().unsafe(`ROLLBACK TO SAVEPOINT bunny_trans_${this.savepointId}`));
+      await this.keepEventLoopAlive(() => this.getDriver().unsafe(`RELEASE SAVEPOINT bunny_trans_${this.savepointId--}`));
       this.transactionDepth--;
     }
   }
@@ -459,7 +555,7 @@ export class Connection {
       if (!this.transactionActive) {
         await this.reserveRootTransaction();
         try {
-          await this.getDriver().unsafe("BEGIN");
+          await this.keepEventLoopAlive(() => this.getDriver().unsafe("BEGIN"));
         } catch (error) {
           this.releaseReservedDriver();
           throw error;
@@ -469,10 +565,10 @@ export class Connection {
         this.transactionDepth = 1;
         try {
           const result = await callback(this);
-          await this.getDriver().unsafe("COMMIT");
+          await this.keepEventLoopAlive(() => this.getDriver().unsafe("COMMIT"));
           return result;
         } catch (error) {
-          await this.getDriver().unsafe("ROLLBACK").catch(() => null);
+          await this.keepEventLoopAlive(() => this.getDriver().unsafe("ROLLBACK")).catch(() => null);
           throw error;
         } finally {
           this.transactionDepth = 0;
@@ -482,22 +578,22 @@ export class Connection {
         }
       }
       const savepointName = `bunny_trans_${++this.savepointId}`;
-      await this.getDriver().unsafe(`SAVEPOINT ${savepointName}`);
+      await this.keepEventLoopAlive(() => this.getDriver().unsafe(`SAVEPOINT ${savepointName}`));
       this.transactionDepth++;
       try {
         const result = await callback(this);
-        await this.getDriver().unsafe(`RELEASE SAVEPOINT ${savepointName}`);
+        await this.keepEventLoopAlive(() => this.getDriver().unsafe(`RELEASE SAVEPOINT ${savepointName}`));
         return result;
       } catch (error) {
-        await this.getDriver().unsafe(`ROLLBACK TO SAVEPOINT ${savepointName}`).catch(() => null);
-        await this.getDriver().unsafe(`RELEASE SAVEPOINT ${savepointName}`).catch(() => null);
+        await this.keepEventLoopAlive(() => this.getDriver().unsafe(`ROLLBACK TO SAVEPOINT ${savepointName}`)).catch(() => null);
+        await this.keepEventLoopAlive(() => this.getDriver().unsafe(`RELEASE SAVEPOINT ${savepointName}`)).catch(() => null);
         this.savepointId--;
         throw error;
       } finally {
         this.transactionDepth--;
       }
     }
-    return await this.driver.begin(async (sql) => {
+    return await this.keepEventLoopAlive(() => this.driver.begin(async (sql) => {
       const connection = new Connection(this.config, {
         driver: sql as unknown as SQL,
         schema: this.schema,
@@ -513,7 +609,7 @@ export class Connection {
       } finally {
         connection.transactionActive = false;
       }
-    });
+    }));
   }
 
   async withTenant<T>(
@@ -573,7 +669,7 @@ export class Connection {
   async close(): Promise<void> {
     this.releaseReservedDriver();
     if (this.ownsDriver) {
-      await this.driver.close();
+      await this.keepEventLoopAlive(() => this.driver.close());
     }
   }
 }

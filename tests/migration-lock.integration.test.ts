@@ -91,4 +91,27 @@ describe.serial("Native migration advisory locks", () => {
     await second.release();
     await connection.close();
   });
+
+  runIfMySql("keeps the CLI alive until a MySQL migration command completes", async () => {
+    const child = Bun.spawn([process.execPath, "run", "bin/bunny.ts", "migrate"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        DATABASE_URL: mysqlUrl!,
+        MIGRATIONS_PATH: "tests/no_such_migrations",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("Nothing to migrate.");
+  });
 });

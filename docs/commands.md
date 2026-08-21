@@ -142,6 +142,18 @@ this.info({ count: 3, status: "ok" });
 this.info(admissions.json("id", "first_name", "last_name"));
 ```
 
+## Global flags
+
+`--config <path>` may appear before any command and loads that module as the
+Bunny config instead of `./bunny.config.ts`:
+
+```bash
+bunny --config config/database.ts migrate
+```
+
+It is stripped from the arguments before the command parses them, so a command
+never has to declare it.
+
 ## Running Commands
 
 ```sh

@@ -198,6 +198,29 @@ describe("CommandRunner — class-based", () => {
     expect(received).toBe(true);
   });
 
+  it("parses explicit boolean values instead of treating false as truthy", async () => {
+    const received: boolean[] = [];
+    class ForceCmd extends Command {
+      static signature = "push {--force}";
+      async handle() { received.push(this.option("force") as boolean); }
+    }
+    await runner.run(ForceCmd, ["--force=false"]);
+    await runner.run(ForceCmd, ["--force=true"]);
+    expect(received).toEqual([false, true]);
+  });
+
+  it("rejects invalid explicit boolean values", async () => {
+    let handled = false;
+    class ForceCmd extends Command {
+      static signature = "push {--force}";
+      async handle() { handled = true; }
+    }
+    await runner.run(ForceCmd, ["--force=maybe"]);
+    expect(handled).toBe(false);
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+
   it("injects string option with default", async () => {
     let received: string | boolean | undefined;
     class QueueCmd extends Command {

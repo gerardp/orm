@@ -28,12 +28,26 @@ export interface MigrationStatusRow {
   migration: string;
   status: string;
   tenant: string | null;
+  /** Batch the migration was applied in, or null while it is still pending. */
+  batch?: number | null;
   checksum?: string;
   storedChecksum?: string | null;
 }
 
 export interface MigratorOptions {
   tenantId?: string | null;
+  /**
+   * Migrate even though some already-applied migration files have changed since
+   * they ran. Off by default: run() refuses rather than skip them in silence.
+   */
+  allowChanged?: boolean;
+  /**
+   * Where progress lines go. Defaults to stdout. The CLI redirects this to
+   * stderr under --json so the payload on stdout stays machine-readable.
+   */
+  output?: (line: string) => void;
+  /** Where warnings go. Defaults to console.warn, i.e. stderr in both modes. */
+  warn?: (line: string) => void;
   lock?: boolean;
   lockTimeoutMs?: number;
   /** SQLite only: age at which a lock row left behind by a dead process is taken over. Default 15 minutes. */
@@ -73,6 +87,16 @@ export class Migrator {
 
   private getPaths(): string[] {
     return normalizePathList(this.path);
+  }
+
+  /** Progress output. Never the command's result — that is the caller's to render. */
+  private write(line: string): void {
+    (this.options.output ?? console.log)(line);
+  }
+
+  /** Diagnostics. Kept off stdout even in plain text mode. */
+  private warn(line: string): void {
+    (this.options.warn ?? console.warn)(line);
   }
 
   /**
@@ -313,11 +337,17 @@ export class Migrator {
     });
   }
 
+  /** Applies every pending migration. Kept void-compatible with the original API. */
   async run(): Promise<void> {
+    await this.runWithResult();
+  }
+
+  /** Applies every pending migration and returns their ids, in the order applied. */
+  async runWithResult(): Promise<string[]> {
     return this.withoutSqlLogging(() => this.runWithoutSqlLogging());
   }
 
-  private async runWithoutSqlLogging(): Promise<void> {
+  private async runWithoutSqlLogging(): Promise<string[]> {
     await this.ensureCreateIfMissing();
     // The lock comes before the migrations table: creating it is itself a write
     // two concurrent deploys would race on, and the loser dies with
@@ -325,21 +355,23 @@ export class Migrator {
     const lock = await this.acquireLock();
     try {
       await this.ensureMigrationsTable();
-      const ran = await this.getRan();
+      const ran = await this.getRanRecords();
       const files = await this.getMigrationFiles();
       const pending = files.filter((f) => !ran.has(f.id) && !ran.has(f.fileName));
+      this.reportChangedMigrations(files, ran);
 
       if (pending.length === 0) {
-        console.log("Nothing to migrate.");
-        return;
+        this.write("Nothing to migrate.");
+        return [];
       }
 
       const batch = (await this.getLastBatchNumber()) + 1;
+      const applied: string[] = [];
 
       await this.inTransaction(async (connection) => {
         for (const file of pending) {
           const migration = await this.resolve(file.id);
-          console.log(`Migrating: ${file.id}`);
+          this.write(`Migrating: ${file.id}`);
           await this.emit("migrating", { migration: file.id, batch });
           await migration.up();
           await new Builder(connection, this.migrationsTable(connection)).insert({
@@ -349,10 +381,12 @@ export class Migrator {
             batch,
           });
           await this.emit("migrated", { migration: file.id, batch });
-          console.log(`Migrated:  ${file.id}`);
+          applied.push(file.id);
+          this.write(`Migrated:  ${file.id}`);
         }
       });
       await this.generateTypesIfNeeded();
+      return applied;
     } catch (error) {
       throw error;
     } finally {
@@ -360,19 +394,53 @@ export class Migrator {
     }
   }
 
+  /**
+   * A migration edited after it ran is not pending — it is already in the
+   * migrations table — so run() would skip it and report "Nothing to migrate."
+   * while the schema no longer matches the file that produced it. The only
+   * honest options are to say so, or to be told to go ahead anyway.
+   */
+  private reportChangedMigrations(
+    files: { id: string; fileName: string; checksum: string }[],
+    ran: Map<string, MigrationRecord>
+  ): void {
+    const changed = files
+      .filter((file) => {
+        const record = ran.get(file.id) ?? ran.get(file.fileName);
+        return !!record?.checksum && record.checksum !== file.checksum;
+      })
+      .map((file) => file.id);
+    if (changed.length === 0) return;
+
+    if (!this.options.allowChanged) {
+      throw new Error(
+        `${changed.length} migration file${changed.length === 1 ? " has" : "s have"} changed since ${changed.length === 1 ? "it" : "they"} ran: ` +
+          `${changed.join(", ")}. The database no longer matches the file that produced it, and migrate cannot reconcile that on its own. ` +
+          `Roll back and re-apply, or pass --allow-changed to migrate the rest anyway.`
+      );
+    }
+    this.warn(`Warning: ${changed.length} changed migration(s) left untouched: ${changed.join(", ")}`);
+  }
+
+  /** Rolls back `steps` batches. Kept void-compatible with the original API. */
   async rollback(steps: number = 1): Promise<void> {
+    await this.rollbackWithResult(steps);
+  }
+
+  /** Rolls back `steps` batches and returns the ids it undid, in the order undone. */
+  async rollbackWithResult(steps: number = 1): Promise<string[]> {
     return this.withoutSqlLogging(() => this.rollbackWithoutSqlLogging(steps));
   }
 
-  private async rollbackWithoutSqlLogging(steps: number = 1): Promise<void> {
+  private async rollbackWithoutSqlLogging(steps: number = 1): Promise<string[]> {
     await this.ensureCreateIfMissing();
     const lock = await this.acquireLock();
     try {
       await this.ensureMigrationsTable();
       const batches = await this.getRollbackBatches(steps);
       if (batches.length === 0) {
-        console.log("Nothing to rollback.");
-        return;
+        this.write("Nothing to rollback.");
+        return [];
       }
 
       const records = (await this.scopedMigrations()
@@ -381,24 +449,27 @@ export class Migrator {
         .get()) as MigrationRecord[];
 
       if (records.length === 0) {
-        console.log("Nothing to rollback.");
-        return;
+        this.write("Nothing to rollback.");
+        return [];
       }
 
+      const rolledBack: string[] = [];
       await this.inTransaction(async (connection) => {
         for (const record of records) {
           const migration = await this.resolve(record.migration);
-          console.log(`Rolling back: ${record.migration}`);
+          this.write(`Rolling back: ${record.migration}`);
           await this.emit("rollingBack", { migration: record.migration, batch: record.batch });
           await migration.down();
           await new Builder(connection, this.migrationsTable(connection))
             .where("id", record.id)
             .delete();
           await this.emit("rolledBack", { migration: record.migration, batch: record.batch });
-          console.log(`Rolled back:  ${record.migration}`);
+          rolledBack.push(record.migration);
+          this.write(`Rolled back:  ${record.migration}`);
         }
       });
       await this.generateTypesIfNeeded();
+      return rolledBack;
     } catch (error) {
       throw error;
     } finally {
@@ -422,30 +493,51 @@ export class Migrator {
     return batches;
   }
 
+  /** Rolls every batch back. Kept void-compatible with the original API. */
   async reset(): Promise<void> {
+    await this.resetWithResult();
+  }
+
+  /** Rolls every batch back and returns the ids it undid. */
+  async resetWithResult(): Promise<string[]> {
     return this.withoutSqlLogging(async () => {
       await this.ensureCreateIfMissing();
+      const rolledBack: string[] = [];
       while ((await this.getLastBatchNumber()) > 0) {
-        await this.rollbackWithoutSqlLogging();
+        rolledBack.push(...(await this.rollbackWithoutSqlLogging()));
       }
+      return rolledBack;
     });
   }
 
+  /** Rolls everything back and re-applies it. Kept compatible with the original API. */
   async refresh(): Promise<void> {
+    await this.refreshWithResult();
+  }
+
+  /** Rolls everything back and re-applies it, returning both halves. */
+  async refreshWithResult(): Promise<{ rolledBack: string[]; applied: string[] }> {
     return this.withoutSqlLogging(async () => {
       await this.ensureCreateIfMissing();
+      const rolledBack: string[] = [];
       while ((await this.getLastBatchNumber()) > 0) {
-        await this.rollbackWithoutSqlLogging();
+        rolledBack.push(...(await this.rollbackWithoutSqlLogging()));
       }
-      await this.runWithoutSqlLogging();
+      return { rolledBack, applied: await this.runWithoutSqlLogging() };
     });
   }
 
+  /** Drops every table and re-applies all migrations. Kept compatible with the original API. */
   async fresh(): Promise<void> {
+    await this.freshWithResult();
+  }
+
+  /** Drops every table and re-applies all migrations, returning what it applied. */
+  async freshWithResult(): Promise<string[]> {
     return this.withoutSqlLogging(async () => {
       await this.ensureCreateIfMissing();
       await this.dropAllTables();
-      await this.runWithoutSqlLogging();
+      return await this.runWithoutSqlLogging();
     });
   }
 
@@ -463,7 +555,7 @@ export class Migrator {
     });
     await generator.generate();
     const label = this.typesOutDir || modelDirectories.map((dir) => join(dir, this.typeGeneratorOptions.declarationDirName || "types")).join(", ");
-    console.log(`Regenerated types in ${label}`);
+    this.write(`Regenerated types in ${label}`);
   }
 
   async status(): Promise<MigrationStatusRow[]> {
@@ -479,10 +571,12 @@ export class Migrator {
     return files.map((file) => {
       const record = ran.get(file.id) || ran.get(file.fileName);
       const storedChecksum = record?.checksum ?? null;
+      const batch = record?.batch;
       return {
         migration: file.id,
         status: !record ? "Pending" : storedChecksum && storedChecksum !== file.checksum ? "Changed" : "Ran",
         tenant,
+        batch: batch === undefined || batch === null ? null : Number(batch),
         checksum: file.checksum,
         storedChecksum,
       };
@@ -677,16 +771,6 @@ export class Migrator {
       throw new Error(`Migration ${file} does not export a class.`);
     }
     return new MigrationClass();
-  }
-
-  private async getRan(): Promise<Set<string>> {
-    const results = await this.getRanRecords();
-    const ran = new Set<string>();
-    for (const migration of results.keys()) {
-      ran.add(migration);
-      ran.add(basename(migration));
-    }
-    return ran;
   }
 
   private async getRanRecords(): Promise<Map<string, MigrationRecord>> {
