@@ -16,6 +16,10 @@ export type {
   ModelColumnValue,
   ModelAttributeInput,
   ModelAttributeInputWithout,
+  ModelMassAssignable,
+  ModelMassAssignmentAttributes,
+  ModelMassAssignmentInput,
+  ModelMassAssignmentInputWithout,
   MorphRelationInput,
   StripTablePrefix,
   ModelInstanceAttributeKeys,
@@ -38,6 +42,8 @@ import type {
   ModelColumn,
   ModelColumnValue,
   ModelAttributeInputWithout,
+  ModelMassAssignmentInput,
+  ModelMassAssignmentInputWithout,
   CastDefinition,
   CastsAttributes,
   AttributeDefinition,
@@ -73,6 +79,7 @@ interface ModelType<T extends Record<string, any> = any> {
   getConnection(): any;
   getModelConstructor(): any;
   fill(attributes: Partial<T>): this;
+  forceFill(attributes: Partial<T>): this;
   save(options?: any): Promise<this>;
   setRelation(name: string, value: any): void;
   getRelation(name: string): any;
@@ -83,6 +90,7 @@ type BaseModelInstanceKey =
   | "$attributes" | "$original" | "$changes" | "$exists" | "$relations"
   | "$casts" | "$castCache" | "$mergedCasts" | "$dirtyKeys" | "$connection" | "$hidden" | "$visible" | "$appends"
   | "$wasRecentlyCreated" | "fill" | "setConnection" | "getConnection"
+  | "forceFill"
   | "isFillable" | "getAttribute" | "setAttribute" | "castAttribute"
   | "serializeCastAttribute" | "mergeCasts" | "getDirty" | "isDirty"
   | "wasChanged" | "getChanges" | "getOriginal" | "replicate" | "makeHidden"
@@ -233,7 +241,7 @@ export type StrictTypedEagerLoad<T> =
   | TypedConstraintMap<T>;
 
 type LoadedRelationType<F> =
-  F extends (...args: any[]) => HasMany<infer R> ? Collection<R>
+  F extends (...args: any[]) => HasMany<infer R, any> ? Collection<R>
   : F extends (...args: any[]) => HasOne<infer R> ? R | null
   : F extends (...args: any[]) => BelongsTo<infer R> ? R | null
   : F extends (...args: any[]) => BelongsToMany<infer R, any, any> ? Collection<R>
@@ -244,7 +252,7 @@ type LoadedRelationType<F> =
   : unknown;
 
 type LoadedTypeWithNested<F, ElemType> =
-  F extends (...args: any[]) => HasMany<any> ? Collection<ElemType>
+  F extends (...args: any[]) => HasMany<any, any> ? Collection<ElemType>
   : F extends (...args: any[]) => HasOne<any> ? ElemType | null
   : F extends (...args: any[]) => BelongsTo<any> ? ElemType | null
   : F extends (...args: any[]) => BelongsToMany<any, any, any> ? Collection<ElemType>
@@ -254,7 +262,7 @@ type LoadedTypeWithNested<F, ElemType> =
   : unknown;
 
 type RelModelOf<F> =
-  F extends (...args: any[]) => HasMany<infer R> ? R
+  F extends (...args: any[]) => HasMany<infer R, any> ? R
   : F extends (...args: any[]) => HasOne<infer R> ? R
   : F extends (...args: any[]) => BelongsTo<infer R> ? R
   : F extends (...args: any[]) => BelongsToMany<infer R, any, any> ? R
@@ -285,7 +293,7 @@ type NestedRelationPaths<Paths extends string, Key extends string> =
   Paths extends `${Key}.${infer Tail}` ? Tail : never;
 
 type LoadedRelationValueForPaths<F, Paths extends string> =
-  F extends (...args: any[]) => HasMany<infer R> ? Collection<WithLoadedRelations<R, Paths>>
+  F extends (...args: any[]) => HasMany<infer R, any> ? Collection<WithLoadedRelations<R, Paths>>
   : F extends (...args: any[]) => HasOne<infer R> ? WithLoadedRelations<R, Paths> | null
   : F extends (...args: any[]) => BelongsTo<infer R> ? WithLoadedRelations<R, Paths> | null
   : F extends (...args: any[]) => BelongsToMany<infer R, any, any> ? Collection<WithLoadedRelations<R, Paths>>
@@ -739,7 +747,7 @@ function getModelConstructor(model: ModelType): any {
   return Object.getPrototypeOf(model).constructor as any;
 }
 
-export class HasMany<T extends ModelType = ModelType> extends Relation<T> {
+export class HasMany<T extends ModelType = ModelType, ForeignKey extends string = `${string}_id`> extends Relation<T> {
   constructor(parent: ModelType, related: any, foreignKey?: string, localKey?: string) {
     super(parent, related, foreignKey, localKey);
     this.localKey = localKey || getModelConstructor(parent).primaryKey;
@@ -759,39 +767,35 @@ export class HasMany<T extends ModelType = ModelType> extends Relation<T> {
     return models;
   }
 
-  async create(attributes: Record<string, any>): Promise<T> {
-    const instance = new (this.related as any)({
-      ...attributes,
-      ...this.getDefaultAttributes(),
-      [this.foreignKey]: this.parent.getAttribute(this.localKey),
-    }) as T;
+  async create(attributes: ModelMassAssignmentInputWithout<T, ForeignKey>): Promise<T> {
+    const instance = new (this.related as any)(attributes) as T;
+    for (const [key, value] of Object.entries(this.getDefaultAttributes())) {
+      instance.setAttribute(key as any, value);
+    }
+    instance.setAttribute(this.foreignKey as any, this.parent.getAttribute(this.localKey));
     await instance.save();
     return instance;
   }
 
-  async createMany(records: Record<string, any>[]): Promise<T[]> {
-    const defaults = this.getDefaultAttributes();
+  async createMany(records: ModelMassAssignmentInputWithout<T, ForeignKey>[]): Promise<T[]> {
     const models: T[] = [];
     for (const record of records) {
-      const instance = new (this.related as any)({
-        ...record,
-        ...defaults,
-        [this.foreignKey]: this.parent.getAttribute(this.localKey),
-      }) as T;
-      await instance.save();
-      models.push(instance);
+      models.push(await this.create(record));
     }
     return models;
   }
 
-  async createOrUpdate(attributes: ModelAttributeInputWithout<any, "">, values: ModelAttributeInputWithout<any, ""> = {}): Promise<T> {
+  async createOrUpdate(attributes: ModelAttributeInputWithout<T, "">, values: ModelMassAssignmentInput<T> = {}): Promise<T> {
     const found = await this.getQuery().where(attributes as any).first();
     if (found) {
       found.fill(values);
       await found.save();
       return found;
     }
-    return this.create({ ...attributes, ...values } as any);
+    const instance = new (this.related as any)(values) as T;
+    instance.forceFill(attributes as any);
+    await this.saveMany([instance]);
+    return instance;
   }
 
   addConstraints(): void {
@@ -903,7 +907,7 @@ export class BelongsTo<T extends ModelType = ModelType> extends Relation<T> {
   private makeDefault(): T | null {
     if (this.defaultAttributes === undefined) return null;
     const instance = new (this.related as any)() as T;
-    if (Object.keys(this.defaultAttributes).length > 0) instance.fill(this.defaultAttributes as any);
+    if (Object.keys(this.defaultAttributes).length > 0) instance.forceFill(this.defaultAttributes as any);
     return instance;
   }
 
@@ -1065,7 +1069,7 @@ export class HasOne<T extends ModelType = ModelType> extends Relation<T> {
   private makeDefault(): T | null {
     if (this.defaultAttributes === undefined) return null;
     const instance = new (this.related as any)() as T;
-    if (Object.keys(this.defaultAttributes).length > 0) instance.fill(this.defaultAttributes as any);
+    if (Object.keys(this.defaultAttributes).length > 0) instance.forceFill(this.defaultAttributes as any);
     return instance;
   }
 

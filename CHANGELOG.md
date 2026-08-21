@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.11.0 - 2026-08-21
+
+### Changed
+
+- Mass-assignment policies now distinguish an absent declaration from an explicit
+  empty array: `fillable = []` blocks every field, while `guarded = []` explicitly
+  allows every non-internal field. `guarded = ["*"]` blocks all fields, declaring
+  both policies throws, and subclasses may replace an inherited policy.
+- Generated model types can attach `ModelMassAssignable<T>` to narrow only protected
+  writes (`fill`, `update`, model creation/bulk helpers, relations, and factories)
+  without narrowing filters, direct builders, `setAttribute`, `forceFill`, or
+  `forceCreate`.
+- Search criteria, model defaults and replicas, plus relationship-controlled foreign
+  keys, morph columns and constraint defaults, now bypass mass-assignment guards
+  without making caller-provided values trusted.
+
+### Added
+
+- `Model#forceFill()` assigns through `setAttribute()`, bypasses mass-assignment
+  policies, and returns the model instance.
+
 ## 0.10.1 - 2026-08-21
 
 ### Fixed

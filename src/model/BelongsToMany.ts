@@ -3,7 +3,7 @@ import { insertAndResolveKey, type PrimaryKeyColumn } from "./PrimaryKeyResoluti
 import { Schema } from "../schema/Schema.js";
 import { Collection } from "../support/Collection.js";
 import { shouldGeneratePrimaryKeyForColumn, snakeCase } from "../utils.js";
-import type { Model, ModelAttributeInputWithout, ModelConstructor, PivotQueryBuilder, StripTablePrefix } from "./Model.js";
+import type { Model, ModelMassAssignmentInputWithout, ModelConstructor, PivotQueryBuilder, StripTablePrefix } from "./Model.js";
 
 function getModelConstructor(model: Model): typeof Model {
   return Object.getPrototypeOf(model).constructor as typeof Model;
@@ -523,17 +523,15 @@ export class BelongsToMany<T extends Record<string, any> = Model, RelatedFixed e
     return saved;
   }
 
-  async create(attributes: ModelAttributeInputWithout<T, RelatedFixed>, pivotAttributes?: Record<string, any>): Promise<T> {
-    const instance = new (this.related as any)({
-      ...attributes,
-      ...this.getDefaultAttributes(),
-    }) as T;
+  async create(attributes: ModelMassAssignmentInputWithout<T, RelatedFixed>, pivotAttributes?: Record<string, any>): Promise<T> {
+    const instance = new (this.related as any)(attributes) as T;
+    this.applyRelatedDefaults(instance);
     await instance.save();
     await this.attach(instance.getAttribute(this.relatedKey), pivotAttributes);
     return instance;
   }
 
-  async createMany(records: ModelAttributeInputWithout<T, RelatedFixed>[], pivotAttributes?: Record<string, any>): Promise<T[]> {
+  async createMany(records: ModelMassAssignmentInputWithout<T, RelatedFixed>[], pivotAttributes?: Record<string, any>): Promise<T[]> {
     const created: T[] = [];
     for (const record of records) {
       created.push(await this.create(record, pivotAttributes));

@@ -235,7 +235,20 @@ await user.update({ active: false });                              // ✓
 user.fill({ name: "Bob" });
 ```
 
-Mass-assignment guards (`static fillable` / `static guarded`) silently drop forbidden fields at runtime but do not show up in types — be careful when using `forceCreate` / `forceFill` to bypass them.
+Code generators can narrow protected writes by merging the type-only
+`ModelMassAssignable<T>` marker into the model instance:
+
+```ts
+interface User extends ModelMassAssignable<Pick<UserAttributes, "name" | "email">> {}
+
+await User.create({ name: "Alice" });       // ✓
+await User.create({ is_admin: true });       // ✗
+User.where({ is_admin: true });              // ✓ — filters stay broad
+user.forceFill({ is_admin: true });          // ✓ — trusted write
+```
+
+Without the marker, Bunny keeps its standalone-compatible attribute input types.
+An empty marked subset rejects every property.
 
 ## Common pitfalls
 

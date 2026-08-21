@@ -1,10 +1,10 @@
-import type { ModelAttributeInput, ModelConstructor } from "../model/Model.js";
+import type { ModelMassAssignmentInput, ModelConstructor } from "../model/Model.js";
 import { Model, __registerModelFactory } from "../model/Model.js";
 import { snakeCase } from "../utils.js";
 
 export type FactoryStateValue<T = any> =
-  | ModelAttributeInput<T>
-  | ((attributes: ModelAttributeInput<T>, sequence: number) => ModelAttributeInput<T>);
+  | ModelMassAssignmentInput<T>
+  | ((attributes: ModelMassAssignmentInput<T>, sequence: number) => ModelMassAssignmentInput<T>);
 export type FactoryState<T = any> = FactoryStateValue<T> | Sequence;
 export type AfterHook<T = any> = (model: T, sequence: number) => void | Promise<void>;
 
@@ -56,10 +56,11 @@ export class Factory<T = any> {
   private afterCreatingHooks: AfterHook<T>[] = [];
   private belongsToParents: BelongsToParent[] = [];
   private hasChildren: HasChildren[] = [];
+  private trustedAttributes: Record<string, any> = {};
 
   /** Subclass overrides this to return the base attributes for a record. */
-  definition(_sequence: number): ModelAttributeInput<T> {
-    return {} as ModelAttributeInput<T>;
+  definition(_sequence: number): ModelMassAssignmentInput<T> {
+    return {} as ModelMassAssignmentInput<T>;
   }
 
   /**
@@ -114,7 +115,7 @@ export class Factory<T = any> {
     return next;
   }
 
-  make(overrides: ModelAttributeInput<T> = {}): T | T[] {
+  make(overrides: ModelMassAssignmentInput<T> = {}): T | T[] {
     const models: T[] = [];
     for (let index = 0; index < this.amount; index++) {
       const attributes = this.attributesFor(index + 1, overrides);
@@ -126,13 +127,15 @@ export class Factory<T = any> {
     return this.amount === 1 ? models[0] : models;
   }
 
-  async create(overrides: ModelAttributeInput<T> = {}): Promise<T | T[]> {
+  async create(overrides: ModelMassAssignmentInput<T> = {}): Promise<T | T[]> {
     const models: T[] = [];
     for (let index = 0; index < this.amount; index++) {
       const sequence = index + 1;
-      let attributes = this.attributesFor(sequence, overrides);
-      attributes = await this.applyBelongsTo(attributes);
-      const model = (await (this.model as any).create(attributes)) as T;
+      const attributes = this.attributesFor(sequence, overrides);
+      const model = new this.model(attributes) as T;
+      await this.applyBelongsTo(model);
+      (model as any).forceFill(this.trustedAttributes);
+      await (model as any).save();
       for (const hook of this.afterMakingHooks) await hook(model, sequence);
       await this.createHasChildren(model);
       for (const hook of this.afterCreatingHooks) await hook(model, sequence);
@@ -141,13 +144,13 @@ export class Factory<T = any> {
     return this.amount === 1 ? models[0] : models;
   }
 
-  raw(overrides: ModelAttributeInput<T> = {}): ModelAttributeInput<T> | ModelAttributeInput<T>[] {
+  raw(overrides: ModelMassAssignmentInput<T> = {}): ModelMassAssignmentInput<T> | ModelMassAssignmentInput<T>[] {
     const records = Array.from({ length: this.amount }, (_, i) => this.attributesFor(i + 1, overrides));
     return this.amount === 1 ? records[0] : records;
   }
 
-  private attributesFor(sequence: number, overrides: ModelAttributeInput<T>): ModelAttributeInput<T> {
-    let attributes: ModelAttributeInput<T> = { ...this.definition(sequence) };
+  private attributesFor(sequence: number, overrides: ModelMassAssignmentInput<T>): ModelMassAssignmentInput<T> {
+    let attributes: ModelMassAssignmentInput<T> = { ...this.definition(sequence) };
     for (const state of this.states) {
       let patch: Record<string, any>;
       if (state instanceof Sequence) {
@@ -162,16 +165,13 @@ export class Factory<T = any> {
     return { ...attributes, ...overrides };
   }
 
-  private async applyBelongsTo(attributes: ModelAttributeInput<T>): Promise<ModelAttributeInput<T>> {
-    if (this.belongsToParents.length === 0) return attributes;
-    const result: Record<string, any> = { ...attributes };
+  private async applyBelongsTo(model: T): Promise<void> {
     for (const { factoryOrModel, relation } of this.belongsToParents) {
       const parent =
         factoryOrModel instanceof Factory ? ((await factoryOrModel.create()) as Model) : factoryOrModel;
       const { foreignKey, ownerKey } = this.resolveBelongsToKeys(parent, relation);
-      result[foreignKey] = (parent as any).getAttribute(ownerKey);
+      (model as any).setAttribute(foreignKey, (parent as any).getAttribute(ownerKey));
     }
-    return result as ModelAttributeInput<T>;
   }
 
   private resolveBelongsToKeys(parent: Model, relation?: string): { foreignKey: string; ownerKey: string } {
@@ -190,10 +190,25 @@ export class Factory<T = any> {
   private async createHasChildren(parent: T): Promise<void> {
     for (const { factory, relation } of this.hasChildren) {
       const rel = (parent as any)[relation]();
-      const foreignKey = rel.foreignKey;
-      const localKey = rel.localKey ?? (parent as any).constructor.primaryKey;
-      await factory.create({ [foreignKey]: (parent as any).getAttribute(localKey) } as any);
+      const attributes = typeof rel.getDefaultAttributes === "function" ? rel.getDefaultAttributes() : {};
+      if (rel.foreignKey) {
+        attributes[rel.foreignKey] = (parent as any).getAttribute(
+          rel.localKey ?? (parent as any).constructor.primaryKey
+        );
+      } else if (rel.idColumn) {
+        attributes[rel.idColumn] = (parent as any).getAttribute(
+          rel.localKey ?? (parent as any).constructor.primaryKey
+        );
+        attributes[rel.typeColumn] = rel.getMorphType();
+      }
+      await factory.withTrustedAttributes(attributes).create();
     }
+  }
+
+  private withTrustedAttributes(attributes: Record<string, any>): this {
+    const next = this.clone();
+    next.trustedAttributes = { ...next.trustedAttributes, ...attributes };
+    return next;
   }
 
   private clone(): this {
@@ -206,6 +221,7 @@ export class Factory<T = any> {
     next.afterCreatingHooks = [...this.afterCreatingHooks];
     next.belongsToParents = [...this.belongsToParents];
     next.hasChildren = [...this.hasChildren];
+    next.trustedAttributes = { ...this.trustedAttributes };
     return next;
   }
 }

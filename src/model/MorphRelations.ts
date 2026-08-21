@@ -6,7 +6,7 @@ import { pluralize, shouldGeneratePrimaryKeyForColumn, snakeCase } from "../util
 import { MorphMap } from "./MorphMap.js";
 import type {
   Model,
-  ModelAttributeInputWithout,
+  ModelMassAssignmentInputWithout,
   ModelConstructor,
   EagerLoadInput,
   MorphCountLoadMap,
@@ -288,12 +288,12 @@ export class MorphOne<T extends Record<string, any> = Model, N extends string = 
   }
 
   async attach(attributes: MorphRelationInput<T, N, Fixed>): Promise<T> {
-    const instance = new (this.related as any)({
-      ...attributes,
-      ...this.getDefaultAttributes(),
-      [this.idColumn]: this.parent.getAttribute(this.localKey),
-      [this.typeColumn]: this.getMorphType(),
-    }) as T;
+    const instance = new (this.related as any)(attributes) as T;
+    for (const [key, value] of Object.entries(this.getDefaultAttributes())) {
+      instance.setAttribute(key as any, value);
+    }
+    instance.setAttribute(this.idColumn as any, this.parent.getAttribute(this.localKey));
+    instance.setAttribute(this.typeColumn as any, this.getMorphType());
     await instance.save();
     return instance;
   }
@@ -476,12 +476,12 @@ export class MorphMany<T extends Record<string, any> = Model, N extends string =
   get(): Promise<Collection<T>> { return this.getResults(); }
 
   async attach(attributes: MorphRelationInput<T, N, Fixed>): Promise<T> {
-    const instance = new (this.related as any)({
-      ...attributes,
-      ...this.getDefaultAttributes(),
-      [this.idColumn]: this.parent.getAttribute(this.localKey),
-      [this.typeColumn]: this.getMorphType(),
-    }) as T;
+    const instance = new (this.related as any)(attributes) as T;
+    for (const [key, value] of Object.entries(this.getDefaultAttributes())) {
+      instance.setAttribute(key as any, value);
+    }
+    instance.setAttribute(this.idColumn as any, this.parent.getAttribute(this.localKey));
+    instance.setAttribute(this.typeColumn as any, this.getMorphType());
     await instance.save();
     return instance;
   }
@@ -969,17 +969,15 @@ export class MorphToMany<
     return saved;
   }
 
-  async create(attributes: ModelAttributeInputWithout<T, RelatedFixed>, pivotAttributes?: Record<string, any>): Promise<T> {
-    const instance = new (this.related as any)({
-      ...attributes,
-      ...this.getDefaultAttributes(),
-    }) as T;
+  async create(attributes: ModelMassAssignmentInputWithout<T, RelatedFixed>, pivotAttributes?: Record<string, any>): Promise<T> {
+    const instance = new (this.related as any)(attributes) as T;
+    this.applyRelatedDefaults(instance);
     await instance.save();
     await this.attach(instance.getAttribute(this.relatedKey), pivotAttributes);
     return instance;
   }
 
-  async createMany(records: ModelAttributeInputWithout<T, RelatedFixed>[], pivotAttributes?: Record<string, any>): Promise<T[]> {
+  async createMany(records: ModelMassAssignmentInputWithout<T, RelatedFixed>[], pivotAttributes?: Record<string, any>): Promise<T[]> {
     const created: T[] = [];
     for (const record of records) {
       created.push(await this.create(record, pivotAttributes));

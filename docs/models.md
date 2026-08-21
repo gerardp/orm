@@ -300,7 +300,8 @@ Computed accessors are picked up by `toJSON()` when listed in `static appends` (
 
 ## Mass assignment
 
-By default every column is fillable. Tighten this with `fillable` (allow list) or `guarded` (deny list):
+Models without a policy allow every non-internal attribute for backwards compatibility.
+Declare either `fillable` (allow list) or `guarded` (deny list), never both:
 
 ```ts
 class User extends Model {
@@ -312,6 +313,16 @@ class User extends Model {
 await User.create({ name: "Alice", email: "a@b.com", is_admin: true });
 // is_admin is silently dropped (guarded)
 ```
+
+Empty arrays are explicit policies: `fillable = []` blocks everything and
+`guarded = []` allows everything. `guarded = ["*"]` blocks everything. A subclass
+inherits its parent's policy unless it declares a replacement policy of its own.
+Internal keys such as `$attributes`, `$exists`, `__proto__`, `prototype`, and
+`constructor` are never mass assigned.
+
+Factories use the same protected path as `create()`. A model with
+`guarded = ["*"]` therefore discards attributes returned by `definition()` and
+factory states; use an explicit writable policy when creating that model through a factory.
 
 Bypass the guard with `forceCreate` / `forceFill` when an admin or migration script needs it:
 

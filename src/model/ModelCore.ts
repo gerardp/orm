@@ -19,6 +19,7 @@ import type {
   CastsAttributes,
   AccessorMap,
   ModelAttributeInput,
+  ModelMassAssignmentInput,
   BulkModelOptions,
 } from "./ModelBase.js";
 import { formatDecimal, snakeCase } from "../utils.js";
@@ -110,6 +111,29 @@ function sameAttributeValue(before: unknown, after: unknown): boolean {
   return before === after;
 }
 
+type MassAssignmentPolicy = { kind: "fillable" | "guarded"; attributes: string[] } | null;
+
+function resolveMassAssignmentPolicy(constructor: typeof ModelCore): MassAssignmentPolicy {
+  let current: any = constructor;
+  while (current && current !== ModelCore && current !== Function.prototype) {
+    const hasFillable = Object.prototype.hasOwnProperty.call(current, "fillable");
+    const hasGuarded = Object.prototype.hasOwnProperty.call(current, "guarded");
+    if (hasFillable && hasGuarded) {
+      throw new Error(
+        `${current.name} cannot declare both fillable and guarded mass assignment policies.`
+      );
+    }
+    if (hasFillable) return { kind: "fillable", attributes: current.fillable ?? [] };
+    if (hasGuarded) return { kind: "guarded", attributes: current.guarded ?? [] };
+    current = Object.getPrototypeOf(current);
+  }
+  return null;
+}
+
+function isDangerousMassAssignmentKey(key: string): boolean {
+  return key.startsWith("$") || key === "__proto__" || key === "prototype" || key === "constructor";
+}
+
 export class ModelCore<T extends Record<string, any> = any> {
   static table: string;
   static modelSchema?: string;
@@ -151,6 +175,7 @@ export class ModelCore<T extends Record<string, any> = any> {
 
   constructor(attributes?: Partial<T>) {
     const ctor = Object.getPrototypeOf(this).constructor as typeof ModelCore;
+    resolveMassAssignmentPolicy(ctor);
     const staticCasts = ctor.casts || {};
     // A copy, never the static object itself: `casts` is public, and code that
     // adds a cast in place would otherwise keep the identity that mutableCastKeys
@@ -158,10 +183,10 @@ export class ModelCore<T extends Record<string, any> = any> {
     this.$mergedCasts = { ...staticCasts, ...this.$casts };
     const defaults = ctor.attributes || {};
     if (Object.keys(defaults).length > 0) {
-      this.fill({ ...defaults } as Partial<T>);
+      this.forceFill({ ...defaults } as any);
     }
     if (attributes) {
-      this.fill(attributes);
+      this.fill(attributes as any);
     }
     return new Proxy(this, modelProxyHandler);
   }
@@ -181,13 +206,20 @@ export class ModelCore<T extends Record<string, any> = any> {
     const Base = class extends (this as unknown as typeof ModelCore)<A> {
       static override table = tableName;
       static override casts: Record<string, CastDefinition> = columnHints ?? {};
-      static override fillable: string[] = columnHints ? Object.keys(columnHints) : [];
     };
+    if (columnHints) {
+      Object.defineProperty(Base, "fillable", {
+        configurable: true,
+        value: Object.keys(columnHints),
+        writable: true,
+      });
+    }
     Object.defineProperty(Base, "name", { value: name, writable: false, configurable: true });
     return Base;
   }
 
   static getTable(): string {
+    resolveMassAssignmentPolicy(this);
     return this.table || snakeCase(this.name) + "s";
   }
 
@@ -241,7 +273,7 @@ export class ModelCore<T extends Record<string, any> = any> {
   static schema(): ModelSchemaBuilder {
     return new ModelSchemaBuilder(this.getTable(), this.getConnection(), {
       casts: this.casts,
-      fillable: this.fillable,
+      fillable: this.fillable ?? [],
       attributes: this.attributes,
       primaryKey: this.primaryKey,
       keyType: this.keyType,
@@ -291,6 +323,7 @@ export class ModelCore<T extends Record<string, any> = any> {
   }
 
   static query<M extends ModelConstructor>(this: M): Builder<InstanceType<M>> {
+    resolveMassAssignmentPolicy(this as any);
     const connection = (this as any).getConnection();
     const builder = new Builder<InstanceType<M>>(connection, (this as any).getQualifiedTable(connection));
     builder.setModel(this);
@@ -334,11 +367,18 @@ export class ModelCore<T extends Record<string, any> = any> {
     return v != null;
   }
 
-  fill(attributes: Partial<T> | ModelAttributeInput<this>): this {
+  fill(attributes: ModelMassAssignmentInput<this>): this {
     for (const [key, value] of Object.entries(attributes)) {
       if (this.isFillable(key)) {
         this.setAttribute(key as any, value as any);
       }
+    }
+    return this;
+  }
+
+  forceFill(attributes: Partial<T> | ModelAttributeInput<this>): this {
+    for (const [key, value] of Object.entries(attributes)) {
+      this.setAttribute(key as any, value as any);
     }
     return this;
   }
@@ -357,16 +397,11 @@ export class ModelCore<T extends Record<string, any> = any> {
   }
 
   isFillable(key: string): boolean {
-    const constructor = this.getModelConstructor();
-    const fillable = constructor.fillable || [];
-    const guarded = constructor.guarded || [];
-    if (fillable.length > 0) {
-      return fillable.includes(key);
-    }
-    if (guarded.length > 0) {
-      return !guarded.includes(key);
-    }
-    return true;
+    if (isDangerousMassAssignmentKey(key)) return false;
+    const policy = resolveMassAssignmentPolicy(this.getModelConstructor());
+    if (!policy) return true;
+    if (policy.kind === "fillable") return policy.attributes.includes(key);
+    return !policy.attributes.includes("*") && !policy.attributes.includes(key);
   }
 
   getAttribute<K extends keyof T>(key: K): T[K];
@@ -618,7 +653,7 @@ export class ModelCore<T extends Record<string, any> = any> {
       if (!exclude.has(key)) attrs[key] = value;
     }
     const instance = new (constructor as any)() as this;
-    instance.fill(attrs as any);
+    instance.forceFill(attrs as any);
     return instance;
   }
 

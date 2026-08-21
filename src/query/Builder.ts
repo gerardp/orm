@@ -3,7 +3,7 @@ import { TransactionContext } from "../connection/TransactionContext.js";
 import { Cache } from "../cache/index.js";
 import { MorphTo } from "../model/MorphRelations.js";
 import type { WhereClause, OrderClause, HavingClause } from "../types/index.js";
-import type { AttachedToRelationName, BelongsToRelationName, EagerLoadDefinition, EagerLoadInput, Model, ModelAttributeInput, ModelColumn, ModelColumnValue, ModelConstructor, ModelRelationName, MorphToRelationName, TypedEagerLoad, TypedConstraintMap, TypedConstraintSelection, TypedExistsConstraintMap, ExtractStringPaths, WithLoadedRelations, WithLoadedRelationsFromConstraintMap, WithRelationCount, WithRelationExists, WithRelationExistsMap, Relation, RelationConstraintQuery, NestedRelationPath, LiteralUnion, RelationRelatedModel, MorphToConstraintCallback } from "../model/Model.js";
+import type { AttachedToRelationName, BelongsToRelationName, EagerLoadDefinition, EagerLoadInput, Model, ModelAttributeInput, ModelMassAssignmentInput, ModelColumn, ModelColumnValue, ModelConstructor, ModelRelationName, MorphToRelationName, TypedEagerLoad, TypedConstraintMap, TypedConstraintSelection, TypedExistsConstraintMap, ExtractStringPaths, WithLoadedRelations, WithLoadedRelationsFromConstraintMap, WithRelationCount, WithRelationExists, WithRelationExistsMap, Relation, RelationConstraintQuery, NestedRelationPath, LiteralUnion, RelationRelatedModel, MorphToConstraintCallback } from "../model/Model.js";
 import { findRelationMethod, HasMany, Model as BaseModel } from "../model/Model.js";
 import { ObserverRegistry } from "../model/Observer.js";
 import { ModelNotFoundError } from "../model/ModelNotFoundError.js";
@@ -2032,21 +2032,23 @@ export class Builder<T = Record<string, any>, TResult = T> {
     return result;
   }
 
-  async firstOrCreate(attributes: ModelAttributeInput<T> = {}, values: ModelAttributeInput<T> = {}): Promise<T> {
+  async firstOrCreate(attributes: ModelAttributeInput<T> = {}, values: ModelMassAssignmentInput<T> = {}): Promise<T> {
     const found = await this.clone().where(attributes as any).first();
     if (found) return found;
     if (!this.model) {
       throw new Error("firstOrCreate requires a model to be set on the builder");
     }
-    const instance = new (this.model as any)({ ...attributes, ...values });
+    const instance = new (this.model as any)();
     if (typeof instance.setConnection === "function") {
       instance.setConnection(this.connection);
     }
+    instance.fill(values);
+    instance.forceFill(attributes);
     await instance.save();
     return instance;
   }
 
-  async updateOrCreate(attributes: ModelAttributeInput<T>, values: ModelAttributeInput<T> = {}): Promise<T> {
+  async updateOrCreate(attributes: ModelAttributeInput<T>, values: ModelMassAssignmentInput<T> = {}): Promise<T> {
     const found = await this.clone().where(attributes as any).first();
     if (found) {
       const model = found as any;
@@ -2059,10 +2061,12 @@ export class Builder<T = Record<string, any>, TResult = T> {
     if (!this.model) {
       throw new Error("updateOrCreate requires a model to be set on the builder");
     }
-    const instance = new (this.model as any)({ ...attributes, ...values });
+    const instance = new (this.model as any)();
     if (typeof instance.setConnection === "function") {
       instance.setConnection(this.connection);
     }
+    instance.fill(values);
+    instance.forceFill(attributes);
     await instance.save();
     return instance;
   }

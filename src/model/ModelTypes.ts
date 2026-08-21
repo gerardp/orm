@@ -32,6 +32,7 @@ type BaseModelInstanceKey =
   | "$appends"
   | "$wasRecentlyCreated"
   | "fill"
+  | "forceFill"
   | "setConnection"
   | "getConnection"
   | "isFillable"
@@ -105,7 +106,44 @@ export type ModelColumnValue<T, K> = K extends keyof ModelAttributes<T> ? ModelA
 export type ModelAttributeInput<T> = Partial<ModelAttributes<T>> & Record<string, any>;
 export type StripTablePrefix<S extends string> = S extends `${string}.${infer Tail}` ? Tail : S;
 export type ModelAttributeInputWithout<T, K extends string> = Partial<Omit<ModelAttributes<T>, K>> & Record<string, any>;
-export type MorphRelationInput<T, N extends string, Fixed extends string = never> = ModelAttributeInputWithout<T, Fixed | `${N}_id` | `${N}_type`>;
+
+declare const modelMassAssignable: unique symbol;
+
+/** Type-only marker used by generated models to declare their writable subset. */
+export type ModelMassAssignable<Attributes extends object> = {
+  readonly [modelMassAssignable]: Attributes;
+};
+
+type ModelMassAssignmentMarker<T> =
+  T extends ModelMassAssignable<infer Attributes> ? Attributes
+  : ModelAttributes<T> extends ModelMassAssignable<infer Attributes> ? Attributes
+  : never;
+
+type IsAny<T> = 0 extends (1 & T) ? true : false;
+
+type StrictPartial<Attributes> = keyof Attributes extends never
+  ? Record<string, never>
+  : Partial<Attributes>;
+
+export type ModelMassAssignmentAttributes<T> =
+  IsAny<T> extends true ? ModelAttributes<T>
+  : [ModelMassAssignmentMarker<T>] extends [never]
+    ? ModelAttributes<T>
+    : ModelMassAssignmentMarker<T>;
+
+export type ModelMassAssignmentInput<T> =
+  IsAny<T> extends true ? ModelAttributeInput<T>
+  : [ModelMassAssignmentMarker<T>] extends [never]
+    ? ModelAttributeInput<T>
+    : StrictPartial<ModelMassAssignmentMarker<T>>;
+
+export type ModelMassAssignmentInputWithout<T, K extends string> =
+  IsAny<T> extends true ? ModelAttributeInputWithout<T, K>
+  : [ModelMassAssignmentMarker<T>] extends [never]
+    ? ModelAttributeInputWithout<T, K>
+    : StrictPartial<Omit<ModelMassAssignmentMarker<T>, K>>;
+
+export type MorphRelationInput<T, N extends string, Fixed extends string = never> = ModelMassAssignmentInputWithout<T, Fixed | `${N}_id` | `${N}_type`>;
 
 export interface BulkModelOptions {
   chunkSize?: number;

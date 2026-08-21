@@ -28,6 +28,10 @@ export type { CacheConfig, CacheStore, CacheRememberOptions, RedisCacheStoreOpti
 export { Model, HasMany, BelongsTo, HasOne, HasManyThrough, HasOneThrough } from "./model/Model.js";
 export type {
   ModelAttributeInput,
+  ModelMassAssignable,
+  ModelMassAssignmentAttributes,
+  ModelMassAssignmentInput,
+  ModelMassAssignmentInputWithout,
   ModelAttributes,
   BulkModelOptions,
   SaveOptions,

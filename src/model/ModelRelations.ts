@@ -165,8 +165,12 @@ export class ModelRelations<T extends Record<string, any> = any> extends ModelSe
   }
 
   // Instance relation factories
-  hasMany<R extends ModelRelations>(related: ModelConstructor<R>, foreignKey?: string, localKey?: string): HasMany<R> {
-    return new HasMany<R>(this as any, related as any, foreignKey, localKey);
+  hasMany<R extends ModelRelations, ForeignKey extends string = `${string}_id`>(
+    related: ModelConstructor<R>,
+    foreignKey?: ForeignKey,
+    localKey?: string
+  ): HasMany<R, ForeignKey> {
+    return new HasMany<R, ForeignKey>(this as any, related as any, foreignKey, localKey);
   }
 
   belongsTo<R extends ModelRelations>(related: ModelConstructor<R>, foreignKey?: string, ownerKey?: string): BelongsTo<R> {

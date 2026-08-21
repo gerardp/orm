@@ -4,7 +4,13 @@ import { IdentityMap } from "./IdentityMap.js";
 import { ModelNotFoundError } from "./ModelNotFoundError.js";
 import { Collection } from "../support/Collection.js";
 import { findRelationMethod } from "./ModelBase.js";
-import type { ModelConstructor, BulkModelOptions, SaveOptions, ModelAttributeInput } from "./ModelBase.js";
+import type {
+  ModelConstructor,
+  BulkModelOptions,
+  SaveOptions,
+  ModelAttributeInput,
+  ModelMassAssignmentInput,
+} from "./ModelBase.js";
 import { ModelCore } from "./ModelCore.js";
 import { isNumericColumnType, shouldGeneratePrimaryKeyForColumn } from "../utils.js";
 import type { Connection } from "../connection/Connection.js";
@@ -30,7 +36,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
 
   static async prepareBulkRecords<M extends ModelConstructor>(
     this: M,
-    records: ModelAttributeInput<InstanceType<M>>[]
+    records: ModelMassAssignmentInput<InstanceType<M>>[]
   ): Promise<Record<string, any>[]> {
     const generatePk = await (this as any).shouldAutoGeneratePrimaryKey();
     const now = this.timestamps ? new Date().toISOString() : null;
@@ -61,7 +67,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
 
   static async prepareBulkRecord<M extends ModelConstructor>(
     this: M,
-    record: ModelAttributeInput<InstanceType<M>>,
+    record: ModelMassAssignmentInput<InstanceType<M>>,
     options: { touchCreatedAt?: boolean; touchUpdatedAt?: boolean; generatePrimaryKey?: boolean } = {}
   ): Promise<Record<string, any>> {
     const instance = new this() as InstanceType<M>;
@@ -142,7 +148,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
 
   static async create<M extends ModelConstructor>(
     this: M,
-    attributes: ModelAttributeInput<InstanceType<M>>,
+    attributes: ModelMassAssignmentInput<InstanceType<M>>,
     options: SaveOptions = {}
   ): Promise<InstanceType<M>> {
     const instance = new this() as InstanceType<M>;
@@ -171,7 +177,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
 
   static async insert<M extends ModelConstructor>(
     this: M,
-    records: ModelAttributeInput<InstanceType<M>> | ModelAttributeInput<InstanceType<M>>[],
+    records: ModelMassAssignmentInput<InstanceType<M>> | ModelMassAssignmentInput<InstanceType<M>>[],
     options: BulkModelOptions = {}
   ): Promise<any> {
     const list = Array.isArray(records) ? records : [records];
@@ -197,7 +203,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
 
   static async upsert<M extends ModelConstructor>(
     this: M,
-    records: ModelAttributeInput<InstanceType<M>> | ModelAttributeInput<InstanceType<M>>[],
+    records: ModelMassAssignmentInput<InstanceType<M>> | ModelMassAssignmentInput<InstanceType<M>>[],
     uniqueBy: any | any[],
     updateColumns?: any[],
     options: Omit<BulkModelOptions, "events"> = {}
@@ -219,7 +225,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
   static async updateOrInsert<M extends ModelConstructor>(
     this: M,
     attributes: ModelAttributeInput<InstanceType<M>>,
-    values: ModelAttributeInput<InstanceType<M>> = {}
+    values: ModelMassAssignmentInput<InstanceType<M>> = {}
   ): Promise<boolean> {
     const exists = await (this as any).where(attributes).exists();
     if (exists) {
@@ -227,13 +233,16 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
       await (this as any).where(attributes).update(update as any);
       return true;
     }
-    await (this as any).insert({ ...attributes, ...values } as any);
+    const instance = new this() as InstanceType<M>;
+    instance.fill(values as any);
+    instance.forceFill(attributes as any);
+    await instance.save();
     return true;
   }
 
   static async createMany<M extends ModelConstructor>(
     this: M,
-    records: ModelAttributeInput<InstanceType<M>>[],
+    records: ModelMassAssignmentInput<InstanceType<M>>[],
     options: BulkModelOptions = {}
   ): Promise<InstanceType<M>[]> {
     const models = records.map((attributes) => new this(attributes) as InstanceType<M>);
@@ -351,27 +360,34 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
   static async firstOrNew<M extends ModelConstructor>(
     this: M,
     attributes: ModelAttributeInput<InstanceType<M>> = {},
-    values: ModelAttributeInput<InstanceType<M>> = {}
+    values: ModelMassAssignmentInput<InstanceType<M>> = {}
   ): Promise<InstanceType<M>> {
     const found = await (this as any).where(attributes).first();
     if (found) return found;
-    return new this({ ...attributes, ...values } as any) as InstanceType<M>;
+    const instance = new this() as InstanceType<M>;
+    instance.fill(values as any);
+    instance.forceFill(attributes as any);
+    return instance;
   }
 
   static async firstOrCreate<M extends ModelConstructor>(
     this: M,
     attributes: ModelAttributeInput<InstanceType<M>> = {},
-    values: ModelAttributeInput<InstanceType<M>> = {}
+    values: ModelMassAssignmentInput<InstanceType<M>> = {}
   ): Promise<InstanceType<M>> {
     const found = await (this as any).where(attributes).first();
     if (found) return found;
-    return (this as any).create({ ...attributes, ...values } as any);
+    const instance = new this() as InstanceType<M>;
+    instance.fill(values as any);
+    instance.forceFill(attributes as any);
+    await instance.save();
+    return instance;
   }
 
   static async updateOrCreate<M extends ModelConstructor>(
     this: M,
     attributes: ModelAttributeInput<InstanceType<M>>,
-    values: ModelAttributeInput<InstanceType<M>> = {}
+    values: ModelMassAssignmentInput<InstanceType<M>> = {}
   ): Promise<InstanceType<M>> {
     const found = await (this as any).where(attributes).first();
     if (found) {
@@ -379,7 +395,11 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
       await found.save();
       return found;
     }
-    return (this as any).create({ ...attributes, ...values } as any);
+    const instance = new this() as InstanceType<M>;
+    instance.fill(values as any);
+    instance.forceFill(attributes as any);
+    await instance.save();
+    return instance;
   }
 
   // Instance persistence methods
@@ -485,7 +505,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
     return this;
   }
 
-  async update(attributes: Partial<T> | ModelAttributeInput<this>, options: SaveOptions = {}): Promise<this> {
+  async update(attributes: ModelMassAssignmentInput<this>, options: SaveOptions = {}): Promise<this> {
     this.fill(attributes);
     return this.save(options);
   }
