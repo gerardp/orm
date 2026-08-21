@@ -8,7 +8,7 @@ const INSPECT = Symbol.for("nodejs.util.inspect.custom");
 
 export interface ModelInfo {
   casts: Record<string, any>;
-  fillable: string[];
+  fillable: readonly string[];
   attributes: Record<string, any>;
   primaryKey: string;
   keyType: "int" | "string" | "uuid";

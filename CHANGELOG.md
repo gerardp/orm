@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.12.1 - 2026-08-21
+
+### Changed
+
+- Model configuration arrays (`fillable`, `guarded`, `hidden`, `visible`,
+  `appends`, and `touches`) and `ModelInfo.fillable` are exposed as
+  `readonly string[]`. Plain arrays remain valid; readonly tuples are accepted
+  when callers already use them. Code that needs a mutable array should make a
+  copy first, for example `[...User.fillable]`.
+
+### Fixed
+
+- `makeVisible()` no longer turns its arguments into an instance-wide
+  serialization allow-list and discard every other attribute. It now unhides
+  those keys and only extends `visible` when the model already declares that
+  allow-list.
+- `hidden` is applied after `visible`, including instance-level `makeHidden()`
+  overrides, so hidden keys never leak merely because a visible list exists.
+- The model documentation no longer advertises the nonexistent `setHidden()`
+  and `setVisible()` methods or recommends `as const` where it does not improve
+  inferred JSON types.
+
 ## 0.12.0 - 2026-08-21
 
 ### Added

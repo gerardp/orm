@@ -403,14 +403,18 @@ class User extends Model {
 }
 ```
 
+If a key appears in both lists, `hidden` wins. These configuration properties
+also accept readonly arrays and tuples, but `as const` is not required.
+
 Instance-level overrides:
 
 ```ts
 user.makeHidden("email", "phone");
-user.makeVisible("password");           // re-include for this instance
-user.setHidden(["password"]);           // replace hidden list
-user.setVisible(["id", "name"]);
+user.makeVisible("password"); // re-include without hiding other attributes
 ```
+
+`makeVisible()` extends an existing `visible` allow-list, if present, but does
+not create one on a model that only uses `hidden`.
 
 Hidden fields are also dropped from `json()` and `JSON.stringify(user)`.
 

@@ -168,18 +168,18 @@ export class ModelCore<T extends Record<string, any> = any> {
   static usesUuids = false;
   static morphName?: string;
   static casts: Record<string, CastDefinition> = {};
-  static fillable: string[] = [];
-  static guarded: string[] = ["*"];
+  static fillable: readonly string[] = [];
+  static guarded: readonly string[] = ["*"];
   static attributes: Record<string, any> = {};
   static softDeletes = false;
   static deletedAtColumn = "deleted_at";
   static preventLazyLoading = false;
   static preventSilentlyDiscardingAttributes = false;
-  static hidden: string[] = [];
-  static visible: string[] = [];
-  static appends: string[] = [];
+  static hidden: readonly string[] = [];
+  static visible: readonly string[] = [];
+  static appends: readonly string[] = [];
   static accessors: AccessorMap<any, any> = {};
-  static touches: string[] = [];
+  static touches: readonly string[] = [];
 
   $attributes = {} as T;
   $original = {} as Partial<T>;

@@ -82,26 +82,27 @@ function findNativeGetter(model: object, key: string): (() => unknown) | undefin
 }
 
 export class ModelSerialization<T extends Record<string, any> = any> extends ModelPersistence<T> {
-  makeHidden(...keys: (string | string[])[]): this {
+  makeHidden(...keys: (string | readonly string[])[]): this {
     const flat = keys.flat();
     this.$hidden = [...new Set([...this.$hidden, ...flat])];
+    this.$visible = this.$visible.filter((k) => !flat.includes(k));
     return this;
   }
 
-  makeVisible(...keys: (string | string[])[]): this {
+  makeVisible(...keys: (string | readonly string[])[]): this {
     const flat = keys.flat();
     this.$visible = [...new Set([...this.$visible, ...flat])];
     this.$hidden = this.$hidden.filter((k) => !flat.includes(k));
     return this;
   }
 
-  append<K extends string>(...keys: (K | K[])[]): this & Record<K, any> {
+  append<K extends string>(...keys: (K | readonly K[])[]): this & Record<K, any> {
     const flat = keys.flat();
     this.$appends = [...new Set([...this.$appends, ...flat])];
     return this as this & Record<K, any>;
   }
 
-  setAppends<K extends string>(keys: K[]): this & Record<K, any> {
+  setAppends<K extends string>(keys: readonly K[]): this & Record<K, any> {
     this.$appends = [...keys];
     return this as this & Record<K, any>;
   }
@@ -115,19 +116,18 @@ export class ModelSerialization<T extends Record<string, any> = any> extends Mod
     const constructor = this.getModelConstructor();
     const staticVisible = constructor.visible || [];
     const staticHidden = constructor.hidden || [];
-    const visible = staticVisible.length > 0 || this.$visible.length > 0
+    const visible = staticVisible.length > 0
       ? new Set([...staticVisible, ...this.$visible])
       : undefined;
-    const hidden = !visible && (staticHidden.length > 0 || this.$hidden.length > 0)
-      ? new Set([...staticHidden, ...this.$hidden])
-      : undefined;
+    const hidden = new Set([...staticHidden, ...this.$hidden]);
+    for (const key of this.$visible) hidden.delete(key);
     const attributes = this.$attributes as Record<string, any>;
     const accessors = constructor.accessors || {};
     const casts = this.$mergedCasts;
     const result: Record<string, any> = {};
 
     for (const key of Object.keys(attributes)) {
-      if (visible ? !visible.has(key) : hidden?.has(key)) continue;
+      if ((visible && !visible.has(key)) || hidden.has(key)) continue;
       const value = attributes[key];
       const cast = casts[key];
       const needsCastPath = Boolean(accessors[key]?.get) || (cast !== undefined && !castValueIsReady(cast, value));
@@ -135,14 +135,14 @@ export class ModelSerialization<T extends Record<string, any> = any> extends Mod
     }
     if ((constructor.appends?.length || 0) > 0 || this.$appends.length > 0) {
       for (const key of this.getAppends()) {
-        if (visible ? !visible.has(key) : hidden?.has(key)) continue;
+        if ((visible && !visible.has(key)) || hidden.has(key)) continue;
         const nativeGetter = accessors[key]?.get ? undefined : findNativeGetter(this, key);
         result[key] = nativeGetter ? nativeGetter.call(this) : this.getAttribute(key as any);
       }
     }
     if (includeRelations) {
       for (const key of Object.keys(this.$relations)) {
-        if (visible ? !visible.has(key) : hidden?.has(key)) continue;
+        if ((visible && !visible.has(key)) || hidden.has(key)) continue;
         const value = this.$relations[key];
         if (value === null || value === undefined) {
           result[key] = value;

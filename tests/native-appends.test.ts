@@ -81,7 +81,14 @@ describe("Native getters in appends", () => {
     const visible = AppendedUser.hydrate({ id: 5, firstName: "Visible", lastName: "Getter", score: 2 });
     visible.makeVisible("fullName");
     AppendedUser.getterCalls = 0;
-    expect(visible.toJSON()).toMatchObject({ fullName: "Visible Getter" });
+    expect(visible.toJSON() as Record<string, unknown>).toEqual({
+      id: 5,
+      firstName: "Visible",
+      lastName: "Getter",
+      score: 2,
+      fullName: "Visible Getter",
+      scoreLabel: "2:number",
+    });
     expect(AppendedUser.getterCalls).toBe(1);
   });
 

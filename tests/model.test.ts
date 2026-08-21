@@ -35,6 +35,22 @@ class SerializedUser extends PermissiveModel {
   };
 }
 
+class VisibleUser extends PermissiveModel {
+  static timestamps = false;
+  static visible = ["name"];
+}
+
+class HiddenVisibleUser extends PermissiveModel {
+  static timestamps = false;
+  static hidden = ["secret"];
+  static visible = ["name", "secret"];
+}
+
+class InstanceHiddenUser extends PermissiveModel {
+  static timestamps = false;
+  static visible = ["name", "secret"];
+}
+
 describe("Model", () => {
   beforeAll(async () => {
     setupTestDb();
@@ -188,6 +204,38 @@ describe("Model", () => {
       plain: "value",
       profile: { role: "admin" },
     });
+
+    expect(new VisibleUser({ name: "Visible", secret: "hidden" }).toJSON()).toEqual({
+      name: "Visible",
+    });
+
+    const madeVisible = new SerializedUser({
+      name: "visible",
+      active: 1,
+      secret: "shown",
+      plain: "preserved",
+    }).makeVisible("secret");
+    madeVisible.setRelation("profile", { toJSON: () => ({ role: "admin" }) });
+    expect(madeVisible.toJSON()).toEqual({
+      name: "VISIBLE",
+      active: true,
+      secret: "shown",
+      plain: "preserved",
+      profile: { role: "admin" },
+    });
+
+    const hiddenVisible = new HiddenVisibleUser({ name: "Hidden wins", secret: "shown", extra: "filtered" });
+    expect(hiddenVisible.toJSON()).toEqual({
+      name: "Hidden wins",
+    });
+    expect(hiddenVisible.makeVisible("secret").toJSON()).toEqual({
+      name: "Hidden wins",
+      secret: "shown",
+    });
+
+    const instanceHidden = new InstanceHiddenUser({ name: "Visible", secret: "hidden" });
+    instanceHidden.makeHidden("secret");
+    expect(instanceHidden.toJSON()).toEqual({ name: "Visible" });
   });
 
   test("json aliases toJSON", async () => {
