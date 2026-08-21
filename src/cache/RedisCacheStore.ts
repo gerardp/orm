@@ -16,7 +16,14 @@ export class RedisCacheStore implements CacheStore {
 
   async get<T = unknown>(key: string): Promise<T | null> {
     const value = await this.client.get(this.valueKey(key));
-    return value === null ? null : JSON.parse(value) as T;
+    if (value === null) return null;
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      // Corrupt entry (see MemoryCacheStore.get): miss and drop it.
+      await this.forget(key);
+      return null;
+    }
   }
 
   async set<T = unknown>(key: string, value: T, options: CacheRememberOptions = {}): Promise<void> {

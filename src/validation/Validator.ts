@@ -70,7 +70,16 @@ function setPath(data: Record<string, any>, path: string, value: unknown): void 
   current[parts[parts.length - 1]] = value;
 }
 
-function wildcardValues(data: Record<string, any>, pattern: string): string[] {
+/**
+ * Expands a wildcard pattern into the concrete paths present in the data.
+ *
+ * `includeMissing` also yields paths whose literal segments are absent, which is
+ * what makes presence rules work under a wildcard: without it `items.*.isbn`
+ * expands to nothing for `{ items: [{}] }` and a `required()` there can never
+ * fire. A `*` still only expands over what exists — a missing collection has no
+ * rows to require anything of.
+ */
+function wildcardValues(data: Record<string, any>, pattern: string, includeMissing = false): string[] {
   if (!pattern.includes("*")) return [pattern];
   const found: string[] = [];
   const parts = pathParts(pattern);
@@ -92,19 +101,41 @@ function wildcardValues(data: Record<string, any>, pattern: string): string[] {
     }
     if (value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, part)) {
       visit((value as Record<string, unknown>)[part], index + 1, [...path, part]);
+      return;
+    }
+    if (includeMissing && index > 0) {
+      visit(undefined, index + 1, [...path, part]);
     }
   };
   visit(data, 0, []);
   return found;
 }
 
+/**
+ * Resolves a cross-field reference written inside a wildcard rule.
+ *
+ * `same("*.end")` under the pattern `ranges.*.start` has to become
+ * `ranges.0.end` for the row being validated. Substituting the wildcards alone
+ * yields `0.end` — a path that never exists — so the literal prefix the pattern
+ * carries before its first wildcard is prepended, unless the reference already
+ * spells it out (`ranges.*.end`).
+ */
 function resolveRelativePath(pattern: string, attribute: string, other: string): string {
   if (!other.includes("*")) return other;
+
   const patternParts = pathParts(pattern);
   const attrParts = pathParts(attribute);
+  const otherParts = pathParts(other);
+
   let wildcardIndex = 0;
   const wildcardValuesInAttr = patternParts.flatMap((part, i) => part === "*" ? [attrParts[i]] : []);
-  return pathParts(other).map((part) => part === "*" ? wildcardValuesInAttr[wildcardIndex++] ?? part : part).join(".");
+  const resolved = otherParts.map((part) => part === "*" ? wildcardValuesInAttr[wildcardIndex++] ?? part : part);
+
+  const prefixDepth = patternParts.indexOf("*");
+  const prefix = prefixDepth > 0 ? attrParts.slice(0, prefixDepth) : [];
+  const alreadyQualified = prefix.length > 0 && prefix.every((part, i) => otherParts[i] === part);
+
+  return [...(alreadyQualified ? [] : prefix), ...resolved].join(".");
 }
 
 function makeContext(
@@ -598,7 +629,11 @@ export class Validator<S extends ValidationSchema, TInput = unknown> {
 
     for (const pattern of Object.keys(this.schema)) {
       const builder = this.schema[pattern] as RuleBuilder<any, any>;
-      const attributes = wildcardValues(data, pattern);
+      // Presence rules have to see keys that are absent, so those patterns get
+      // the missing paths enumerated too; everything else keeps the cheaper
+      // "only what exists" expansion.
+      const expectsMissing = hasImplicitValidation(builder.specs);
+      const attributes = wildcardValues(data, pattern, expectsMissing);
       for (const field of attributes) {
         const ctx = makeContext(field, pattern, data, this.explicitConnection);
         ctx.addError = (target: string, message: string) => {
@@ -608,7 +643,7 @@ export class Validator<S extends ValidationSchema, TInput = unknown> {
         let value = getPath(data, field);
         let excluded = false;
         const wasSupplied = hasPath(data, field);
-        const shouldValidateMissing = hasImplicitValidation(builder.specs);
+        const shouldValidateMissing = expectsMissing;
         const isNullable = builder.specs.some((ruleObj) => ruleObj.name === "nullable");
         const isMissing = !wasSupplied || value === undefined || value === "" || (value === null && !isNullable);
 

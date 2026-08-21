@@ -130,6 +130,40 @@ describe("SqliteFTS5Engine — bm25 per-column weights", () => {
     });
     expect(hits[0].id).toBe(1);
   });
+
+  test("rejects non-numeric weights instead of interpolating NaN into the SQL", async () => {
+    const { engine } = freshEngine();
+    engine.configureIndex("posts_fts", { columns: ["title", "body"] });
+    await engine.createIndex("posts_fts");
+
+    for (const weights of [["1.2", "abc"], [1, Number.NaN], [1, Number.POSITIVE_INFINITY]]) {
+      await expect(engine.search({
+        index: "posts_fts",
+        query: "rust",
+        filters: [],
+        sorts: [],
+        bm25Weights: weights as any,
+        showRankingScore: true,
+      })).rejects.toThrow(/bm25 weight must be a finite number/);
+    }
+  });
+
+  test("numeric strings are still accepted", async () => {
+    const { engine } = freshEngine();
+    engine.configureIndex("posts_fts", { columns: ["title", "body"] });
+    await engine.createIndex("posts_fts");
+    await engine.update([{ index: "posts_fts", id: 1, data: { title: "rust", body: "x" } }]);
+
+    const hits = await engine.search({
+      index: "posts_fts",
+      query: "rust",
+      filters: [],
+      sorts: [],
+      bm25Weights: ["10", "1"] as any,
+      showRankingScore: true,
+    });
+    expect(hits[0].id).toBe(1);
+  });
 });
 
 describe("SqliteFTS5Engine — whereRaw bindings", () => {

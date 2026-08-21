@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { redis, SQL } from "bun";
+import { SQL } from "bun";
 import { Connection } from "../src/connection/Connection.js";
 import { ConnectionManager } from "../src/connection/ConnectionManager.js";
 import { configureBunny } from "../src/config/BunnyConfig.js";
@@ -14,7 +14,7 @@ import { styleText } from "node:util";
 import { normalizePathList, snakeCase } from "../src/utils.js";
 import { discoverModelTables } from "../src/typegen/discoverModelTables.js";
 import { DatabaseQueueDriver } from "../src/queue/DatabaseQueueDriver.js";
-import { RedisQueueDriver } from "../src/queue/RedisQueueDriver.js";
+import { RedisQueueDriver, resolveQueueRedisClient } from "../src/queue/RedisQueueDriver.js";
 import type { QueueDriver } from "../src/queue/QueueDriver.js";
 import { Worker } from "../src/queue/Worker.js";
 import { registerJob } from "../src/queue/Job.js";
@@ -23,6 +23,8 @@ import { CommandRunner, parseBooleanOptionValue } from "../src/commands/CommandR
 import { parseSignatureName } from "../src/commands/SignatureParser.js";
 import { registerOrmCommands } from "../src/cli/index.js";
 import { relayStdoutToStderr } from "../src/cli/StdoutContract.js";
+import { getFlagValue, parsePositiveInteger, readFlag } from "../src/cli/flags.js";
+import { buildBunnyConfigTemplate } from "../src/cli/configTemplate.js";
 import {
   BelongsTo,
   BelongsToMany,
@@ -109,97 +111,6 @@ async function promptText(question: string, defaultValue: string): Promise<strin
   return input || defaultValue;
 }
 
-function buildBunnyConfigTemplate(opts: {
-  databaseUrl: string;
-  migrationsPath: string;
-  seedersPath: string;
-  modelsPath: string;
-  enableTenancy: boolean;
-  enableSearch: boolean;
-  enableQueue: boolean;
-  enableCache: boolean;
-  enableLogs: boolean;
-  commandsPath: string;
-}): string {
-  const lines: string[] = [
-    `import type { BunnyConfig } from "@bunnykit/orm";`,
-    "",
-    "const config: BunnyConfig = {",
-    "  connection: {",
-    "    // Update this to your database URL.",
-    '    // Examples: "sqlite://./database/app.db", "postgres://user:pass@localhost:5432/app"',
-    `    url: process.env.DATABASE_URL || "${opts.databaseUrl}",`,
-    "  },",
-    `  migrationsPath: "${opts.migrationsPath}",`,
-    `  seedersPath: "${opts.seedersPath}",`,
-    `  modelsPath: "${opts.modelsPath}",`,
-    `  commands: { commandsPath: "${opts.commandsPath}" },`,
-  ];
-
-  if (opts.enableLogs) {
-    lines.push(
-      "  log: {",
-      "    console: true,",
-      '    // file: "./storage/logs/sql.log",',
-      "  },",
-    );
-  }
-
-  if (opts.enableTenancy) {
-    lines.push(
-      "  tenancy: {",
-      "    // Replace with your own resolver and tenant lister.",
-      "    // resolveTenant: async () => null,",
-      "    // listTenants: async () => [\"tenant-1\"],",
-      "    idleTimeoutMs: 300_000,",
-      "  },",
-    );
-  }
-
-  if (opts.enableSearch) {
-    lines.push(
-      "  search: {",
-      "    engine: \"sqlite\",",
-      "    chunk: 500,",
-      ...(opts.enableTenancy
-        ? [
-          "    // Keep search indexes tenant-scoped when tenancy is enabled.",
-          "    tenantScope: (base, tenantId) => tenantId ? `${base}_t_${tenantId}` : base,",
-        ]
-        : []),
-      "    // For Meilisearch, switch engine and set host/apiKey:",
-      "    // engine: \"meilisearch\",",
-      "    // host: process.env.MEILISEARCH_HOST || \"http://127.0.0.1:7700\",",
-      "    // apiKey: process.env.MEILISEARCH_API_KEY,",
-      "  },",
-    );
-  }
-
-  if (opts.enableQueue) {
-    lines.push(
-      "  queue: {",
-      "    driver: \"db\",",
-      "    defaultQueue: \"default\",",
-      "    workers: 1,",
-      "    jobsPath: \"./app/jobs\",",
-      "  },",
-    );
-  }
-
-  if (opts.enableCache) {
-    lines.push(
-      "  cache: {",
-      "    // Default is Redis cache store from Bun's Redis client.",
-      "    prefix: \"bunny:\",",
-      "    defaultTtl: 3600,",
-      "  },",
-    );
-  }
-
-  lines.push("};", "", "export default config;", "");
-  return lines.join("\n");
-}
-
 async function buildInitTemplateFromPrompts(): Promise<string> {
   const databaseUrl = await promptText("Database URL", "sqlite://./database/app.db");
   const migrationsPath = await promptText("Migrations path", "./database/migrations");
@@ -248,13 +159,6 @@ async function runInitCommand(rawArgs: string[]): Promise<number> {
     console.warn(`${styleText("yellow", "Note:", { stream: process.stderr })} ${jsConfigPath} still exists and may cause confusion.`);
   }
   return 0;
-}
-
-function getFlagValue(args: string[], flag: string): string | undefined {
-  const idx = args.indexOf(flag);
-  if (idx !== -1) return args[idx + 1];
-  const inline = args.find((arg) => arg.startsWith(`${flag}=`));
-  return inline?.slice(flag.length + 1);
 }
 
 async function walkJobFiles(dir: string): Promise<string[]> {
@@ -856,7 +760,26 @@ async function main() {
     if (command === "queue") {
       const restArgs    = args.slice(1);
       const queueName   = getFlagValue(restArgs, "--queue") ?? config.queue?.defaultQueue ?? "default";
-      const workerCount = parseInt(getFlagValue(restArgs, "--workers") ?? String(config.queue?.workers ?? 1), 10);
+      const workersFlag = readFlag(restArgs, "--workers");
+      if (workersFlag.kind === "missing-value") {
+        console.error(
+          `${styleText("red", "Error:", { stream: process.stderr })} --workers needs a value ` +
+          "(--workers=4). Omit the flag entirely to use the configured default.",
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const rawWorkers  = workersFlag.kind === "value" ? workersFlag.value : String(config.queue?.workers ?? 1);
+      const workerCount = parsePositiveInteger(rawWorkers);
+
+      if (workerCount === undefined) {
+        console.error(
+          `${styleText("red", "Error:", { stream: process.stderr })} invalid worker count "${rawWorkers}". ` +
+          "Expected a positive integer (--workers=4).",
+        );
+        process.exitCode = 1;
+        return;
+      }
 
       let driver: QueueDriver;
       if (config.queue?.driver === "db" || !config.queue?.driver) {
@@ -866,7 +789,7 @@ async function main() {
         });
         await driver.migrate();
       } else if (config.queue?.driver === "redis") {
-        driver = new RedisQueueDriver(redis, {
+        driver = new RedisQueueDriver(resolveQueueRedisClient(config.queue?.redis?.url), {
           prefix: config.cache?.prefix ? `${config.cache.prefix}queue:` : undefined,
         });
       } else if (typeof config.queue?.driver === "object" && "reserve" in config.queue.driver) {
@@ -879,7 +802,12 @@ async function main() {
         await driver.migrate();
       }
 
-      for (const jobsPath of normalizePathList(config.queue?.jobsPath)) {
+      const jobsPaths = normalizePathList(config.queue?.jobsPath);
+      // Counted here rather than from the registry as a whole: the search
+      // subsystem registers its own jobs on import, which would mask an empty
+      // jobsPath.
+      let discoveredJobs = 0;
+      for (const jobsPath of jobsPaths) {
         const resolvedPath = resolve(process.cwd(), jobsPath);
         if (!existsSync(resolvedPath)) {
           console.warn(`[Queue] jobsPath not found: ${resolvedPath}`);
@@ -890,22 +818,45 @@ async function main() {
           for (const exported of Object.values(mod)) {
             if (typeof exported === "function" && exported.prototype && typeof exported.prototype.handle === "function") {
               registerJob(exported as any);
+              discoveredJobs++;
             }
           }
         }
+      }
+
+      // A jobsPath that yields nothing is almost always a misconfiguration, and
+      // a worker that resolves nothing burns through the whole backlog retrying
+      // jobs it can never run. Refuse instead.
+      if (jobsPaths.length > 0 && discoveredJobs === 0) {
+        console.error(
+          `${styleText("red", "Error:", { stream: process.stderr })} jobsPath is configured ` +
+          `(${jobsPaths.join(", ")}) but no job classes were registered.\n` +
+          "Refusing to start: every pending job would be retried and eventually failed as unknown.",
+        );
+        process.exitCode = 1;
+        return;
       }
 
       const worker = new Worker(driver, {
         queue: queueName,
         concurrency: workerCount,
         retryAfterSeconds: config.queue?.retryAfterSeconds,
+        retryDelaySeconds: config.queue?.retryDelaySeconds,
         pollIntervalMs: config.queue?.pollIntervalMs,
       });
       console.log(`[Queue] Worker started. queue=${queueName} concurrency=${workerCount}`);
       const shutdown = () => { console.log("\n[Queue] Shutting down..."); worker.stop(); };
       process.once("SIGTERM", shutdown);
       process.once("SIGINT", shutdown);
-      await worker.run();
+      try {
+        await worker.run();
+      } catch (err) {
+        // The worker loops swallow their own driver errors, so anything here is
+        // a startup problem. Set the exit code rather than calling exit(): a
+        // hard exit would cut short any job still draining.
+        console.error("[Queue] Worker crashed:", err);
+        process.exitCode = 1;
+      }
       console.log("[Queue] Worker stopped.");
       return;
     }

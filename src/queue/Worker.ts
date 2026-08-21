@@ -10,6 +10,12 @@ export interface WorkerOptions {
   retryDelaySeconds?: number;
 }
 
+/** Upper bound for the exponential backoff applied after a driver error. */
+const MAX_RESERVE_BACKOFF_MS = 30_000;
+
+/** Slice length used to keep long backoff sleeps responsive to `stop()`. */
+const SLEEP_SLICE_MS = 250;
+
 export class Worker {
   private queue: string;
   private concurrency: number;
@@ -22,7 +28,7 @@ export class Worker {
 
   constructor(private driver: QueueDriver, options: WorkerOptions = {}) {
     this.queue = options.queue ?? "default";
-    this.concurrency = Math.max(1, options.concurrency ?? 1);
+    this.concurrency = normalizeConcurrency(options.concurrency);
     this.pollIntervalMs = options.pollIntervalMs ?? 1000;
     this.retryAfterSeconds = options.retryAfterSeconds ?? 90;
     this.retryDelaySeconds = options.retryDelaySeconds ?? 0;
@@ -42,17 +48,37 @@ export class Worker {
   }
 
   private async workerLoop(): Promise<void> {
+    let consecutiveErrors = 0;
+
     while (!this.stopSignal) {
-      const job = await this.driver.reserve(this.queue, this.retryAfterSeconds);
+      let job: JobRecord | null;
+
+      try {
+        job = await this.driver.reserve(this.queue, this.retryAfterSeconds);
+        consecutiveErrors = 0;
+      } catch (err) {
+        // A transient driver error (network blip, SQLITE_BUSY, failover) must
+        // never escape this loop: run() awaits every loop with Promise.all, so
+        // a rejection here would take down sibling loops that are half way
+        // through handle() and abandon their in-flight jobs.
+        consecutiveErrors++;
+        console.error(`[Queue] reserve() failed (${consecutiveErrors} consecutive):`, err);
+        await this.sleep(backoffMs(this.pollIntervalMs, consecutiveErrors));
+        continue;
+      }
 
       if (!job) {
-        await sleep(this.pollIntervalMs);
+        await this.sleep(this.pollIntervalMs);
         continue;
       }
 
       this.activeJobs++;
       try {
         await this.processJob(job);
+      } catch (err) {
+        // processJob owns its own error handling; anything reaching here is a
+        // bug or a driver failure in the failure path itself.
+        console.error(`[Queue] Unhandled error while processing job ${job.id}:`, err);
       } finally {
         this.activeJobs--;
       }
@@ -66,9 +92,20 @@ export class Worker {
     const JobClass = resolveJob(job.jobClass);
 
     if (!JobClass) {
-      const err = new Error(`Unknown job class: ${job.jobClass}. Register it via registerJob() or set jobsPath in config.`);
-      console.error(`[Queue] ${err.message}`);
-      await this.driver.fail(job.id, err.stack ?? err.message);
+      // Usually a misconfigured `jobsPath` or a deploy where the worker booted
+      // before the class existed — transient from the job's point of view. Give
+      // it the same retry budget as any other failure instead of burning the
+      // whole backlog into failed_jobs on the first pass.
+      const message =
+        `Unknown job class: ${job.jobClass}. Register it via registerJob() or set jobsPath in config.`;
+
+      if (job.attempts < job.maxAttempts) {
+        console.warn(`[Queue] ${message} Retrying (attempt ${job.attempts}/${job.maxAttempts}).`);
+        await this.guarded(() => this.driver.release(job.id, unknownClassRetryDelay(job.attempts)));
+      } else {
+        console.error(`[Queue] ${message}`);
+        await this.guarded(() => this.driver.fail(job.id, new Error(message).stack ?? message));
+      }
       return;
     }
 
@@ -76,18 +113,16 @@ export class Worker {
     try {
       payload = JSON.parse(job.payload);
     } catch {
-      await this.driver.fail(job.id, `Invalid payload JSON for job ${job.jobClass}`);
+      await this.guarded(() => this.driver.fail(job.id, `Invalid payload JSON for job ${job.jobClass}`));
       return;
     }
 
-    const instance = new JobClass(...(payload.args ?? []));
-
-    const run = () => instance.handle();
-
     try {
+      // Constructing the instance can throw (a constructor doing real work, a
+      // bad arg shape); that has to be a job failure, not an escaped rejection.
+      const instance = new JobClass(...(payload.args ?? []));
+      const run = () => instance.handle();
       await (payload.tenantId ? TenantContext.run(payload.tenantId, run) : run());
-      await this.driver.complete(job.id);
-      console.log(`[Queue] Processed ${job.jobClass} (id=${job.id})`);
     } catch (err: unknown) {
       const asError = err instanceof Error ? err : undefined;
       const message = asError?.stack ?? String(err);
@@ -96,14 +131,67 @@ export class Worker {
       const maxAttempts = job.maxAttempts;
 
       if (attempts >= maxAttempts) {
-        await this.driver.fail(job.id, message);
+        await this.guarded(() => this.driver.fail(job.id, message));
         console.error(`[Queue] Failed ${job.jobClass} (id=${job.id}) after ${attempts} attempt(s): ${shortMessage}`);
       } else {
-        await this.driver.release(job.id, this.retryDelaySeconds);
+        await this.guarded(() => this.driver.release(job.id, this.retryDelaySeconds));
         console.warn(`[Queue] Retrying ${job.jobClass} (id=${job.id}) attempt ${attempts}/${maxAttempts}: ${shortMessage}`);
       }
+      return;
+    }
+
+    // handle() succeeded. A failing complete() is a bookkeeping problem, not a
+    // job failure: releasing or failing here would either re-run side effects
+    // that already happened or bury a job that actually worked. Let the
+    // visibility timeout decide, and say so loudly.
+    try {
+      await this.driver.complete(job.id);
+      console.log(`[Queue] Processed ${job.jobClass} (id=${job.id})`);
+    } catch (err) {
+      console.error(
+        `[Queue] ${job.jobClass} (id=${job.id}) handled successfully but complete() failed; ` +
+        `it may be retried once its reservation expires:`,
+        err,
+      );
     }
   }
+
+  /**
+   * Runs a driver call that is itself part of failure handling. A secondary
+   * error must not mask the primary one — if release/fail cannot be persisted
+   * the visibility timeout will redeliver the job, which is the safe default.
+   */
+  private async guarded(fn: () => Promise<void>): Promise<void> {
+    try {
+      await fn();
+    } catch (secondary) {
+      console.error("[Queue] driver error while handling job outcome:", secondary);
+    }
+  }
+
+  /** Sleep that returns early once `stop()` has been called. */
+  private async sleep(ms: number): Promise<void> {
+    let remaining = ms;
+    while (remaining > 0 && !this.stopSignal) {
+      const slice = Math.min(remaining, SLEEP_SLICE_MS);
+      await sleep(slice);
+      remaining -= slice;
+    }
+  }
+}
+
+function normalizeConcurrency(requested: number | undefined): number {
+  if (requested === undefined) return 1;
+  return Number.isFinite(requested) ? Math.max(1, Math.floor(requested)) : 1;
+}
+
+function backoffMs(pollIntervalMs: number, consecutiveErrors: number): number {
+  const base = Math.max(pollIntervalMs, 1);
+  return Math.min(base * 2 ** Math.min(consecutiveErrors, 5), MAX_RESERVE_BACKOFF_MS);
+}
+
+function unknownClassRetryDelay(attempts: number): number {
+  return Math.min(60, 5 * Math.max(attempts, 1));
 }
 
 function sleep(ms: number): Promise<void> {

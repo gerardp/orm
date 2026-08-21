@@ -23,6 +23,10 @@ export class ConnectionManager {
   private static connections = new Map<string, Connection>();
   private static tenantResolver?: TenantResolver;
   private static tenantCache = new Map<string, ActiveTenantContext>();
+  /** In-flight resolutions, so concurrent callers share one connection. */
+  private static tenantInflight = new Map<string, Promise<ActiveTenantContext>>();
+  /** Bumped by closeAll(); a resolution that spans a bump discards its result. */
+  private static shutdownGeneration = 0;
   private static sweepTimer?: ReturnType<typeof setInterval>;
 
   /**
@@ -99,6 +103,26 @@ export class ConnectionManager {
       throw new Error("No tenant resolver configured.");
     }
 
+    // Single-flight: two concurrent requests for the same cold tenant would
+    // each build a Connection and each register it under `resolution.name`, so
+    // the second overwrote the first and left it open with no way to close it.
+    const inflight = this.tenantInflight.get(tenantId);
+    if (inflight) return inflight;
+
+    const promise = this.buildTenantContext(tenantId, this.shutdownGeneration);
+    this.tenantInflight.set(tenantId, promise);
+    try {
+      return await promise;
+    } finally {
+      this.tenantInflight.delete(tenantId);
+    }
+  }
+
+  private static async buildTenantContext(tenantId: string, generation: number): Promise<ActiveTenantContext> {
+    if (!this.tenantResolver) {
+      throw new Error("No tenant resolver configured.");
+    }
+
     const resolution = await this.tenantResolver(tenantId);
     const policy = { ...resolution.cache, ttl: resolution.ttl ?? resolution.cache?.ttl, closeOnPurge: resolution.closeOnPurge ?? resolution.cache?.closeOnPurge };
     const resolvedAt = Date.now();
@@ -147,6 +171,19 @@ export class ConnectionManager {
       rlsSetting: resolution.strategy === "rls" ? resolution.setting || "app.tenant_id" : undefined,
       rlsRole: resolution.strategy === "rls" ? resolution.role : undefined,
     };
+    // closeAll() may have run while the resolver was awaiting. Registering now
+    // would resurrect a connection and a tenant entry after shutdown, with
+    // nothing left holding a reference to close them.
+    if (generation !== ConnectionManager.shutdownGeneration) {
+      if (this.connections.get(resolution.name) === connection) {
+        this.connections.delete(resolution.name);
+      }
+      if (ownsConnection) await connection.close();
+      throw new Error(
+        `Connection manager was closed while resolving tenant "${tenantId}".`,
+      );
+    }
+
     this.tenantCache.set(tenantId, context);
     return context;
   }
@@ -198,6 +235,10 @@ export class ConnectionManager {
     if (this.defaultConnection) connections.add(this.defaultConnection);
 
     this.disableTenantSweep();
+    // Invalidate resolutions still awaiting their resolver, and stop new
+    // callers from joining one.
+    this.shutdownGeneration++;
+    this.tenantInflight.clear();
     this.connections.clear();
     this.tenantCache.clear();
     this.defaultConnection = undefined;

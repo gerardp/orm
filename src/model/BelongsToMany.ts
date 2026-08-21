@@ -14,6 +14,16 @@ function defaultPivotTable(parent: Model, related: ModelConstructor): string {
   return `${names[0]}_${names[1]}`;
 }
 
+/**
+ * Canonical comparison key for a related-model id. Drivers are inconsistent
+ * about the JS type they return for integer keys (Postgres hands back `bigint`
+ * columns as strings), so `sync()`/`toggle()` compare on the string form rather
+ * than on identity.
+ */
+function pivotKey(value: unknown): string {
+  return String(value);
+}
+
 export class BelongsToMany<T extends Record<string, any> = Model, RelatedFixed extends string = never, PivotFixed extends string = never> {
   protected parent: Model;
   protected related: ModelConstructor;
@@ -27,7 +37,7 @@ export class BelongsToMany<T extends Record<string, any> = Model, RelatedFixed e
   protected builder: Builder<T>;
   protected whereConstraints: Array<{ column: string; operator: string; value: any; boolean: "and" | "or" }> = [];
   protected pivotWheres: Array<{ column: string; operator: string; value: any; boolean: "and" | "or" }> = [];
-  protected extraConstraints: Array<(builder: Builder<T>) => void> = [];
+  protected extraConstraints: Array<{ apply: (builder: Builder<any>) => void; aggregateSafe: boolean }> = [];
   protected pivotAccessor = "pivot";
   protected $skipEagerQuery = false;
 
@@ -197,13 +207,25 @@ export class BelongsToMany<T extends Record<string, any> = Model, RelatedFixed e
       value: whereValue,
       boolean: "and",
     });
-    this.extraConstraints.push((b) => (b.where as any)(...args));
+    this.extraConstraints.push({ apply: (b: Builder<any>) => (b.where as any)(...args), aggregateSafe: true });
     (this.builder.where as any)(...args);
     return this as BelongsToMany<T, RelatedFixed | StripTablePrefix<K>, PivotFixed>;
   }
 
   protected applyExtraConstraints(): void {
-    for (const constraint of this.extraConstraints) constraint(this.builder);
+    this.applyExtraConstraintsTo(this.builder as Builder<any>);
+  }
+
+  /** See `Relation.applyExtraConstraintsTo`: existence queries need the same replay. */
+  protected applyExtraConstraintsTo(query: Builder<any>): void {
+    for (const constraint of this.extraConstraints) constraint.apply(query);
+  }
+
+  /** See `Relation.applyAggregateSafeConstraintsTo`. */
+  protected applyAggregateSafeConstraintsTo(query: Builder<any>): void {
+    for (const constraint of this.extraConstraints) {
+      if (constraint.aggregateSafe) constraint.apply(query);
+    }
   }
 
   protected qualifiedPivotTable(): string {
@@ -427,6 +449,7 @@ export class BelongsToMany<T extends Record<string, any> = Model, RelatedFixed e
     );
     query.whereColumn(`${this.table}.${this.foreignPivotKey}`, "=", `${parentTable}.${this.parentKey}`);
     this.applyPivotWheres(query);
+    this.applyAggregateSafeConstraintsTo(query);
     if (callback) callback(query);
     return query;
   }
@@ -537,18 +560,22 @@ export class BelongsToMany<T extends Record<string, any> = Model, RelatedFixed e
     this.applyPivotWheres(currentQuery);
     const current = await currentQuery.pluck(this.relatedPivotKey);
 
-    const currentSet = new Set(current);
-    const newSet = new Set(idList);
+    // Compare on a canonical key, never by identity: a Postgres bigint comes
+    // back from the driver as a string while the caller passes numbers, and a
+    // strict Set lookup would then treat every id as both missing and new —
+    // detaching and re-attaching the whole pivot on every sync().
+    const currentSet = new Set(current.map(pivotKey));
+    const newSet = new Set(idList.map(pivotKey));
 
     if (detachMissing) {
-      const toDetach = current.filter((id) => !newSet.has(id));
+      const toDetach = current.filter((id) => !newSet.has(pivotKey(id)));
       if (toDetach.length > 0) await this.detach(toDetach);
-      const toAttach = idList.filter((id) => !currentSet.has(id));
+      const toAttach = idList.filter((id) => !currentSet.has(pivotKey(id)));
       if (toAttach.length > 0) await this.attach(toAttach, attributes);
       return { attached: toAttach, detached: toDetach };
     }
 
-    const toAttach = idList.filter((id) => !currentSet.has(id));
+    const toAttach = idList.filter((id) => !currentSet.has(pivotKey(id)));
     if (toAttach.length > 0) await this.attach(toAttach, attributes);
     return { attached: toAttach, detached: [] };
   }
@@ -574,9 +601,9 @@ export class BelongsToMany<T extends Record<string, any> = Model, RelatedFixed e
     this.applyPivotWheres(currentQuery);
     const current = await currentQuery.pluck(this.relatedPivotKey);
 
-    const currentSet = new Set(current);
-    const toDetach = idList.filter((id) => currentSet.has(id));
-    const toAttach = idList.filter((id) => !currentSet.has(id));
+    const currentSet = new Set(current.map(pivotKey));
+    const toDetach = idList.filter((id) => currentSet.has(pivotKey(id)));
+    const toAttach = idList.filter((id) => !currentSet.has(pivotKey(id)));
 
     if (toDetach.length > 0) await this.detach(toDetach);
     if (toAttach.length > 0) await this.attach(toAttach, attributes);

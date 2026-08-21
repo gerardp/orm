@@ -22,6 +22,7 @@ tests/temp_types/
 tests/temp_type_declarations/
 tests/temp_convention_types/
 tests/temp_migration_types/
+tmp/
 
 debug-*.ts
 debug_*.ts

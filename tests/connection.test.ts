@@ -97,6 +97,7 @@ describe("Connection", () => {
       "PRAGMA foreign_keys=ON",
       "PRAGMA journal_mode=WAL",
       "PRAGMA synchronous=NORMAL",
+      "PRAGMA busy_timeout=5000",
       "SELECT 1",
       "SELECT 2",
     ]);
@@ -113,9 +114,14 @@ describe("Connection", () => {
       const synchronous = await conn.query("PRAGMA synchronous");
       const foreignKeys = await conn.query("PRAGMA foreign_keys");
 
+      const busyTimeout = await conn.query("PRAGMA busy_timeout");
+
       expect(journalMode[0].journal_mode).toBe("wal");
       expect(synchronous[0].synchronous).toBe(1);
       expect(foreignKeys[0].foreign_keys).toBe(1);
+      // Concurrent processes on one file (e.g. the SQLite queue driver) should
+      // wait out a short lock instead of erroring with SQLITE_BUSY.
+      expect(busyTimeout[0].timeout).toBe(5000);
     } finally {
       await conn.close();
       await cleanupSqliteFile(dbPath);
@@ -144,6 +150,7 @@ describe("Connection", () => {
       "PRAGMA foreign_keys=ON",
       "PRAGMA journal_mode=DELETE",
       "PRAGMA synchronous=FULL",
+      "PRAGMA busy_timeout=5000",
       "SELECT 1",
     ]);
 
@@ -442,6 +449,78 @@ describe("Connection", () => {
       expect(calls).toEqual(["RESERVE", "BEGIN", "COMMIT", "RELEASE"]);
     } finally {
       Connection.abandonedTransactionTimeoutMs = previous;
+    }
+  });
+});
+
+describe("SQLite busy_timeout", () => {
+  test("can be tuned or disabled through sqlitePragmas", async () => {
+    const tuned: string[] = [];
+    const conn = new Connection(
+      { url: "sqlite://app.db", sqlitePragmas: { busyTimeoutMs: 250 } },
+      { driver: { unsafe: (sql: string) => (tuned.push(sql), []) } as any },
+    );
+    await conn.query("SELECT 1");
+    expect(tuned).toContain("PRAGMA busy_timeout=250");
+
+    const off: string[] = [];
+    const disabled = new Connection(
+      { url: "sqlite://app.db", sqlitePragmas: { busyTimeoutMs: 0 } },
+      { driver: { unsafe: (sql: string) => (off.push(sql), []) } as any },
+    );
+    await disabled.query("SELECT 1");
+    expect(off.some((sql) => sql.startsWith("PRAGMA busy_timeout"))).toBe(false);
+  });
+
+  test("rejects a non-integer timeout rather than emitting it", async () => {
+    const conn = new Connection(
+      { url: "sqlite://app.db", sqlitePragmas: { busyTimeoutMs: 1.5 } },
+      { driver: { unsafe: () => [] } as any },
+    );
+    await expect(conn.query("SELECT 1")).rejects.toThrow(/busy_timeout/);
+  });
+});
+
+describe("transaction() and a manual beginTransaction()", () => {
+  test("refuses to open BEGIN inside an open manual transaction", async () => {
+    const conn = new Connection({ url: "sqlite://:memory:" });
+    try {
+      await conn.run("CREATE TABLE tx_guard (id INTEGER PRIMARY KEY)");
+      await conn.beginTransaction();
+      // Previously this issued a second BEGIN on the same connection.
+      await expect(conn.transaction(async () => {})).rejects.toThrow(/manual beginTransaction/);
+      await conn.rollback();
+    } finally {
+      await conn.close();
+    }
+  });
+
+  test("works normally once the manual transaction is closed", async () => {
+    const conn = new Connection({ url: "sqlite://:memory:" });
+    try {
+      await conn.run("CREATE TABLE tx_ok (id INTEGER PRIMARY KEY)");
+      await conn.beginTransaction();
+      await conn.run("INSERT INTO tx_ok (id) VALUES (1)");
+      await conn.commit();
+
+      await conn.transaction(async (tx) => { await tx.run("INSERT INTO tx_ok (id) VALUES (2)"); });
+      expect(await conn.query("SELECT id FROM tx_ok ORDER BY id")).toEqual([{ id: 1 }, { id: 2 }] as any);
+    } finally {
+      await conn.close();
+    }
+  });
+
+  test("nested transaction() calls still work through savepoints", async () => {
+    const conn = new Connection({ url: "sqlite://:memory:" });
+    try {
+      await conn.run("CREATE TABLE tx_nested (id INTEGER PRIMARY KEY)");
+      await conn.transaction(async (tx) => {
+        await tx.run("INSERT INTO tx_nested (id) VALUES (1)");
+        await tx.transaction(async (inner) => { await inner.run("INSERT INTO tx_nested (id) VALUES (2)"); });
+      });
+      expect(await conn.query("SELECT id FROM tx_nested ORDER BY id")).toEqual([{ id: 1 }, { id: 2 }] as any);
+    } finally {
+      await conn.close();
     }
   });
 });

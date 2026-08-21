@@ -371,3 +371,202 @@ describe("Worker", () => {
     expect(new Set(handled).size).toBe(handled.length);
   });
 });
+
+describe("Queue resilience (regression)", () => {
+  let conn: Connection;
+  let driver: DatabaseQueueDriver;
+
+  beforeEach(async () => {
+    conn = makeConnection();
+    driver = new DatabaseQueueDriver(conn);
+    await driver.migrate();
+    Queue.configure(driver, "default");
+  });
+
+  afterEach(async () => {
+    await conn.close();
+  });
+
+  it("dispatches to the configured default queue when the job declares none", async () => {
+    Queue.configure(driver, "critical");
+
+    class ConfiguredQueueJob extends DispatchableJob {
+      async handle() {}
+    }
+    registerJob(ConfiguredQueueJob);
+
+    await ConfiguredQueueJob.dispatch();
+    await Queue.dispatch(ConfiguredQueueJob, []);
+
+    expect(await driver.size("critical")).toBe(2);
+    expect(await driver.size("default")).toBe(0);
+  });
+
+  it("still lets a job pin itself to a queue named 'default'", async () => {
+    Queue.configure(driver, "critical");
+
+    class PinnedJob extends DispatchableJob {
+      static override queue = "default";
+      async handle() {}
+    }
+    registerJob(PinnedJob);
+
+    await PinnedJob.dispatch();
+    expect(await driver.size("default")).toBe(1);
+    expect(await driver.size("critical")).toBe(0);
+  });
+
+  it("uses static jobName as the stable registry key", async () => {
+    class MinifiedJob extends DispatchableJob {
+      static override jobName = "send-invoice";
+      async handle() {}
+    }
+    registerJob(MinifiedJob);
+
+    expect(resolveJob("send-invoice")).toBe(MinifiedJob as any);
+    // Class name stays registered so payloads enqueued before the rename resolve.
+    expect(resolveJob("MinifiedJob")).toBe(MinifiedJob as any);
+
+    await MinifiedJob.dispatch();
+    const job = await driver.reserve("default", 90);
+    expect(job!.jobClass).toBe("send-invoice");
+  });
+
+  it("survives transient reserve() errors instead of taking down the worker", async () => {
+    const handled: string[] = [];
+
+    class ResilientJob extends DispatchableJob {
+      async handle() { handled.push("ok"); }
+    }
+    registerJob(ResilientJob);
+    await ResilientJob.dispatch();
+
+    let failures = 0;
+    const flaky: typeof driver = Object.create(driver);
+    flaky.reserve = async (queue: string, retryAfter: number) => {
+      if (failures < 3) { failures++; throw new Error("ECONNRESET"); }
+      return driver.reserve(queue, retryAfter);
+    };
+
+    const worker = new Worker(flaky, { pollIntervalMs: 5 });
+    const runPromise = worker.run();
+    await new Promise((r) => setTimeout(r, 400));
+    worker.stop();
+    await runPromise;              // must resolve, not reject
+
+    expect(failures).toBe(3);
+    expect(handled).toEqual(["ok"]);
+    expect(await driver.size("default")).toBe(0);
+  });
+
+  it("does not take sibling loops down when one reserve() throws", async () => {
+    const handled: number[] = [];
+
+    class SiblingJob extends DispatchableJob {
+      constructor(public n: number) { super(n); }
+      async handle() {
+        await new Promise((r) => setTimeout(r, 20));
+        handled.push(this.n);
+      }
+    }
+    registerJob(SiblingJob);
+    for (let i = 1; i <= 4; i++) await SiblingJob.dispatch(i);
+
+    let calls = 0;
+    const flaky: typeof driver = Object.create(driver);
+    flaky.reserve = async (queue: string, retryAfter: number) => {
+      calls++;
+      if (calls === 2) throw new Error("network blip");
+      return driver.reserve(queue, retryAfter);
+    };
+
+    const worker = new Worker(flaky, { concurrency: 2, pollIntervalMs: 5, retryAfterSeconds: 60 });
+    const runPromise = worker.run();
+    await new Promise((r) => setTimeout(r, 400));
+    worker.stop();
+    await runPromise;
+
+    expect(handled).toHaveLength(4);
+    expect(await driver.size("default")).toBe(0);
+  });
+
+  it("retries an unknown job class before failing it", async () => {
+    await driver.dispatch("default", "NotYetDeployedJob", "{}", 0, 3);
+
+    const worker = new Worker(driver, { pollIntervalMs: 5, retryAfterSeconds: 0 });
+    const runPromise = worker.run();
+    await new Promise((r) => setTimeout(r, 50));
+    worker.stop();
+    await runPromise;
+
+    // Released with a delay rather than buried in failed_jobs on attempt 1.
+    const failed = await conn.query<any>("SELECT * FROM failed_jobs");
+    expect(failed).toHaveLength(0);
+    expect(await driver.size("default")).toBe(1);
+  });
+
+  it("still fails an unknown job class once its attempts are exhausted", async () => {
+    await driver.dispatch("default", "GhostJob", "{}", 0, 1);
+
+    const worker = new Worker(driver, { pollIntervalMs: 5 });
+    const runPromise = worker.run();
+    await new Promise((r) => setTimeout(r, 50));
+    worker.stop();
+    await runPromise;
+
+    const failed = await conn.query<any>("SELECT * FROM failed_jobs");
+    expect(failed).toHaveLength(1);
+    expect(failed[0].job_class).toBe("GhostJob");
+  });
+
+  it("does not mark a job failed when complete() throws after a successful handle()", async () => {
+    let handleCount = 0;
+
+    class SucceedsJob extends DispatchableJob {
+      static override maxAttempts = 1;
+      async handle() { handleCount++; }
+    }
+    registerJob(SucceedsJob);
+    await SucceedsJob.dispatch();
+
+    const broken: typeof driver = Object.create(driver);
+    broken.complete = async () => { throw new Error("connection lost on ack"); };
+
+    const worker = new Worker(broken, { pollIntervalMs: 5, retryAfterSeconds: 60 });
+    const runPromise = worker.run();
+    await new Promise((r) => setTimeout(r, 60));
+    worker.stop();
+    await runPromise;
+
+    expect(handleCount).toBe(1);
+    const failed = await conn.query<any>("SELECT * FROM failed_jobs");
+    expect(failed).toHaveLength(0);
+  });
+
+  it("keeps the loop alive when release() also fails", async () => {
+    class ExplodingJob extends DispatchableJob {
+      static override maxAttempts = 3;
+      async handle() { throw new Error("boom"); }
+    }
+    registerJob(ExplodingJob);
+    await ExplodingJob.dispatch();
+
+    const broken: typeof driver = Object.create(driver);
+    broken.release = async () => { throw new Error("driver gone"); };
+
+    const worker = new Worker(broken, { pollIntervalMs: 5, retryAfterSeconds: 60 });
+    const runPromise = worker.run();
+    await new Promise((r) => setTimeout(r, 60));
+    worker.stop();
+    await expect(runPromise).resolves.toBeUndefined();
+  });
+
+  it("clamps a non-numeric concurrency to a single loop", async () => {
+    const worker = new Worker(driver, { concurrency: Number.NaN, pollIntervalMs: 5 });
+    const runPromise = worker.run();
+    await new Promise((r) => setTimeout(r, 20));
+    worker.stop();
+    await runPromise;
+    expect((worker as any).concurrency).toBe(1);
+  });
+});

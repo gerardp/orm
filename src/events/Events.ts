@@ -50,7 +50,11 @@ export class Events {
     const entries = this.listeners.get(eventClass);
     if (!entries) return;
 
-    const remaining = entries.filter((entry) => !this.matchesSubscriber(entry, subscriber));
+    // Remove one registration per call: listen() twice means two independent
+    // subscriptions, so one unlisten() must not cancel both.
+    const index = entries.findIndex((entry) => this.matchesSubscriber(entry, subscriber));
+    if (index === -1) return;
+    const remaining = entries.filter((_, i) => i !== index);
     if (remaining.length === 0) {
       this.listeners.delete(eventClass);
       return;
@@ -64,6 +68,10 @@ export class Events {
     const entries = this.listeners.get(eventClass) as ListenerEntry<TEvent>[] | undefined;
     if (!entries || entries.length === 0) return event;
 
+    // One listener failing must not silently cancel the ones behind it: each is
+    // isolated, and the failures are reported together once every handler ran.
+    const errors: unknown[] = [];
+
     for (const entry of [...entries]) {
       if (!this.isRegistered(eventClass, entry)) continue;
 
@@ -71,7 +79,16 @@ export class Events {
         this.removeEntry(eventClass, entry);
       }
 
-      await entry.handler.handle(event);
+      try {
+        await entry.handler.handle(event);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) {
+      throw new AggregateError(errors, `${errors.length} listeners failed for ${eventClass.name}.`);
     }
 
     return event;

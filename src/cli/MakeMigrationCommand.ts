@@ -1,6 +1,6 @@
 import { Command } from "../commands/Command.js";
 import { MigrationCreator } from "../migration/MigrationCreator.js";
-import { normalizePathList, snakeCase } from "../utils.js";
+import { normalizePathList, pluralize, snakeCase } from "../utils.js";
 import { getDefaultMigrationsPath, getModelPaths } from "./MigrationHelpers.js";
 import { mkdir, writeFile, access } from "fs/promises";
 import { join } from "path";
@@ -18,14 +18,6 @@ function inferTableName(migrationName: string): string | undefined {
   const createMatch = snake.match(/^create_(.+?)(?:_table)?$/);
   if (createMatch) return createMatch[1];
   return undefined;
-}
-
-function pluralize(word: string): string {
-  if (/(?:s|x|z|ch|sh)$/i.test(word)) return `${word}es`;
-  if (/[^aeiou]y$/i.test(word)) return `${word.slice(0, -1)}ies`;
-  if (/(?:f|fe)$/i.test(word)) return `${word.replace(/f(e)?$/, "ves")}`;
-  if (word.endsWith("s")) return word;
-  return `${word}s`;
 }
 
 function buildMigrationStub(className: string, tableName?: string): string {

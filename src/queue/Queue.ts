@@ -6,6 +6,7 @@ import {
   getJobDriver,
   getJobDriverByConnection,
   getDefaultQueue,
+  jobKeyFor,
   type JobConstructor,
   type JobStatics,
   type DispatchOptions,
@@ -50,7 +51,7 @@ export class Queue {
     const maxAttempts = opts.maxAttempts ?? statics.maxAttempts ?? 3;
     const tenantId = TenantContext.current()?.tenantId;
     const payload = JSON.stringify({ args: jobArgs, tenantId });
-    await TenantContext.asLandlord(() => d.dispatch(queue, jobClass.name, payload, delay, maxAttempts));
+    await TenantContext.asLandlord(() => d.dispatch(queue, jobKeyFor(statics), payload, delay, maxAttempts));
   }
 
   static async size(queue?: string, connection?: string): Promise<number> {

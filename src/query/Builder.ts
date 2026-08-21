@@ -1275,15 +1275,25 @@ export class Builder<T = Record<string, any>, TResult = T> {
 
     const shouldNotExist = operator === "<" || (operator === "=" && count <= 0);
 
-    typeList.forEach((type, index) => {
-      const sql = relation.getRelationExistenceSqlForType(this.tableName, type, callback as any);
-      if (shouldNotExist) {
-        this.whereExists(sql, "and", true);
-      } else if (index === 0) {
-        this.whereExists(sql);
-      } else {
-        this.orWhereExists(sql);
-      }
+    if (shouldNotExist) {
+      // NOT EXISTS branches are ANDed together, which is already associative.
+      typeList.forEach((type) => {
+        this.whereExists(relation.getRelationExistenceSqlForType(this.tableName, type, callback as any), "and", true);
+      });
+      return this;
+    }
+
+    // The branches are ORed, so they have to be parenthesized as a group.
+    // Emitting them flat lets any AND clause already on the query (a soft-delete
+    // scope, a user where) bind to the first branch only:
+    //   deleted_at IS NULL AND EXISTS(a) OR EXISTS(b)
+    // which SQL reads as (deleted_at IS NULL AND EXISTS(a)) OR EXISTS(b).
+    this.whereNested((nested) => {
+      typeList.forEach((type, index) => {
+        const sql = relation.getRelationExistenceSqlForType(nested.tableName, type, callback as any);
+        if (index === 0) nested.whereExists(sql);
+        else nested.orWhereExists(sql);
+      });
     });
 
     return this;
@@ -1663,6 +1673,11 @@ export class Builder<T = Record<string, any>, TResult = T> {
     return `WITH RECURSIVE ${ctes.join(", ")}`;
   }
 
+  /** True when this arm carries clauses that must not leak to the compound query. */
+  private static needsUnionArmScope(query: Builder<any>): boolean {
+    return query.limitValue !== undefined || query.offsetValue !== undefined || query.orders.length > 0;
+  }
+
   toSql(): string {
     if (!this.parameterize && this.sqlCache) return this.sqlCache;
     const cteSql = this.compileRecursiveCtes();
@@ -1678,8 +1693,18 @@ export class Builder<T = Record<string, any>, TResult = T> {
     sql += " " + this.compileLimit();
     sql += " " + this.compileOffset();
     sql += this.grammar.compileLock(this.lockMode);
-    for (const union of this.unions) {
-      sql += ` UNION${union.all ? " ALL" : ""} ${this.compileEmbedded(union.query)}`;
+    if (this.unions.length > 0) {
+      // An arm that declares its own ORDER BY / LIMIT / OFFSET has to be scoped,
+      // otherwise `SELECT ... LIMIT 5 UNION SELECT ...` is a syntax error: the
+      // clause is read as belonging to the whole compound query.
+      if (Builder.needsUnionArmScope(this)) sql = this.grammar.compileUnionArm(sql.trim());
+      for (const union of this.unions) {
+        const armSql = this.compileEmbedded(union.query).trim();
+        const scoped = typeof union.query !== "string" && Builder.needsUnionArmScope(union.query)
+          ? this.grammar.compileUnionArm(armSql)
+          : armSql;
+        sql += ` UNION${union.all ? " ALL" : ""} ${scoped}`;
+      }
     }
     if (cteSql) sql = `${cteSql} ${sql}`;
     const compiled = sql.replace(/\s+/g, " ").trim();
@@ -2048,15 +2073,17 @@ export class Builder<T = Record<string, any>, TResult = T> {
     key: ModelColumn<T>
   ): Promise<Record<string, ModelColumnValue<T, K>>>;
   async pluck(column: any, key?: any): Promise<any> {
-    const model = this.model;
-    this.model = undefined as any;
-    this.bindings = [];
-    this.parameterize = true;
+    // Compile off a clone: this used to overwrite the builder's own `columns`
+    // and `bindings`, so a builder was silently narrowed to the plucked columns
+    // for every later get()/count() on it.
+    const query = this.clone();
+    query.model = undefined as any;
+    query.bindings = [];
+    query.parameterize = true;
     const columns = key === undefined ? [column] : [column, key];
-    const sql = this.select(...(columns as any)).toSql();
-    this.parameterize = false;
-    const rows = await this.connection.query(sql, this.bindings);
-    this.model = model;
+    const sql = query.select(...(columns as any)).toSql();
+    query.parameterize = false;
+    const rows = await this.connection.query(sql, query.bindings);
 
     const valueField = resolveResultField((rows as any[])[0], resultFieldFor(column));
     if (key === undefined) {
@@ -2804,13 +2831,45 @@ export class Builder<T = Record<string, any>, TResult = T> {
   }
 
   async exists(): Promise<boolean> {
-    this.bindings = [];
-    this.parameterize = true;
-    const from = this.compileFrom();
-    const whereSql = this.compileWheres();
-    this.parameterize = false;
-    const sql = `SELECT 1 FROM ${from}${whereSql ? whereSql : ""} LIMIT 1`;
-    const rows = await this.connection.query(sql, this.bindings);
+    // Anything the flat SELECT below cannot express (grouping, unions, CTEs)
+    // goes through a derived table, same split as count().
+    if (this.distinctFlag || this.groups.length > 0 || this.havings.length > 0 ||
+        this.unions.length > 0 || this.recursiveCtes.length > 0) {
+      return await this.existsSubquery();
+    }
+
+    // Compile off a clone: exists() must not leave its bindings behind on a
+    // builder the caller may still run.
+    const query = this.clone();
+    query.bindings = [];
+    query.parameterize = true;
+    const from = query.compileFrom();
+    // Joins were missing here, so a where against a joined table compiled to
+    // SQL referencing a table that was never in the FROM clause.
+    const joins = query.joins.length > 0 ? ` ${query.joins.join(" ")}` : "";
+    const whereSql = query.compileWheres();
+    query.parameterize = false;
+    const sql = `SELECT 1 FROM ${from}${joins}${whereSql ? " " + whereSql : ""} LIMIT 1`;
+    const rows = await this.connection.query(sql, query.bindings);
+    return rows.length > 0;
+  }
+
+  private async existsSubquery(): Promise<boolean> {
+    const query = this.clone();
+    query.model = undefined;
+    query.orders = [];
+    query.limitValue = undefined;
+    query.offsetValue = undefined;
+    query.eagerLoads = [];
+    query.lockMode = undefined;
+    query.bindings = [];
+    query.parameterize = true;
+    query.invalidateSqlCache();
+    const innerSql = query.toSql();
+    const rows = await this.connection.query(
+      `SELECT 1 FROM (${innerSql}) AS ${this.grammar.wrap("bunny_exists_query")} LIMIT 1`,
+      query.bindings
+    );
     return rows.length > 0;
   }
 

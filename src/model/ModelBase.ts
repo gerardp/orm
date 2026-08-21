@@ -583,13 +583,23 @@ export const modelProxyHandler: ProxyHandler<any> = {
 // Relation classes
 // ============================================================
 
+/** A constraint chained onto a relation, plus whether it may be replayed into an aggregate subquery. */
+export interface RelationConstraintEntry<T extends ModelType = ModelType> {
+  apply: (builder: Builder<T>) => void;
+  /**
+   * False for clauses that are invalid or misleading inside `SELECT COUNT(*)`
+   * / `EXISTS` — see `applyAggregateSafeConstraintsTo`.
+   */
+  aggregateSafe: boolean;
+}
+
 export abstract class Relation<T extends ModelType = ModelType> {
   protected builder: Builder<T>;
   protected parent: ModelType;
   protected related: any;
   protected foreignKey: string;
   protected localKey: string;
-  protected extraConstraints: Array<(builder: Builder<T>) => void> = [];
+  protected extraConstraints: Array<RelationConstraintEntry<T>> = [];
   protected whereConstraints: Array<{ column: string; operator: string; value: any; boolean: "and" | "or" }> = [];
   protected $skipEagerQuery = false;
 
@@ -630,15 +640,19 @@ export abstract class Relation<T extends ModelType = ModelType> {
   first(): Promise<T | null> { return this.builder.first(); }
   find(id: any): Promise<T | null> { return this.builder.find(id); }
   whereIn(column: string, values: any[]): this {
-    this.extraConstraints.push((b) => b.whereIn(column, values));
+    this.extraConstraints.push({ apply: (b) => b.whereIn(column, values), aggregateSafe: true });
     return this;
   }
   orderBy(column: string, direction: "asc" | "desc" = "asc"): this {
-    this.extraConstraints.push((b) => b.orderBy(column, direction));
+    // Not aggregateSafe: ORDER BY on a plain column inside `SELECT COUNT(*)`
+    // is rejected by PostgreSQL and MySQL under ONLY_FULL_GROUP_BY.
+    this.extraConstraints.push({ apply: (b) => b.orderBy(column, direction), aggregateSafe: false });
     return this;
   }
   limit(value: number): this {
-    this.extraConstraints.push((b) => b.limit(value));
+    // Not aggregateSafe: LIMIT inside COUNT(*) caps the result rows, not the
+    // rows counted, so it silently reads as a no-op.
+    this.extraConstraints.push({ apply: (b) => b.limit(value), aggregateSafe: false });
     return this;
   }
   count(): Promise<number> { return this.builder.count(); }
@@ -657,6 +671,7 @@ export abstract class Relation<T extends ModelType = ModelType> {
   protected newExistenceQuery(parentQuery: Builder<any>, aggregate: string, callback?: (query: Builder<any>) => void | Builder<any>): Builder<any> {
     const query = (this.related as any).on(parentQuery.connection).selectRaw(aggregate);
     query.whereColumn(`${this.related.getQualifiedTable(parentQuery.connection)}.${this.foreignKey}`, "=", `${parentQuery.tableName}.${this.localKey}`);
+    this.applyAggregateSafeConstraintsTo(query);
     if (callback) callback(query);
     return query;
   }
@@ -678,7 +693,7 @@ export abstract class Relation<T extends ModelType = ModelType> {
     const operator = value !== undefined ? operatorOrValue : "=";
     const whereValue = value !== undefined ? value : operatorOrValue;
     this.whereConstraints.push({ column: String(column), operator, value: whereValue, boolean: "and" });
-    this.extraConstraints.push((b) => (b.where as any)(...args));
+    this.extraConstraints.push({ apply: (b) => (b.where as any)(...args), aggregateSafe: true });
     (this.builder.where as any)(...args);
     return this;
   }
@@ -695,7 +710,28 @@ export abstract class Relation<T extends ModelType = ModelType> {
   }
 
   protected applyExtraConstraints(): void {
-    for (const constraint of this.extraConstraints) constraint(this.builder);
+    this.applyExtraConstraintsTo(this.builder);
+  }
+
+  /**
+   * Replays the constraints chained onto the relation (`->where(...)`,
+   * `->whereIn(...)`, ...) onto an arbitrary builder. Existence queries build a
+   * fresh builder, so without this `withCount()`/`has()` would aggregate over
+   * every related row while `with()` returns only the constrained ones.
+   */
+  protected applyExtraConstraintsTo(query: Builder<any>): void {
+    for (const constraint of this.extraConstraints) constraint.apply(query as Builder<T>);
+  }
+
+  /**
+   * Same replay, minus the clauses that do not belong inside an aggregate or
+   * EXISTS subquery — `ORDER BY` on a plain column is invalid next to
+   * `COUNT(*)`, and `LIMIT` there caps result rows rather than counted rows.
+   */
+  protected applyAggregateSafeConstraintsTo(query: Builder<any>): void {
+    for (const constraint of this.extraConstraints) {
+      if (constraint.aggregateSafe) constraint.apply(query as Builder<T>);
+    }
   }
 }
 
@@ -885,6 +921,7 @@ export class BelongsTo<T extends ModelType = ModelType> extends Relation<T> {
   protected newExistenceQuery(parentQuery: Builder<any>, aggregate: string, callback?: (query: Builder<any>) => void | Builder<any>): Builder<any> {
     const query = (this.related as any).on(parentQuery.connection).selectRaw(aggregate);
     query.whereColumn(`${this.related.getQualifiedTable(parentQuery.connection)}.${this.localKey}`, "=", `${parentQuery.tableName}.${this.foreignKey}`);
+    this.applyAggregateSafeConstraintsTo(query);
     if (callback) callback(query);
     return query;
   }
@@ -985,6 +1022,7 @@ export class HasManyThrough<T extends ModelType = ModelType> extends Relation<T>
       `${relatedTable}.${this.secondKey}`
     );
     query.whereColumn(`${throughTable}.${this.firstKey}`, "=", `${parentQuery.tableName}.${this.localKey}`);
+    this.applyAggregateSafeConstraintsTo(query);
     if (callback) callback(query);
     return query;
   }

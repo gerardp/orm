@@ -1,5 +1,144 @@
 # Changelog
 
+## 0.10.0 - 2026-08-21
+
+### Changed
+
+- **`snakeCase` keeps acronyms together.** `parseJSONData` now maps to
+  `parse_json_data` instead of `parse_j_s_o_n_data`, and `HTTPServer` to
+  `http_server`. This changes the *default* table, foreign-key and pivot-column
+  names derived from model names containing acronyms. Set `static table` (or the
+  explicit key arguments) on affected models before upgrading.
+- **`morphToMany` pluralises its default pivot table.** A `category` morph name
+  now defaults to `categories` rather than `categorys`. Pass the pivot table
+  explicitly to keep the old name.
+- **A job's `static queue` no longer defaults to `"default"`.** The base class
+  leaves it undefined so the configured `queue.defaultQueue` applies, which it
+  previously could not: jobs went to `"default"` while the worker listened on the
+  configured queue and the backlog grew silently. A job can still pin itself with
+  `static queue = "default"`.
+- **Query logs hide binding values by default.** Bindings carry password hashes,
+  tokens and PII; the log line now reports how many were hidden. Opt back in with
+  `log: { bindings: true }`. `configureBunny` is authoritative about logging: a
+  later call with `log: true`, `log: false` or no `log` at all resets every
+  setting, so a previous `bindings: true` (or log file) cannot carry over into a
+  configuration that never asked for it. Previously an absent `log` left the
+  earlier state untouched.
+- **`url()` only accepts web schemes** (`http`, `https`, `ftp`, `ftps`), so
+  `javascript:` and `data:` payloads are rejected. **`email()`** rejects
+  malformed domains such as `a@b..com`.
+- **`dateFormat()` throws on a format it cannot check** instead of falling back
+  to "anything `Date` can parse", and checks the value rather than just its
+  shape: `31/02/2026`, `2026-99-99` and `99:99:99` are rejected, leap years are
+  handled, and the `c` (ISO 8601) pattern is anchored at both ends. **`digitsBetween()`** validates its bounds at
+  construction. **`password().uncompromised()`** throws rather than silently
+  doing nothing — it never performed a breach check.
+- **`Events.dispatch` runs every listener** even when one throws, then rethrows
+  (an `AggregateError` when several failed). **`unlisten`** removes one
+  registration per call instead of every duplicate.
+- `PRAGMA busy_timeout=5000` is applied to SQLite connections; tune or disable it
+  with `sqlitePragmas.busyTimeoutMs`.
+
+### Fixed
+
+#### Queue
+
+- Redis: every state transition — dispatch, reserve, release, complete, fail and
+  both migrations — now runs as a single Lua script. Redis has no rollback, so
+  issuing those as separate commands left windows where a crash stranded a job in
+  none of the structures: a hash with nothing referencing it, or an id popped off
+  the pending list with no reservation to time out and redeliver it. `ZREM` is
+  also the arbitration point in the migrations, so two workers can no longer move
+  the same id onto the pending list twice and run the job in parallel. `reserve()`
+  skips orphaned ids instead of reporting an empty queue. The driver now requires
+  a client exposing `send()`.
+- A transient driver error no longer takes down the worker. `reserve()` failures
+  are retried with backoff, and `release()`/`fail()` errors in the failure path
+  are contained, so a network blip can no longer abandon the jobs other loops
+  were half way through.
+- A job whose class is not registered is retried within its own `maxAttempts`
+  instead of being moved to `failed_jobs` on the first attempt, and the worker
+  refuses to start when `jobsPath` is configured but yields no jobs.
+- A failing `complete()` after a successful `handle()` is reported instead of
+  being counted as a job failure.
+- `static jobName` pins a job's registry key for minified builds; `static
+  policyName` does the same for policies.
+- `--workers` rejects anything that is not a positive integer — including values
+  `parseInt` would silently truncate, such as `2x` and `1.5` — instead of
+  starting zero workers and exiting 0. It no longer consumes a following flag as
+  its value, and `--workers` with no value at all is an error rather than a
+  silent fall back to the configured default.
+- `queue.redis.url` is honoured; `queue.retryDelaySeconds` is configurable.
+
+#### Models and queries
+
+- `where()`/`whereIn()` constraints chained onto a relation
+  (`comments().where("approved", true)`) are applied by `has()`, `doesntHave()`,
+  `withCount()` and `withExists()`, which previously aggregated over every
+  related row and disagreed with `with()`. `orderBy()` and `limit()` are
+  deliberately *not* replayed there: `ORDER BY` on a plain column is invalid next
+  to `COUNT(*)` on PostgreSQL and on MySQL under `ONLY_FULL_GROUP_BY`, and
+  `LIMIT` would cap result rows rather than counted rows. Eager loading still
+  honours both.
+- `whereHasMorph` with several types wraps its `EXISTS` branches in a group, so a
+  soft-delete scope or a user `where` no longer binds to the first branch only
+  and leak trashed rows of the other types.
+- `sync()`/`toggle()` compare ids by value, so a Postgres `bigint` returned as a
+  string no longer detaches and re-attaches the whole pivot on every call.
+- `exists()` includes JOINs (previously invalid SQL or wrong results), handles
+  grouped and union queries through a derived table, and no longer leaves its
+  bindings on the builder. `pluck()` likewise no longer narrows the builder it
+  was called on.
+- `UNION` arms that carry their own `ORDER BY`/`LIMIT` are scoped so the compound
+  query parses — with parentheses on Postgres/MySQL and a derived table on
+  SQLite, which rejects parenthesised arms.
+- `DELETE ... LIMIT` fails with a clear message on PostgreSQL instead of emitting
+  SQL the server rejects.
+- `MorphTo` resolves a related row whose primary key is `0`.
+
+#### Validation
+
+- Cross-field references inside a wildcard resolve against the right row:
+  `same("*.end")` under `ranges.*.start` now reads `ranges.0.end` rather than
+  `0.end`. Presence rules also fire for keys that are absent from a row, so
+  `required()` and `requiredIf()` under a wildcard work at all.
+- `gt`/`gte`/`lt`/`lte` compare numeric strings by value rather than by length:
+  `gt("15")` accepted `"91"` only by accident and `gt("3")` accepted `"-5"`.
+- `distinct()` checks a flat array's own elements instead of silently passing.
+- IP validation uses `node:net`, so `:::` and `1.2.3.4.` are rejected and
+  `::ffff:192.168.0.1` is accepted.
+- Custom messages interpolate `:attribute`.
+- `multipleOf()` compares on scaled integers, so `multipleOf(0.1)` accepts `0.3`,
+  including values in exponential notation such as `1.1e-7` against `1e-8`.
+- `unique().ignoreField()` treats a `null` id as "nothing to ignore" instead of
+  emitting `id <> NULL`, which matched no rows and disabled the check entirely.
+
+#### Cache, connections and CLI
+
+- Caching `undefined` is refused instead of writing the string `"undefined"`,
+  which made every later read of that key throw forever; `remember()` passes an
+  `undefined` resolver result through without caching. Unparseable entries are
+  treated as a miss and dropped.
+- `MemoryCacheStore` clears a key from its tag indexes on `forget()` *and* on
+  overwrite, dropping indexes left empty, and sweeps expired entries as writes
+  come in rather than only when that exact key is read. Entries written with no
+  TTL still live until forgotten: this store has no eviction policy.
+- Concurrent `resolveTenant()` calls for the same cold tenant share one
+  resolution, instead of building two connections and orphaning the first. A
+  resolution still in flight when `closeAll()` runs is discarded rather than
+  registering a connection and a tenant entry after shutdown.
+- `transaction()` refuses to open a `BEGIN` inside a manual `beginTransaction()`
+  on the same connection.
+- `types:generate` no longer enters the tenant branch — and throws after writing
+  the landlord files — in a project whose `modelsPath` is a plain string.
+- `queue:install` generates the tables named by `queue.table`/`queue.failedTable`.
+- `bunny init` serialises prompt answers with `JSON.stringify`, so a quote or
+  `${...}` in an answer cannot break or inject into the generated config.
+- The command signature parser reads `{-f}` as a short flag rather than a
+  required positional argument, and trims `{--dir= ./app}` defaults.
+- `bm25` weights are validated before reaching the SQL.
+
+
 ## 0.7.1 - 2026-08-20
 
 ### Fixed

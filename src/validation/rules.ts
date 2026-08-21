@@ -1,7 +1,33 @@
+import { isIP } from "node:net";
 import type { RuleContract, RuleResult, ValidationContext } from "./types.js";
 
 function isAbsent(v: unknown): boolean {
   return v === undefined || v === null || v === "";
+}
+
+/** Comparison key for distinct(): tells objects apart without === identity. */
+function distinctKey(value: unknown): string {
+  if (value !== null && typeof value === "object") return JSON.stringify(value);
+  return `${typeof value}:${String(value)}`;
+}
+
+/**
+ * Digits after the decimal point, used to scale a float comparison to integers.
+ *
+ * Handles exponential notation: `String(1e-8)` is "1e-8" with no dot at all, and
+ * "1.1e-7" has one digit after the dot but eight decimal places. Reading the
+ * literal alone reported 0 and 1 respectively, which collapsed the scaling and
+ * made `multipleOf` reject exact multiples.
+ */
+function decimalPlaces(value: number): number {
+  if (Number.isInteger(value)) return 0;
+  const text = String(value);
+  const exponentIndex = text.search(/e/i);
+  const mantissa = exponentIndex === -1 ? text : text.slice(0, exponentIndex);
+  const exponent = exponentIndex === -1 ? 0 : Number(text.slice(exponentIndex + 1));
+  const dot = mantissa.indexOf(".");
+  const mantissaDecimals = dot === -1 ? 0 : mantissa.length - dot - 1;
+  return Math.max(0, mantissaDecimals - exponent);
 }
 
 const PASS: RuleResult = true;
@@ -478,7 +504,19 @@ export class DigitsRule implements RuleContract {
 
 export class DigitsBetweenRule implements RuleContract {
   name = "digits_between";
-  constructor(private min: number, private max: number) {}
+  constructor(private min: number, private max: number) {
+    // Building the regex lazily meant swapped bounds surfaced as a SyntaxError
+    // from deep inside validation. Reject them where the mistake was made.
+    if (!Number.isInteger(min) || !Number.isInteger(max)) {
+      throw new TypeError("digitsBetween(): min and max must be integers.");
+    }
+    if (min < 0 || max < 0) {
+      throw new RangeError("digitsBetween(): min and max must be non-negative.");
+    }
+    if (min > max) {
+      throw new RangeError(`digitsBetween(): min (${min}) cannot be greater than max (${max}). Arguments swapped?`);
+    }
+  }
   validate(v: unknown) {
     return new RegExp(`^\\d{${this.min},${this.max}}$`).test(String(v));
   }
@@ -491,7 +529,19 @@ export class MultipleOfRule implements RuleContract {
   name = "multiple_of";
   constructor(private n: number) {}
   validate(v: unknown) {
-    return typeof v === "number" && v % this.n === 0;
+    if (typeof v !== "number" || !Number.isFinite(v)) return false;
+    if (!Number.isFinite(this.n) || this.n === 0) return false;
+
+    // 0.3 % 0.1 is 0.09999999999999998, so the naive modulo rejects values that
+    // are exact multiples in decimal. Scale both sides to integers first.
+    const scale = Math.max(decimalPlaces(v), decimalPlaces(this.n));
+    const factor = 10 ** scale;
+    const dividend = Math.round(v * factor);
+    const divisor = Math.round(this.n * factor);
+    if (Number.isSafeInteger(dividend) && Number.isSafeInteger(divisor) && divisor !== 0) {
+      return dividend % divisor === 0;
+    }
+    return v % this.n === 0;
   }
   message(c: ValidationContext) {
     return `The ${c.attribute} field must be a multiple of ${this.n}.`;
@@ -561,7 +611,13 @@ export class DoesntContainRule implements RuleContract {
 export class DistinctRule implements RuleContract {
   name = "distinct";
   validate(v: unknown, c: ValidationContext) {
-    if (!c.pattern.includes("*")) return PASS;
+    if (!c.pattern.includes("*")) {
+      // Without a wildcard there are no sibling paths to compare against, but
+      // the value itself may be the collection: check its own elements rather
+      // than silently passing.
+      if (Array.isArray(v)) return new Set(v.map(distinctKey)).size === v.length;
+      return PASS;
+    }
     const values = collectWildcardValues(c.data, c.pattern);
     return values.filter((value) => value === v).length <= 1;
   }
@@ -598,18 +654,78 @@ export class DateRule implements RuleContract {
   }
 }
 
+/**
+ * The formats `dateFormat()` knows how to check, as a capture pattern plus the
+ * component each group carries. Matching the shape is not enough — "31/02/2026"
+ * and "2026-99-99" are well-formed and still not dates — so the captured parts
+ * are range-checked and, where a full date is present, verified against the
+ * calendar.
+ */
+const DATE_FORMAT_PATTERNS: Record<string, { re: RegExp; parts: DatePart[] }> = {
+  "Y-m-d": { re: /^(\d{4})-(\d{2})-(\d{2})$/, parts: ["year", "month", "day"] },
+  "Y-m-d H:i": { re: /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/, parts: ["year", "month", "day", "hour", "minute"] },
+  "Y-m-d H:i:s": { re: /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/, parts: ["year", "month", "day", "hour", "minute", "second"] },
+  "d/m/Y": { re: /^(\d{2})\/(\d{2})\/(\d{4})$/, parts: ["day", "month", "year"] },
+  "H:i": { re: /^(\d{2}):(\d{2})$/, parts: ["hour", "minute"] },
+  "H:i:s": { re: /^(\d{2}):(\d{2}):(\d{2})$/, parts: ["hour", "minute", "second"] },
+  // ISO 8601, anchored end to end so a well-formed prefix cannot smuggle in a
+  // trailing payload ("2026-99-99Tgarbage" used to pass).
+  "c": {
+    re: /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$/,
+    parts: ["year", "month", "day", "hour", "minute", "second"],
+  },
+};
+
+type DatePart = "year" | "month" | "day" | "hour" | "minute" | "second";
+
+const DATE_PART_RANGES: Record<DatePart, [number, number]> = {
+  year: [1, 9999],
+  month: [1, 12],
+  day: [1, 31],
+  hour: [0, 23],
+  minute: [0, 59],
+  second: [0, 59],
+};
+
+function daysInMonth(year: number, month: number): number {
+  const lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month === 2 && (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0))) return 29;
+  return lengths[month - 1]!;
+}
+
 export class DateFormatRule implements RuleContract {
   name = "date_format";
-  constructor(private format: string) {}
+  constructor(private format: string) {
+    // An unknown format used to fall back to "anything Date can parse", so
+    // dateFormat("d/m/Y") happily accepted "2026-01-31T10:00:00Z". Say what is
+    // supported instead of silently checking something else.
+    if (!DATE_FORMAT_PATTERNS[format]) {
+      throw new Error(
+        `dateFormat(): unsupported format "${format}". Supported: ${Object.keys(DATE_FORMAT_PATTERNS).join(", ")}. ` +
+        "Use a custom rule for anything else.",
+      );
+    }
+  }
   validate(v: unknown) {
     if (typeof v !== "string") return false;
-    const patterns: Record<string, RegExp> = {
-      "Y-m-d": /^\d{4}-\d{2}-\d{2}$/,
-      "Y-m-d H:i:s": /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
-      "c": /^\d{4}-\d{2}-\d{2}T/,
-    };
-    const re = patterns[this.format];
-    return re ? re.test(v) : !Number.isNaN(new Date(v).getTime());
+    const spec = DATE_FORMAT_PATTERNS[this.format]!;
+    const match = spec.re.exec(v);
+    if (!match) return false;
+
+    const values = {} as Record<DatePart, number>;
+    for (let i = 0; i < spec.parts.length; i++) {
+      const part = spec.parts[i]!;
+      const value = Number(match[i + 1]);
+      const [min, max] = DATE_PART_RANGES[part];
+      if (value < min || value > max) return false;
+      values[part] = value;
+    }
+
+    // Calendar check where the format carries a whole date.
+    if (values.year !== undefined && values.month !== undefined && values.day !== undefined) {
+      if (values.day > daysInMonth(values.year, values.month)) return false;
+    }
+    return true;
   }
   message(c: ValidationContext) {
     return `The ${c.attribute} field must match the format ${this.format}.`;
@@ -666,6 +782,16 @@ function sizeOf(v: unknown): number {
   if (typeof v === "number") return v;
   if (typeof v === "string" || Array.isArray(v)) return v.length;
   return NaN;
+}
+
+/** The numeric value of a number or numeric string, or undefined for anything else. */
+function asComparableNumber(v: unknown): number | undefined {
+  if (typeof v === "number") return Number.isFinite(v) ? v : undefined;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
 }
 
 function quoteQualified(conn: ValidationContext["connection"], value: string): string {
@@ -728,8 +854,17 @@ export class ComparisonRule implements RuleContract {
   constructor(public name: string, private op: ">" | ">=" | "<" | "<=", private other: number | string) {}
   validate(v: unknown, c: ValidationContext) {
     const otherValue = typeof this.other === "string" && c.has(this.other) ? c.get(this.other) : this.other;
-    const left = typeof v === "number" ? v : sizeOf(v);
-    const right = typeof otherValue === "number" ? otherValue : sizeOf(otherValue);
+
+    // Form and JSON payloads carry numbers as strings. Falling straight through
+    // to sizeOf() would compare their *lengths*, making gt("15") reject "91"
+    // and gt("3") accept "-5". Compare numerically whenever both sides are
+    // numeric, and keep the length semantics for genuine text.
+    const leftNumber = asComparableNumber(v);
+    const rightNumber = asComparableNumber(otherValue);
+    const bothNumeric = leftNumber !== undefined && rightNumber !== undefined;
+
+    const left = bothNumeric ? leftNumber : (typeof v === "number" ? v : sizeOf(v));
+    const right = bothNumeric ? rightNumber : (typeof otherValue === "number" ? otherValue : sizeOf(otherValue));
     if (Number.isNaN(left) || Number.isNaN(right)) return false;
     if (this.op === ">") return left > right;
     if (this.op === ">=") return left >= right;
@@ -743,7 +878,9 @@ export class ComparisonRule implements RuleContract {
 
 // ── Format ───────────────────────────────────────────────────
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// The domain half is spelled out per-label so `a@b..com` and `a@.com` are
+// rejected; the previous `[^\s@]+\.[^\s@]+` accepted any dot anywhere.
+const EMAIL_RE = /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ULID_RE = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/i;
 const ALPHA_RE = /^[A-Za-z]+$/;
@@ -786,13 +923,15 @@ export class PhMobileRule implements RuleContract {
   }
 }
 
+/** Schemes `url()` accepts. `javascript:`/`data:` parse fine but are XSS sinks. */
+const URL_SCHEMES = new Set(["http:", "https:", "ftp:", "ftps:"]);
+
 export class UrlRule implements RuleContract {
   name = "url";
   validate(v: unknown) {
     if (typeof v !== "string") return false;
     try {
-      new URL(v);
-      return true;
+      return URL_SCHEMES.has(new URL(v).protocol);
     } catch {
       return false;
     }
@@ -938,10 +1077,12 @@ export class MacAddressRule implements RuleContract {
   }
 }
 
+// Hand-rolled regexes accepted ":::" and "1.2.3.4." while rejecting valid
+// IPv4-mapped addresses like "::ffff:192.168.0.1". node:net has a real parser.
 export class IpRule implements RuleContract {
   name = "ip";
   validate(v: unknown) {
-    return typeof v === "string" && (/^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.|$)){4}$/.test(v) || (/^[0-9a-f:]+$/i.test(v) && v.includes(":")));
+    return typeof v === "string" && isIP(v.trim()) !== 0;
   }
   message(c: ValidationContext) {
     return `The ${c.attribute} field must be a valid IP address.`;
@@ -950,15 +1091,21 @@ export class IpRule implements RuleContract {
 
 export class Ipv4Rule extends IpRule {
   name = "ipv4";
-  validate(v: unknown) {
-    return typeof v === "string" && /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.|$)){4}$/.test(v);
+  override validate(v: unknown) {
+    return typeof v === "string" && isIP(v.trim()) === 4;
+  }
+  override message(c: ValidationContext) {
+    return `The ${c.attribute} field must be a valid IPv4 address.`;
   }
 }
 
 export class Ipv6Rule extends IpRule {
   name = "ipv6";
-  validate(v: unknown) {
-    return typeof v === "string" && /^[0-9a-f:]+$/i.test(v) && v.includes(":");
+  override validate(v: unknown) {
+    return typeof v === "string" && isIP(v.trim()) === 6;
+  }
+  override message(c: ValidationContext) {
+    return `The ${c.attribute} field must be a valid IPv6 address.`;
   }
 }
 
@@ -1249,11 +1396,16 @@ export class PasswordRule implements RuleContract {
     return this;
   }
   /**
-   * Mark the password as uncompromised.
-   * Example: `rule().password((r) => r.uncompromised())`
+   * Not implemented. Checking a password against a breach corpus needs a
+   * network call (e.g. the HIBP range API), which this rule set deliberately
+   * does not make. Throwing is the honest behaviour: silently returning `this`
+   * left callers believing they had breach protection when they had none.
    */
-  uncompromised(): this {
-    return this;
+  uncompromised(): never {
+    throw new Error(
+      "password().uncompromised() is not implemented: it would require an external breach-database lookup. " +
+      "Remove the call, or implement the check yourself with a custom rule.",
+    );
   }
   validate(v: unknown) {
     if (typeof v !== "string" || v.length < this.minLength) return false;
@@ -1357,7 +1509,10 @@ export class UniqueRule implements RuleContract {
       `WHERE ${conn.quoteIdentifier(col)} = ${g.placeholder(1)}`;
     const bindings: unknown[] = [v];
     const ignoreId = this.ignoreFieldName ? c.get(this.ignoreFieldName) : this.ignoreId;
-    if (ignoreId !== undefined) {
+    // A null id (a create form where `id` is not filled in yet) must mean "no
+    // row to ignore". Emitting `id <> NULL` yields SQL NULL for every row, so
+    // the query matched nothing and uniqueness silently passed for everyone.
+    if (ignoreId !== undefined && ignoreId !== null) {
       sql += ` AND ${conn.quoteIdentifier(this.ignoreColumn)} <> ${g.placeholder(2)}`;
       bindings.push(ignoreId);
     }

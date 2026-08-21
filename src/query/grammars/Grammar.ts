@@ -63,6 +63,16 @@ export abstract class Grammar {
     return sql.trim();
   }
 
+  /**
+   * Scopes one arm of a compound (UNION) query so that an ORDER BY / LIMIT it
+   * declares stays inside that arm instead of binding to the whole compound.
+   * Postgres and MySQL accept plain parentheses; SQLite does not (see its
+   * override) — hence the grammar hook rather than a literal in the builder.
+   */
+  compileUnionArm(sql: string): string {
+    return `(${sql})`;
+  }
+
   compileDelete(table: string, wheres: string, joins?: string[], limit?: number): string {
     let sql = `DELETE FROM ${table}`;
     if (joins && joins.length > 0) {

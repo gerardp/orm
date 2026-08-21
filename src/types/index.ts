@@ -102,6 +102,12 @@ export type SQLitePragmaConfig = {
   journalMode?: string | false;
   synchronous?: string | false;
   foreignKeys?: boolean;
+  /**
+   * How long (ms) a write waits for a competing lock before giving up with
+   * SQLITE_BUSY. Defaults to 5000; set 0 to keep SQLite's own default of
+   * failing immediately.
+   */
+  busyTimeoutMs?: number;
 };
 
 export type ConnectionConfig =

@@ -1,6 +1,16 @@
+/**
+ * Converts a PascalCase/camelCase identifier to snake_case, keeping acronyms
+ * together: `parseJSONData` becomes `parse_json_data`, not `parse_j_s_o_n_data`.
+ *
+ * This drives default table, foreign-key and pivot-column names, so changing it
+ * changes the names generated for models whose name contains an acronym.
+ */
 export function snakeCase(str: string): string {
   return str
-    .replace(/([A-Z])/g, "_$1")
+    // lower/digit followed by upper is a word boundary: parseJSON -> parse_JSON
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    // a run of capitals followed by a capitalised word: HTTPServer -> HTTP_Server
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
     .toLowerCase()
     .replace(/^_+/, "");
 }
@@ -138,4 +148,19 @@ export function formatDateForDriver(
   if (driver !== "mysql") return value.toISOString();
   // Match Bun.SQL's UTC wall-clock encoding while keeping millisecond precision.
   return value.toISOString().slice(0, 23).replace("T", " ");
+}
+
+/**
+ * Naive English pluralisation for default table and pivot names.
+ *
+ * Covers the regular cases plus the common -y/-s/-x/-z/-ch/-sh/-f endings. It is
+ * not an inflector: irregular nouns ("person", "child") and inputs that are
+ * already plural ("tags" becomes "tagses", since "class" must become "classes")
+ * need an explicit table name.
+ */
+export function pluralize(word: string): string {
+  if (/(?:s|x|z|ch|sh)$/i.test(word)) return `${word}es`;
+  if (/[^aeiou]y$/i.test(word)) return `${word.slice(0, -1)}ies`;
+  if (/(?:f|fe)$/i.test(word)) return `${word.replace(/f(e)?$/, "ves")}`;
+  return `${word}s`;
 }

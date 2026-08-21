@@ -19,7 +19,16 @@ export function makeTypesGenerateCommand(config: BunnyConfig, connection: Connec
       const target         = parseTargetFromOptions(this);
       const { landlord: landlordModels, tenant: tenantModels } = getModelPaths(config);
       const allGeneratedTables = new Map<string, string[]>();
-      const skipIndex = target.scope === "default" && !!(landlordModels && tenantModels);
+
+      // getModelPaths() mirrors a plain `modelsPath` string into both scopes, so
+      // `landlordModels && tenantModels` is true even in a single-tenant project.
+      // Only a config that really separates the two counts as scoped — otherwise
+      // the default invocation entered the tenant branch and threw after having
+      // already written the landlord files.
+      const hasScopedModels = !!config.modelsPath
+        && typeof config.modelsPath === "object"
+        && !Array.isArray(config.modelsPath);
+      const skipIndex = target.scope === "default" && hasScopedModels;
 
       // ── Landlord ──────────────────────────────────────────────────────────
       if ((target.scope === "default" || target.scope === "landlord") && landlordModels) {
@@ -55,7 +64,10 @@ export function makeTypesGenerateCommand(config: BunnyConfig, connection: Connec
       }
 
       // ── Tenant ────────────────────────────────────────────────────────────
-      if ((target.scope === "default" || target.scope === "tenant") && tenantModels) {
+      const tenantBranchApplies = !!tenantModels
+        && (target.scope === "tenant" || (target.scope === "default" && hasScopedModels));
+
+      if (tenantBranchApplies) {
         if (!config.tenancy?.resolveTenant) {
           throw new Error("Tenant type generation requires tenancy.resolveTenant() in bunny.config.ts.");
         }

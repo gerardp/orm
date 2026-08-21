@@ -18,6 +18,12 @@ export class SQLiteGrammar extends Grammar {
     return "?";
   }
 
+  override compileUnionArm(sql: string): string {
+    // SQLite rejects parentheses around a compound-SELECT arm ("near \"(\":
+    // syntax error"); a derived table is the portable equivalent.
+    return `SELECT * FROM (${sql})`;
+  }
+
   compileRandomOrder(): string {
     return "ORDER BY RANDOM()";
   }

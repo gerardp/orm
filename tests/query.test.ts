@@ -232,10 +232,34 @@ describe("Query Builder", () => {
   test("pluck with a key is still a single query over two columns", async () => {
     const connection = setupTestDb();
     await connection.run("CREATE TABLE plk_sql (id INTEGER PRIMARY KEY, email TEXT)");
+
+    // Observe the SQL that was actually issued rather than the builder's state:
+    // pluck() compiles off a clone, so it leaves no trace on the builder.
+    const issued: string[] = [];
+    const query = connection.query.bind(connection);
+    connection.query = ((sql: string, bindings?: any[]) => {
+      issued.push(sql);
+      return query(sql, bindings as any);
+    }) as typeof connection.query;
+
     const builder = new Builder(connection, "plk_sql");
     await builder.pluck("email", "id");
 
-    expect(builder.toSql()).toBe('SELECT "email", "id" FROM "plk_sql"');
+    expect(issued).toEqual(['SELECT "email", "id" FROM "plk_sql"']);
+  });
+
+  test("pluck does not narrow the builder it was called on", async () => {
+    const connection = setupTestDb();
+    await connection.run("CREATE TABLE plk_keep (id INTEGER PRIMARY KEY, email TEXT)");
+    await connection.run("INSERT INTO plk_keep (id, email) VALUES (1, 'ada@example.com')");
+
+    const builder = new Builder(connection, "plk_keep").where("id", 1);
+    expect(await builder.pluck("email")).toEqual(["ada@example.com"]);
+
+    // Previously pluck() overwrote the builder's columns and bindings, so this
+    // came back as a single-column row with the WHERE binding already consumed.
+    expect(builder.toSql()).toBe('SELECT * FROM "plk_keep" WHERE "id" = 1');
+    expect(await builder.get()).toEqual([{ id: 1, email: "ada@example.com" }] as any);
   });
 
   test("exists returns boolean", async () => {

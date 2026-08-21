@@ -13,7 +13,7 @@ import type { ModelDeclaration } from "../typegen/TypeGenerator.js";
 import type { ConnectionConfig } from "../types/index.js";
 import { Queue } from "../queue/Queue.js";
 import { DatabaseQueueDriver } from "../queue/DatabaseQueueDriver.js";
-import { RedisQueueDriver } from "../queue/RedisQueueDriver.js";
+import { RedisQueueDriver, resolveQueueRedisClient } from "../queue/RedisQueueDriver.js";
 import type { QueueDriver } from "../queue/QueueDriver.js";
 import { Search } from "../search/SearchManager.js";
 import type { SearchConfig } from "../search/SearchManager.js";
@@ -51,7 +51,11 @@ export interface BunnyConfig {
   typeDeclarationImportPrefix?: string;
   typeDeclarationSingularModels?: boolean;
   typeStubs?: boolean;
-  log?: boolean | { file?: string; console?: boolean };
+  /**
+   * Query logging. `bindings` opts into logging the parameter values, which are
+   * hidden by default because they contain credentials and PII.
+   */
+  log?: boolean | { file?: string; console?: boolean; bindings?: boolean };
   transactions?: {
     /** Safety net (ms): a manual beginTransaction() with no commit/rollback within this window is auto-rolled-back and its pooled connection released. Opt-in. */
     abandonedTimeoutMs?: number;
@@ -66,11 +70,19 @@ export interface BunnyConfig {
     defaultQueue?: string;
     workers?: number;
     jobsPath?: string | string[];
+    /** Visibility timeout: a reserved job not completed within this window is redelivered. */
     retryAfterSeconds?: number;
+    /**
+     * Delay (seconds) before a failed job becomes available again. Defaults to
+     * 0, which retries immediately — raise it to avoid hammering a dependency
+     * that is already failing.
+     */
+    retryDelaySeconds?: number;
     pollIntervalMs?: number;
     table?: string;
     failedTable?: string;
     connection?: ConnectionConfig;
+    /** Redis server for the `redis` driver. Omit to use Bun's default client (`REDIS_URL`). */
     redis?: { url?: string };
   };
   commands?: {
@@ -129,14 +141,27 @@ export function configureBunny(config: BunnyConfig): ConfiguredBunny {
   Connection.abandonedTransactionTimeoutMs =
     config.transactions?.abandonedTimeoutMs ?? 60_000;
 
+  // Logging state lives on Connection statics, so every branch must set every
+  // field: leaving one untouched let a previous `{ bindings: true }` (or a log
+  // file path) survive into a configuration that never asked for it, and
+  // silently resume writing secrets.
   const logConfig = config.log;
   if (logConfig === true) {
     Connection.logQueries = true;
+    Connection.queryLogFile = undefined;
     Connection.logToConsole = true;
-  } else if (logConfig && typeof logConfig === 'object') {
+    Connection.logBindings = false;
+  } else if (logConfig && typeof logConfig === "object") {
     Connection.logQueries = true;
     Connection.queryLogFile = logConfig.file;
     Connection.logToConsole = logConfig.console ?? false;
+    Connection.logBindings = logConfig.bindings ?? false;
+  } else {
+    // Absent or `false`: logging off, and nothing carried over.
+    Connection.logQueries = false;
+    Connection.queryLogFile = undefined;
+    Connection.logToConsole = true;
+    Connection.logBindings = false;
   }
 
   if (config.cache) {
@@ -159,7 +184,7 @@ export function configureBunny(config: BunnyConfig): ConfiguredBunny {
           failedTable: config.queue.failedTable,
         });
       } else {
-        driver = new RedisQueueDriver(redis, {
+        driver = new RedisQueueDriver(resolveQueueRedisClient(config.queue.redis?.url), {
           prefix: config.cache?.prefix ? `${config.cache.prefix}queue:` : undefined,
         });
       }

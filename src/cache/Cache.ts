@@ -28,7 +28,23 @@ export class Cache {
     return await this.getStore().get<T>(this.prefixKey(key));
   }
 
+  /**
+   * Stores are JSON-backed, and `JSON.stringify(undefined)` is the string
+   * "undefined" — which no store can read back and which never expires if no
+   * TTL was set, so one bad write poisons the key permanently. Refuse the write
+   * instead of corrupting the entry.
+   */
+  private static assertSerializable(value: unknown): void {
+    if (value === undefined || typeof value === "function" || typeof value === "symbol") {
+      throw new TypeError(
+        `Cache values must be JSON-serializable; received ${value === undefined ? "undefined" : typeof value}. ` +
+        "Use null, or wrap the value in an object.",
+      );
+    }
+  }
+
   static async set<T = unknown>(key: string, value: T, options: CacheRememberOptions = {}): Promise<void> {
+    this.assertSerializable(value);
     await this.getStore().set(this.prefixKey(key), value, this.prefixOptions(options));
   }
 
@@ -45,6 +61,10 @@ export class Cache {
     const value = await (typeof valueOrResolver === "function"
       ? (valueOrResolver as () => T | Promise<T>)()
       : valueOrResolver);
+    // A resolver returning undefined is a pass-through, not a cache write:
+    // throwing here would break callers whose resolver legitimately has nothing
+    // to return. Return null from the resolver to cache a "no value" result.
+    if (value === undefined) return value as T;
     await this.set(key, value, {
       ...normalized,
       ttl: normalized.ttl ?? this.defaultTtl,

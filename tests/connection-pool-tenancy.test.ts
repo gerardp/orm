@@ -156,3 +156,85 @@ describe("connection pool + tenant lifecycle", () => {
     expect(ConnectionManager.get("final:zeta")).toBeDefined();
   });
 });
+
+describe("concurrent tenant resolution", () => {
+  afterEach(async () => {
+    ConnectionManager.defaultTenantTtl = undefined;
+    await ConnectionManager.closeAll();
+  });
+
+  test("simultaneous callers share one resolution and one connection", async () => {
+    let resolverCalls = 0;
+    ConnectionManager.setTenantResolver(async (tenantId) => {
+      resolverCalls++;
+      // A real resolver hits a database or an API; the await is what opened the
+      // window for a second caller to build a duplicate connection.
+      await sleep(10);
+      return { strategy: "database", name: `race:${tenantId}`, config: { url: "sqlite://:memory:" } };
+    });
+
+    const [a, b, c] = await Promise.all([
+      ConnectionManager.resolveTenant("acme"),
+      ConnectionManager.resolveTenant("acme"),
+      ConnectionManager.resolveTenant("acme"),
+    ]);
+
+    expect(resolverCalls).toBe(1);
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+    // The registered connection must be the one every caller received; a second
+    // build would have overwritten it and orphaned the first, unclosed.
+    expect(ConnectionManager.get("race:acme")).toBe(a.connection);
+  });
+
+  test("different tenants still resolve independently", async () => {
+    ConnectionManager.setTenantResolver(async (tenantId) => {
+      await sleep(5);
+      return { strategy: "database", name: `multi:${tenantId}`, config: { url: "sqlite://:memory:" } };
+    });
+
+    const [a, b] = await Promise.all([
+      ConnectionManager.resolveTenant("one"),
+      ConnectionManager.resolveTenant("two"),
+    ]);
+
+    expect(a.tenantId).toBe("one");
+    expect(b.tenantId).toBe("two");
+    expect(a.connection).not.toBe(b.connection);
+  });
+
+  test("closeAll() invalidates a resolution that is still in flight", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+
+    ConnectionManager.setTenantResolver(async (tenantId) => {
+      await gate;
+      return { strategy: "database", name: `late:${tenantId}`, config: { url: "sqlite://:memory:" } };
+    });
+
+    const pending = ConnectionManager.resolveTenant("acme");
+    await ConnectionManager.closeAll();
+    release();
+
+    // Registering after shutdown would resurrect a connection and a tenant
+    // entry with nothing left holding a reference to close them.
+    await expect(pending).rejects.toThrow(/closed while resolving tenant/);
+    expect(ConnectionManager.get("late:acme")).toBeUndefined();
+    expect(ConnectionManager.getResolvedTenant("acme")).toBeUndefined();
+  });
+
+  test("a failed resolution does not stick around and block retries", async () => {
+    let attempts = 0;
+    ConnectionManager.setTenantResolver(async (tenantId) => {
+      attempts++;
+      await sleep(5);
+      if (attempts === 1) throw new Error("resolver unavailable");
+      return { strategy: "database", name: `retry:${tenantId}`, config: { url: "sqlite://:memory:" } };
+    });
+
+    await expect(ConnectionManager.resolveTenant("flaky")).rejects.toThrow("resolver unavailable");
+    const ctx = await ConnectionManager.resolveTenant("flaky");
+    expect(ctx.tenantId).toBe("flaky");
+    expect(attempts).toBe(2);
+  });
+});

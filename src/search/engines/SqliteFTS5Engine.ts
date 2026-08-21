@@ -455,7 +455,8 @@ export class SqliteFTS5Engine implements SearchEngine {
   private bm25Expr(query: SearchQuery): string {
     const t = this.quoteIdent(query.index);
     if (query.bm25Weights && query.bm25Weights.length > 0) {
-      const args = query.bm25Weights.map((w) => Number(w)).join(", ");
+      // Number("abc") is NaN and interpolates straight into the SQL text.
+      const args = query.bm25Weights.map((w) => finiteSearchNumber(Number(w), "bm25 weight")).join(", ");
       return `bm25(${t}, ${args})`;
     }
     return `bm25(${t})`;

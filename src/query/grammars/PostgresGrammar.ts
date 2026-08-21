@@ -18,6 +18,18 @@ export class PostgresGrammar extends Grammar {
     return `$${index}`;
   }
 
+  override compileDelete(table: string, wheres: string, joins?: string[], limit?: number): string {
+    // PostgreSQL has no DELETE ... LIMIT. Emitting it produces a syntax error at
+    // the server; failing here says what to do instead.
+    if (limit !== undefined) {
+      throw new Error(
+        "PostgreSQL does not support DELETE ... LIMIT. Select the rows first and delete by key, e.g. " +
+        "`whereIn(pk, await query.limit(n).pluck(pk)).delete()`.",
+      );
+    }
+    return super.compileDelete(table, wheres, joins);
+  }
+
   compileRandomOrder(): string {
     return "ORDER BY RANDOM()";
   }

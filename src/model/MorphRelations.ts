@@ -2,7 +2,7 @@ import { Builder } from "../query/Builder.js";
 import { insertAndResolveKey, type PrimaryKeyColumn } from "./PrimaryKeyResolution.js";
 import { Schema } from "../schema/Schema.js";
 import { Collection } from "../support/Collection.js";
-import { shouldGeneratePrimaryKeyForColumn, snakeCase } from "../utils.js";
+import { pluralize, shouldGeneratePrimaryKeyForColumn, snakeCase } from "../utils.js";
 import { MorphMap } from "./MorphMap.js";
 import type {
   Model,
@@ -54,7 +54,9 @@ export class MorphTo<T extends Record<string, any> = Model> {
   async getResults(): Promise<T | null> {
     const type = this.parent.getAttribute(this.typeColumn) as string;
     const id = this.parent.getAttribute(this.idColumn);
-    if (!type || !id) return null;
+    // `!id` would also reject a legitimate key of 0 (or ""), so test for the
+    // absence of a value rather than for falsiness.
+    if (!type || id === null || id === undefined) return null;
     return this.resolveAndFind(type, id);
   }
 
@@ -189,7 +191,7 @@ export class MorphOne<T extends Record<string, any> = Model, N extends string = 
   protected typeColumn: string;
   protected idColumn: string;
   protected localKey: string;
-  protected extraConstraints: Array<(builder: Builder<T>) => void> = [];
+  protected extraConstraints: Array<{ apply: (builder: Builder<any>) => void; aggregateSafe: boolean }> = [];
   protected whereConstraints: Array<{ column: string; operator: string; value: any; boolean: "and" | "or" }> = [];
   protected $skipEagerQuery = false;
 
@@ -253,7 +255,7 @@ export class MorphOne<T extends Record<string, any> = Model, N extends string = 
       value: whereValue,
       boolean: "and",
     });
-    this.extraConstraints.push((b) => (b.where as any)(...args));
+    this.extraConstraints.push({ apply: (b: Builder<any>) => (b.where as any)(...args), aggregateSafe: true });
     (this.builder.where as any)(...args);
     return this as MorphOne<T, N, Fixed | StripTablePrefix<K>>;
   }
@@ -270,7 +272,19 @@ export class MorphOne<T extends Record<string, any> = Model, N extends string = 
   }
 
   protected applyExtraConstraints(): void {
-    for (const constraint of this.extraConstraints) constraint(this.builder);
+    this.applyExtraConstraintsTo(this.builder as Builder<any>);
+  }
+
+  /** See `Relation.applyExtraConstraintsTo`: existence queries need the same replay. */
+  protected applyExtraConstraintsTo(query: Builder<any>): void {
+    for (const constraint of this.extraConstraints) constraint.apply(query);
+  }
+
+  /** See `Relation.applyAggregateSafeConstraintsTo`. */
+  protected applyAggregateSafeConstraintsTo(query: Builder<any>): void {
+    for (const constraint of this.extraConstraints) {
+      if (constraint.aggregateSafe) constraint.apply(query);
+    }
   }
 
   async attach(attributes: MorphRelationInput<T, N, Fixed>): Promise<T> {
@@ -315,6 +329,7 @@ export class MorphOne<T extends Record<string, any> = Model, N extends string = 
     const query = (this.related as any).on(this.parent.getConnection()).selectRaw(aggregate);
     query.whereColumn(`${this.related.getQualifiedTable(this.parent.getConnection())}.${this.idColumn}`, "=", `${parentTable}.${this.localKey}`);
     query.where(`${this.related.getQualifiedTable(this.parent.getConnection())}.${this.typeColumn}`, this.getMorphType());
+    this.applyAggregateSafeConstraintsTo(query);
     if (callback) callback(query);
     return query;
   }
@@ -340,7 +355,7 @@ export class MorphMany<T extends Record<string, any> = Model, N extends string =
   protected typeColumn: string;
   protected idColumn: string;
   protected localKey: string;
-  protected extraConstraints: Array<(builder: Builder<T>) => void> = [];
+  protected extraConstraints: Array<{ apply: (builder: Builder<any>) => void; aggregateSafe: boolean }> = [];
   protected whereConstraints: Array<{ column: string; operator: string; value: any; boolean: "and" | "or" }> = [];
   protected $skipEagerQuery = false;
 
@@ -404,7 +419,7 @@ export class MorphMany<T extends Record<string, any> = Model, N extends string =
       value: whereValue,
       boolean: "and",
     });
-    this.extraConstraints.push((b) => (b.where as any)(...args));
+    this.extraConstraints.push({ apply: (b: Builder<any>) => (b.where as any)(...args), aggregateSafe: true });
     (this.builder.where as any)(...args);
     return this as MorphMany<T, N, Fixed | StripTablePrefix<K>>;
   }
@@ -421,7 +436,19 @@ export class MorphMany<T extends Record<string, any> = Model, N extends string =
   }
 
   protected applyExtraConstraints(): void {
-    for (const constraint of this.extraConstraints) constraint(this.builder);
+    this.applyExtraConstraintsTo(this.builder as Builder<any>);
+  }
+
+  /** See `Relation.applyExtraConstraintsTo`: existence queries need the same replay. */
+  protected applyExtraConstraintsTo(query: Builder<any>): void {
+    for (const constraint of this.extraConstraints) constraint.apply(query);
+  }
+
+  /** See `Relation.applyAggregateSafeConstraintsTo`. */
+  protected applyAggregateSafeConstraintsTo(query: Builder<any>): void {
+    for (const constraint of this.extraConstraints) {
+      if (constraint.aggregateSafe) constraint.apply(query);
+    }
   }
 
   async getEager(): Promise<Collection<any>> {
@@ -475,6 +502,7 @@ export class MorphMany<T extends Record<string, any> = Model, N extends string =
     const query = (this.related as any).on(this.parent.getConnection()).selectRaw(aggregate);
     query.whereColumn(`${this.related.getQualifiedTable(this.parent.getConnection())}.${this.idColumn}`, "=", `${parentTable}.${this.localKey}`);
     query.where(`${this.related.getQualifiedTable(this.parent.getConnection())}.${this.typeColumn}`, this.getMorphType());
+    this.applyAggregateSafeConstraintsTo(query);
     if (callback) callback(query);
     return query;
   }
@@ -513,7 +541,7 @@ export class MorphToMany<
   protected pivotAccessor = "pivot";
   protected whereConstraints: Array<{ column: string; operator: string; value: any; boolean: "and" | "or" }> = [];
   protected pivotWheres: Array<{ column: string; operator: string; value: any; boolean: "and" | "or" }> = [];
-  protected extraConstraints: Array<(builder: Builder<T>) => void> = [];
+  protected extraConstraints: Array<{ apply: (builder: Builder<any>) => void; aggregateSafe: boolean }> = [];
   protected $skipEagerQuery = false;
 
   protected decoratePivotQuery(builder: Builder<any>): Builder<any> & PivotQueryBuilder {
@@ -590,7 +618,8 @@ export class MorphToMany<
     this.parent = parent;
     this.related = related;
     this.name = name;
-    this.table = table || `${name}s`;
+    // `${name}s` produced "categorys" for a `category` morph name.
+    this.table = table || pluralize(name);
     this.parentKey = parentKey || parentConstructor.primaryKey;
     this.relatedKey = relatedKey || related.primaryKey;
     this.morphType = morphType || parentConstructor.morphName || parentConstructor.name;
@@ -706,7 +735,7 @@ export class MorphToMany<
       value: whereValue,
       boolean: "and",
     });
-    this.extraConstraints.push((b) => (b.where as any)(...args));
+    this.extraConstraints.push({ apply: (b: Builder<any>) => (b.where as any)(...args), aggregateSafe: true });
     (this.builder.where as any)(...args);
     return this as MorphToMany<T, N, RelatedFixed | StripTablePrefix<K>, PivotFixed>;
   }
@@ -791,7 +820,19 @@ export class MorphToMany<
   }
 
   protected applyExtraConstraints(): void {
-    for (const constraint of this.extraConstraints) constraint(this.builder);
+    this.applyExtraConstraintsTo(this.builder as Builder<any>);
+  }
+
+  /** See `Relation.applyExtraConstraintsTo`: existence queries need the same replay. */
+  protected applyExtraConstraintsTo(query: Builder<any>): void {
+    for (const constraint of this.extraConstraints) constraint.apply(query);
+  }
+
+  /** See `Relation.applyAggregateSafeConstraintsTo`. */
+  protected applyAggregateSafeConstraintsTo(query: Builder<any>): void {
+    for (const constraint of this.extraConstraints) {
+      if (constraint.aggregateSafe) constraint.apply(query);
+    }
   }
 
   protected addConstraints(): void {
@@ -976,6 +1017,7 @@ export class MorphToMany<
     for (const where of this.pivotWheres) {
       this.applyStoredPivotWhere(query, where);
     }
+    this.applyAggregateSafeConstraintsTo(query);
     if (callback) callback(query);
     return query;
   }

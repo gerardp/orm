@@ -34,6 +34,14 @@ export function clearPolicies(): void {
   policiesByModelName.clear();
 }
 
+/**
+ * Stable lookup key for a model class. `class.name` does not survive a
+ * minifying bundler, so a model can pin its key with `static policyName`.
+ */
+function policyKeyFor(model: Function): string | undefined {
+  return (model as { policyName?: string }).policyName ?? (model.name || undefined);
+}
+
 export function registerPolicy(model: Function | string, policy: PolicyLike | PolicyClass): void {
   const instance = toPolicyInstance(policy);
   if (typeof model === "string") {
@@ -41,9 +49,11 @@ export function registerPolicy(model: Function | string, policy: PolicyLike | Po
     return;
   }
   policiesByCtor.set(model, instance);
-  if (model.name) {
-    policiesByModelName.set(model.name, instance);
-  }
+  const key = policyKeyFor(model);
+  if (key) policiesByModelName.set(key, instance);
+  // Keep the raw class name registered too, so a `registerPolicies({ Post: ... })`
+  // written against the unminified name still resolves.
+  if (model.name && model.name !== key) policiesByModelName.set(model.name, instance);
 }
 
 export function registerPolicies(entries: Record<string, PolicyLike | PolicyClass>): void {
@@ -57,6 +67,10 @@ function resolvePolicy(model: unknown): object | undefined {
   const ctor = (model as { constructor?: Function }).constructor;
   if (ctor && policiesByCtor.has(ctor)) {
     return policiesByCtor.get(ctor);
+  }
+  const key = ctor ? policyKeyFor(ctor) : undefined;
+  if (key && policiesByModelName.has(key)) {
+    return policiesByModelName.get(key);
   }
   const modelName = ctor?.name;
   if (modelName && policiesByModelName.has(modelName)) {

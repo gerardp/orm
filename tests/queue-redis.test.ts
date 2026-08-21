@@ -1,127 +1,49 @@
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from "bun:test";
+import { RedisClient } from "bun";
 import { RedisQueueDriver } from "../src/queue/RedisQueueDriver.js";
 
-// In-memory Redis mock — enough to exercise the driver without a live server
-function makeRedis() {
-  const strings = new Map<string, string>();
-  const hashes = new Map<string, Map<string, string>>();
-  const lists = new Map<string, string[]>();
-  const zsets = new Map<string, Map<string, number>>(); // member → score
-  const sets = new Map<string, Set<string>>();
+// The driver drives every state transition through Lua, because Redis has no
+// rollback and a job that is popped but not yet reserved is a lost job. Lua can
+// only be exercised by a real server, so these tests need one — an in-process
+// mock would just be re-testing a reimplementation of the scripts.
+//
+// Gated the same way as tests/redis.integration.test.ts: set REDIS_TEST_URL (or
+// REDIS_URL) to a throwaway server to run them. Setting it is an explicit
+// opt-in, so an unreachable server fails loudly rather than skipping silently.
+const url = process.env.REDIS_TEST_URL || process.env.REDIS_URL;
+let client: RedisClient | undefined;
 
-  return {
-    async incr(key: string): Promise<number> {
-      const v = parseInt(strings.get(key) ?? "0", 10) + 1;
-      strings.set(key, String(v));
-      return v;
-    },
-    async rpush(key: string, ...values: string[]): Promise<number> {
-      const list = lists.get(key) ?? [];
-      list.push(...values);
-      lists.set(key, list);
-      return list.length;
-    },
-    async lpush(key: string, ...values: string[]): Promise<number> {
-      const list = lists.get(key) ?? [];
-      list.unshift(...values);
-      lists.set(key, list);
-      return list.length;
-    },
-    async lpop(key: string): Promise<string | null> {
-      const list = lists.get(key);
-      if (!list || list.length === 0) return null;
-      return list.shift() ?? null;
-    },
-    async llen(key: string): Promise<number> {
-      return lists.get(key)?.length ?? 0;
-    },
-    async hset(key: string, fields: Record<string, string | number>): Promise<number> {
-      const hash = hashes.get(key) ?? new Map<string, string>();
-      let added = 0;
-      for (const [f, v] of Object.entries(fields)) {
-        if (!hash.has(f)) added++;
-        hash.set(f, String(v));
-      }
-      hashes.set(key, hash);
-      return added;
-    },
-    async hgetall(key: string): Promise<Record<string, string>> {
-      const hash = hashes.get(key);
-      if (!hash) return {} as any;
-      return Object.fromEntries(hash.entries());
-    },
-    async hincrby(key: string, field: string, increment: number): Promise<number> {
-      const hash = hashes.get(key) ?? new Map<string, string>();
-      const cur = parseInt(hash.get(field) ?? "0", 10) + increment;
-      hash.set(field, String(cur));
-      hashes.set(key, hash);
-      return cur;
-    },
-    async del(...keys: string[]): Promise<number> {
-      let n = 0;
-      for (const k of keys) {
-        if (strings.delete(k) || hashes.delete(k) || lists.delete(k) || zsets.delete(k) || sets.delete(k)) n++;
-      }
-      return n;
-    },
-    async zadd(key: string, ...args: (string | number)[]): Promise<number> {
-      const zset = zsets.get(key) ?? new Map<string, number>();
-      let added = 0;
-      for (let i = 0; i < args.length; i += 2) {
-        const score = Number(args[i]);
-        const member = String(args[i + 1]);
-        if (!zset.has(member)) added++;
-        zset.set(member, score);
-      }
-      zsets.set(key, zset);
-      return added;
-    },
-    async zrem(key: string, ...members: string[]): Promise<number> {
-      const zset = zsets.get(key);
-      if (!zset) return 0;
-      let n = 0;
-      for (const m of members) { if (zset.delete(m)) n++; }
-      return n;
-    },
-    async zrangebyscore(key: string, min: number, max: number): Promise<string[]> {
-      const zset = zsets.get(key);
-      if (!zset) return [];
-      return [...zset.entries()]
-        .filter(([, score]) => score >= min && score <= max)
-        .sort(([, a], [, b]) => a - b)
-        .map(([member]) => member);
-    },
-    async zcard(key: string): Promise<number> {
-      return zsets.get(key)?.size ?? 0;
-    },
-    async sadd(key: string, ...members: string[]): Promise<number> {
-      const set = sets.get(key) ?? new Set<string>();
-      let added = 0;
-      for (const m of members) { if (!set.has(m)) { set.add(m); added++; } }
-      sets.set(key, set);
-      return added;
-    },
-    async smembers(key: string): Promise<string[]> {
-      return [...(sets.get(key) ?? new Set())];
-    },
-    // expose internals for test inspection
-    _lists: lists,
-    _zsets: zsets,
-    _hashes: hashes,
-  };
+beforeAll(async () => {
+  if (!url) return;
+  client = new RedisClient(url);
+  await client.connect();
+});
+
+// A namespace of its own per run, so a suite can never sweep another's keys.
+const prefix = `bunny_test_${process.pid}_${Math.random().toString(36).slice(2, 8)}:`;
+
+async function flushNamespace(): Promise<void> {
+  if (!client) return;
+  const keys = (await client.send("KEYS", [`${prefix}*`])) as string[];
+  if (keys.length > 0) await client.send("DEL", keys);
 }
 
-describe("RedisQueueDriver", () => {
-  let redis: ReturnType<typeof makeRedis>;
+afterAll(async () => {
+  if (!client) return;
+  await flushNamespace();
+  client.close();
+});
+
+describe.skipIf(!url)("RedisQueueDriver", () => {
   let driver: RedisQueueDriver;
 
-  beforeEach(() => {
-    redis = makeRedis();
-    driver = new RedisQueueDriver(redis as any, { prefix: "test:" });
+  beforeEach(async () => {
+    await flushNamespace();
+    driver = new RedisQueueDriver(client!, { prefix });
   });
 
   it("migrate() is a no-op", async () => {
-    await expect(driver.migrate()).resolves.toBeUndefined();
+    await driver.migrate();
   });
 
   it("dispatches and reserves a job", async () => {
@@ -129,8 +51,8 @@ describe("RedisQueueDriver", () => {
     const job = await driver.reserve("default", 90);
     expect(job).not.toBeNull();
     expect(job!.jobClass).toBe("SendEmail");
-    expect(job!.attempts).toBe(1);
     expect(job!.queue).toBe("default");
+    expect(job!.attempts).toBe(1);
     expect(JSON.parse(job!.payload).args).toEqual(["a@b.com"]);
   });
 
@@ -139,101 +61,91 @@ describe("RedisQueueDriver", () => {
   });
 
   it("does not reserve same job twice", async () => {
-    await driver.dispatch("default", "A", "{}", 0, 3);
-    const j1 = await driver.reserve("default", 90);
-    const j2 = await driver.reserve("default", 90);
-    expect(j1).not.toBeNull();
-    expect(j2).toBeNull();
+    await driver.dispatch("default", "SendEmail", "{}", 0, 3);
+    expect(await driver.reserve("default", 90)).not.toBeNull();
+    expect(await driver.reserve("default", 90)).toBeNull();
   });
 
   it("complete() removes job data", async () => {
-    await driver.dispatch("default", "A", "{}", 0, 3);
+    await driver.dispatch("default", "SendEmail", "{}", 0, 3);
     const job = await driver.reserve("default", 90);
     await driver.complete(job!.id);
     expect(await driver.size("default")).toBe(0);
-    // hash should be gone
-    const fields = await redis.hgetall(`test:job:${job!.id}`);
-    expect(Object.keys(fields)).toHaveLength(0);
+    expect(await client!.send("EXISTS", [`${prefix}job:${job!.id}`])).toBe(0);
+    expect(await client!.send("ZCARD", [`${prefix}reserved:default`])).toBe(0);
   });
 
   it("fail() writes to failed list and removes job", async () => {
-    await driver.dispatch("default", "BadJob", "{}", 0, 3);
+    await driver.dispatch("default", "SendEmail", "{}", 0, 3);
     const job = await driver.reserve("default", 90);
-    await driver.fail(job!.id, "Error: exploded");
+    await driver.fail(job!.id, "Error: SMTP timeout");
 
-    const failedKey = "test:failed";
-    const list = redis._lists.get(failedKey);
-    expect(list).toHaveLength(1);
-    const record = JSON.parse(list![0]);
-    expect(record.jobClass).toBe("BadJob");
-    expect(record.exception).toContain("exploded");
-    expect(await driver.size("default")).toBe(0);
+    const failed = (await client!.send("LRANGE", [`${prefix}failed`, "0", "-1"])) as string[];
+    expect(failed).toHaveLength(1);
+    const record = JSON.parse(failed[0]!);
+    expect(record.jobClass).toBe("SendEmail");
+    expect(record.queue).toBe("default");
+    expect(record.exception).toBe("Error: SMTP timeout");
+    expect(typeof record.failedAt).toBe("number");
+
+    expect(await client!.send("EXISTS", [`${prefix}job:${job!.id}`])).toBe(0);
+    expect(await client!.send("ZCARD", [`${prefix}reserved:default`])).toBe(0);
   });
 
-  it("release() with no delay puts job back at front", async () => {
-    await driver.dispatch("default", "RetryMe", "{}", 0, 3);
+  it("release() with no delay puts the job back on the pending list", async () => {
+    await driver.dispatch("default", "SendEmail", "{}", 0, 3);
     const job = await driver.reserve("default", 90);
     await driver.release(job!.id, 0);
 
-    const list = redis._lists.get("test:pending:default");
-    expect(list).toHaveLength(1);
-    expect(list![0]).toBe(String(job!.id));
+    expect(await client!.send("LLEN", [`${prefix}pending:default`])).toBe(1);
+    expect(await client!.send("ZCARD", [`${prefix}reserved:default`])).toBe(0);
+
+    const again = await driver.reserve("default", 90);
+    expect(again!.id).toBe(job!.id);
+    expect(again!.attempts).toBe(2);
   });
 
-  it("release() with delay goes to delayed set", async () => {
-    await driver.dispatch("default", "RetryMe", "{}", 0, 3);
+  it("release() with a delay goes to the delayed set", async () => {
+    await driver.dispatch("default", "SendEmail", "{}", 0, 3);
     const job = await driver.reserve("default", 90);
     await driver.release(job!.id, 60);
 
-    expect(await driver.size("default")).toBe(1); // counts delayed
-    const next = await driver.reserve("default", 90);
-    expect(next).toBeNull(); // not available yet
+    expect(await client!.send("ZCARD", [`${prefix}delayed:default`])).toBe(1);
+    expect(await client!.send("LLEN", [`${prefix}pending:default`])).toBe(0);
+    expect(await driver.reserve("default", 90)).toBeNull();
   });
 
-  it("dispatch() with delay goes to delayed set, not pending", async () => {
+  it("dispatch() with a delay goes to the delayed set, not pending", async () => {
     await driver.dispatch("default", "LazyJob", "{}", 60, 3);
-    expect(await driver.size("default")).toBe(1); // in delayed
-    const job = await driver.reserve("default", 90);
-    expect(job).toBeNull();
+    expect(await driver.size("default")).toBe(1);
+    expect(await client!.send("LLEN", [`${prefix}pending:default`])).toBe(0);
+    expect(await driver.reserve("default", 90)).toBeNull();
   });
 
-  it("delayed jobs migrate to pending when available_at passes", async () => {
-    const now = Math.floor(Date.now() / 1000);
-    await driver.dispatch("default", "ReadyJob", "{}", 0, 3);
-    // manually backdate available_at to simulate a delayed job that is now due
-    const id = 1;
-    const past = now - 10;
-    await redis.zadd("test:delayed:default", past, String(id));
-    // also put it in the hash so hgetall returns data
-    await redis.hset(`test:job:${id}`, {
-      queue: "default", jobClass: "ReadyJob", payload: "{}", attempts: 0, maxAttempts: 3,
-      availableAt: past, createdAt: past,
-    });
-
-    // Pop the real pending entry first (from the non-delayed dispatch)
-    await driver.reserve("default", 90);
-
-    // Now only the "delayed" job should be migrated and become reservable
-    // Reset the delayed set to only have our backdated entry
-    redis._zsets.set("test:delayed:default", new Map([[String(id), past]]));
-    redis._lists.set("test:pending:default", []);
+  it("delayed jobs migrate to pending once they are due", async () => {
+    await driver.dispatch("default", "ReadyJob", "{}", 60, 3);
+    // Backdate the score so the job is due.
+    const due = Math.floor(Date.now() / 1000) - 10;
+    const [id] = (await client!.send("ZRANGE", [`${prefix}delayed:default`, "0", "-1"])) as string[];
+    await client!.send("ZADD", [`${prefix}delayed:default`, String(due), id!]);
 
     const job = await driver.reserve("default", 90);
     expect(job).not.toBeNull();
     expect(job!.jobClass).toBe("ReadyJob");
+    expect(await client!.send("ZCARD", [`${prefix}delayed:default`])).toBe(0);
   });
 
   it("timed-out reserved jobs get re-queued", async () => {
     await driver.dispatch("default", "StuckJob", "{}", 0, 3);
     const job = await driver.reserve("default", 90);
 
-    // Manually expire the reservation
-    const old = Math.floor(Date.now() / 1000) - 200;
-    redis._zsets.get("test:reserved:default")!.set(String(job!.id), old);
+    const expired = Math.floor(Date.now() / 1000) - 200;
+    await client!.send("ZADD", [`${prefix}reserved:default`, String(expired), String(job!.id)]);
 
     const reReserved = await driver.reserve("default", 90);
     expect(reReserved).not.toBeNull();
     expect(reReserved!.id).toBe(job!.id);
+    expect(reReserved!.attempts).toBe(2);
   });
 
   it("respects named queues", async () => {
@@ -249,7 +161,7 @@ describe("RedisQueueDriver", () => {
     expect(await driver.size("default")).toBe(2);
   });
 
-  it("size() without queue sums all queues", async () => {
+  it("size() without a queue sums all queues", async () => {
     await driver.dispatch("a", "A", "{}", 0, 3);
     await driver.dispatch("b", "B", "{}", 0, 3);
     expect(await driver.size()).toBe(2);
@@ -261,9 +173,116 @@ describe("RedisQueueDriver", () => {
     expect(job!.maxAttempts).toBe(1);
   });
 
-  it("tracks queue names in queues set", async () => {
+  it("tracks queue names in the queues set", async () => {
     await driver.dispatch("critical", "A", "{}", 0, 3);
-    const queues = await redis.smembers("test:queues");
-    expect(queues).toContain("critical");
+    expect(await client!.send("SMEMBERS", [`${prefix}queues`])).toContain("critical");
+  });
+});
+
+describe.skipIf(!url)("RedisQueueDriver atomicity", () => {
+  let driver: RedisQueueDriver;
+
+  beforeEach(async () => {
+    await flushNamespace();
+    driver = new RedisQueueDriver(client!, { prefix });
+  });
+
+  it("dispatch publishes the hash and the listing together", async () => {
+    await driver.dispatch("default", "SendEmail", "{}", 0, 3);
+    // Before, HSET / SADD / RPUSH were three round trips: a crash in between
+    // left a hash nothing referenced, or a listed id with no hash.
+    const [id] = (await client!.send("LRANGE", [`${prefix}pending:default`, "0", "-1"])) as string[];
+    expect(id).toBeDefined();
+    expect(await client!.send("EXISTS", [`${prefix}job:${id}`])).toBe(1);
+    expect(await client!.send("SMEMBERS", [`${prefix}queues`])).toContain("default");
+  });
+
+  it("a reserved job is always recoverable through its reservation", async () => {
+    await driver.dispatch("default", "SendEmail", "{}", 0, 3);
+    const job = await driver.reserve("default", 90);
+
+    // The id is off the pending list, so the reservation is the only thing that
+    // can bring it back. LPOP and ZADD must therefore land together.
+    expect(await client!.send("LLEN", [`${prefix}pending:default`])).toBe(0);
+    expect(await client!.send("ZSCORE", [`${prefix}reserved:default`, String(job!.id)])).not.toBeNull();
+  });
+
+  it("does not hand the same delayed job to two concurrent workers", async () => {
+    await driver.dispatch("default", "SendEmail", "{}", 60, 3);
+    const due = Math.floor(Date.now() / 1000) - 60;
+    const [id] = (await client!.send("ZRANGE", [`${prefix}delayed:default`, "0", "-1"])) as string[];
+    await client!.send("ZADD", [`${prefix}delayed:default`, String(due), id!]);
+
+    const [a, b] = await Promise.all([
+      driver.reserve("default", 90),
+      driver.reserve("default", 90),
+    ]);
+
+    expect([a, b].filter((job) => job !== null)).toHaveLength(1);
+    expect(await client!.send("LLEN", [`${prefix}pending:default`])).toBe(0);
+  });
+
+  it("does not requeue a timed-out job twice", async () => {
+    await driver.dispatch("default", "SendEmail", "{}", 0, 3);
+    expect(await driver.reserve("default", 90)).not.toBeNull();
+
+    const [a, b] = await Promise.all([
+      driver.reserve("default", 0),
+      driver.reserve("default", 0),
+    ]);
+
+    expect([a, b].filter((job) => job !== null)).toHaveLength(1);
+    expect(await client!.send("LLEN", [`${prefix}pending:default`])).toBe(0);
+  });
+
+  it("four concurrent workers reserve four distinct jobs, never the same one", async () => {
+    for (let i = 0; i < 4; i++) await driver.dispatch("default", `Job${i}`, "{}", 0, 3);
+
+    const claimed = await Promise.all(
+      Array.from({ length: 4 }, () => driver.reserve("default", 90)),
+    );
+
+    const ids = claimed.map((job) => job?.id).filter((id) => id !== undefined);
+    expect(ids).toHaveLength(4);
+    expect(new Set(ids).size).toBe(4);
+  });
+
+  it("skips orphaned ids instead of reporting an empty queue", async () => {
+    await driver.dispatch("default", "Ghost", "{}", 0, 3);
+    await driver.dispatch("default", "Real", "{}", 0, 3);
+    const [ghostId] = (await client!.send("LRANGE", [`${prefix}pending:default`, "0", "0"])) as string[];
+    await client!.send("DEL", [`${prefix}job:${ghostId}`]);
+
+    const job = await driver.reserve("default", 90);
+    expect(job?.jobClass).toBe("Real");
+  });
+
+  it("release clears the reservation and republishes in one step", async () => {
+    await driver.dispatch("default", "SendEmail", "{}", 0, 3);
+    const job = await driver.reserve("default", 90);
+    await driver.release(job!.id, 0);
+
+    // Never both reserved and pending, and never neither.
+    expect(await client!.send("ZCARD", [`${prefix}reserved:default`])).toBe(0);
+    expect(await client!.send("LLEN", [`${prefix}pending:default`])).toBe(1);
+  });
+
+  it("release on a job that no longer exists is a no-op", async () => {
+    await driver.dispatch("default", "SendEmail", "{}", 0, 3);
+    const job = await driver.reserve("default", 90);
+    await driver.complete(job!.id);
+    await driver.release(job!.id, 0);
+
+    expect(await client!.send("LLEN", [`${prefix}pending:default`])).toBe(0);
+  });
+
+  it("fail buries the job and clears its reservation together", async () => {
+    await driver.dispatch("default", "SendEmail", "{}", 0, 3);
+    const job = await driver.reserve("default", 90);
+    await driver.fail(job!.id, "boom");
+
+    expect(await client!.send("LLEN", [`${prefix}failed`])).toBe(1);
+    expect(await client!.send("ZCARD", [`${prefix}reserved:default`])).toBe(0);
+    expect(await client!.send("EXISTS", [`${prefix}job:${job!.id}`])).toBe(0);
   });
 });

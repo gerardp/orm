@@ -570,3 +570,45 @@ describe("Polymorphic Relations", () => {
     expect(sql).toContain('INNER JOIN "tenant_demo"."taggables"');
   });
 });
+
+describe("MorphTo with a zero id", () => {
+  test("resolves a related row whose primary key is 0", async () => {
+    const connection = setupTestDb();
+    await connection.run("CREATE TABLE mz_hosts (id INTEGER PRIMARY KEY, title TEXT)");
+    await connection.run("CREATE TABLE mz_notes (id INTEGER PRIMARY KEY, notable_id INTEGER, notable_type TEXT)");
+    await connection.run("INSERT INTO mz_hosts (id, title) VALUES (0, 'zero host')");
+    await connection.run("INSERT INTO mz_notes (id, notable_id, notable_type) VALUES (1, 0, 'MZHost')");
+
+    class MZHost extends Model {
+      static override table = "mz_hosts";
+      static override timestamps = false;
+    }
+    class MZNote extends Model {
+      static override table = "mz_notes";
+      static override timestamps = false;
+      notable() { return this.morphTo("notable"); }
+    }
+    MorphMap.register("MZHost", MZHost);
+
+    const note = await MZNote.query().first();
+    // `!id` treated a primary key of 0 as "no relation at all".
+    const host = await note!.notable().getResults();
+    expect(host).not.toBeNull();
+    expect((host as any).getAttribute("title")).toBe("zero host");
+  });
+
+  test("a genuinely absent id still resolves to null", async () => {
+    const connection = setupTestDb();
+    await connection.run("CREATE TABLE mz2_notes (id INTEGER PRIMARY KEY, notable_id INTEGER, notable_type TEXT)");
+    await connection.run("INSERT INTO mz2_notes (id, notable_id, notable_type) VALUES (1, NULL, 'MZHost')");
+
+    class MZ2Note extends Model {
+      static override table = "mz2_notes";
+      static override timestamps = false;
+      notable() { return this.morphTo("notable"); }
+    }
+
+    const note = await MZ2Note.query().first();
+    expect(await note!.notable().getResults()).toBeNull();
+  });
+});

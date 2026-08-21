@@ -29,6 +29,12 @@ export class Connection {
   static logQueries = false;
   static queryLogFile?: string;
   static logToConsole: boolean = true;
+  /**
+   * Whether query logs include the binding values. Off by default: bindings
+   * carry password hashes, tokens and PII straight into the console and the log
+   * file. Enable it deliberately (`log: { bindings: true }`) for local debugging.
+   */
+  static logBindings = false;
   private static _logWriter?: FileSink;
   private static _logWriterDate?: string;
   static defaultPostgresPoolMax = 10;
@@ -277,13 +283,21 @@ export class Connection {
         Connection._logWriter = Bun.file(path).writer();
         Connection._logWriterDate = date;
       }
-      const line = `[QUERY] ${sqlString}${bindings?.length ? " " + JSON.stringify(bindings) : ""}\n`;
+      const line = `[QUERY] ${sqlString}${Connection.describeBindings(bindings)}\n`;
       Connection._logWriter!.write(line);
       Connection._logWriter!.flush();
     }
     if (Connection.logToConsole) {
-      console.log("[QUERY]", sqlString, bindings?.length ? bindings : "");
+      if (Connection.logBindings && bindings?.length) console.log("[QUERY]", sqlString, bindings);
+      else console.log("[QUERY]", sqlString, Connection.describeBindings(bindings).trim());
     }
+  }
+
+  /** Bindings for a log line: the values only when explicitly opted in. */
+  private static describeBindings(bindings?: any[]): string {
+    if (!bindings?.length) return "";
+    if (Connection.logBindings) return ` ${JSON.stringify(bindings)}`;
+    return ` (${bindings.length} binding${bindings.length === 1 ? "" : "s"} hidden)`;
   }
 
   private normalizeBinding(value: any): any {
@@ -418,6 +432,10 @@ export class Connection {
     const journalMode = pragmas?.journalMode ?? "WAL";
     const synchronous = pragmas?.synchronous ?? "NORMAL";
     const foreignKeys = pragmas?.foreignKeys ?? true;
+    // Without this, two processes on the same file (the SQLite queue driver is
+    // exactly that) surface a raw SQLITE_BUSY on the first contended write
+    // instead of waiting out a short lock.
+    const busyTimeoutMs = pragmas?.busyTimeoutMs ?? 5000;
 
     if (foreignKeys) {
       const sql = "PRAGMA foreign_keys=ON";
@@ -433,6 +451,15 @@ export class Connection {
 
     if (synchronous !== false) {
       const sql = `PRAGMA synchronous=${this.sanitizeSqlitePragmaValue(synchronous, "synchronous")}`;
+      this.log(sql);
+      await this.getDriver().unsafe(sql);
+    }
+
+    if (busyTimeoutMs > 0) {
+      if (!Number.isInteger(busyTimeoutMs)) {
+        throw new Error(`Invalid SQLite busy_timeout value: ${busyTimeoutMs}`);
+      }
+      const sql = `PRAGMA busy_timeout=${busyTimeoutMs}`;
       this.log(sql);
       await this.getDriver().unsafe(sql);
     }
@@ -593,6 +620,18 @@ export class Connection {
         this.transactionDepth--;
       }
     }
+    // Owned connection, root transaction. Only a manual beginTransaction() can
+    // have marked this connection active here (a nested transaction() runs on
+    // the borrowed connection handed to the callback, which uses savepoints).
+    // driver.begin() would issue BEGIN inside the open BEGIN, so refuse rather
+    // than emit a statement the server will reject or silently flatten.
+    if (this.transactionActive || this.transactionDepth > 0) {
+      throw new Error(
+        "transaction() was called while a manual beginTransaction() is still open on this connection. " +
+        "Commit or roll back first, or run the work through the connection the callback receives.",
+      );
+    }
+
     return await this.keepEventLoopAlive(() => this.driver.begin(async (sql) => {
       const connection = new Connection(this.config, {
         driver: sql as unknown as SQL,
