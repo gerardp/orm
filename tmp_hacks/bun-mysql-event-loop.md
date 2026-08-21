@@ -6,8 +6,9 @@
 > [Retiring the workaround](#retiring-the-workaround).
 
 - **Status:** active workaround
+- **Last reviewed:** 2026-08-21
 - **Affects:** MySQL only. SQLite and PostgreSQL are unaffected.
-- **Found with:** Bun 1.4.0 (`34cbb9a40`), MySQL 9.7.1, macOS arm64
+- **Verified with:** Bun 1.4.0 (`34cbb9a40`), MySQL 9.7.1, macOS arm64
 - **Upstream:** [oven-sh/bun#27362](https://github.com/oven-sh/bun/issues/27362)
   documents the same timer workaround but for sequential remote queries and is
   closed as a duplicate; [oven-sh/bun#27102](https://github.com/oven-sh/bun/issues/27102)
@@ -139,7 +140,7 @@ MySQL contexts with `max: 1`, which mostly keeps a single socket in play.
 - `private async keepEventLoopAlive<T>(operation)` — runs one driver operation
   with a ref'd timer registered for its duration. It is a no-op on SQLite and
   PostgreSQL, and when the escape hatch is off.
-- **27 call sites**, each wrapping a single driver operation:
+- **26 call sites**, each wrapping a single driver operation:
   `execute()`, `runAndGetMysqlInsertId()`, `assertMysqlUtc()`,
   `reserveRootTransaction()`, `beginTransaction()`, `commit()`, `rollback()`,
   the abandoned-transaction rollback, `transaction()` (both the savepoint path
@@ -177,7 +178,7 @@ bun 1.4.0 (34cbb9a40)
   reserve/release   0/20 resolved  TRUNCATED
   transaction       0/20 resolved  TRUNCATED
   second client     0/20 resolved  TRUNCATED
-  pooled queries   11/20 resolved  TRUNCATED
+  pooled queries    8/20 resolved  TRUNCATED
 
 STILL BROKEN — 4 of 4 triggers truncate.
 ```
@@ -199,7 +200,7 @@ it is unaffected by `Connection.keepMysqlEventLoopAlive`.
      `eventLoopHandle` statics, and the `keepEventLoopAlive()` method;
    - unwrap every call site — `await this.keepEventLoopAlive(() => X)` becomes
      `await X`. Find them with
-     `grep -n "keepEventLoopAlive" src/connection/Connection.ts`. Four sites
+     `rg -n "keepEventLoopAlive" src/connection/Connection.ts`. Four sites
      were reformatted onto several lines when they were wrapped
      (`LAST_INSERT_ID()` in `runAndGetMysqlInsertId()`, the `TIMESTAMPDIFF`
      query in `assertMysqlUtc()`, and `driver.begin()` in `transaction()`);
@@ -209,8 +210,7 @@ it is unaffected by `Connection.keepMysqlEventLoopAlive`.
 3. Removing `Connection.keepMysqlEventLoopAlive` is a public API change. It is
    documented here as temporary, but it still deserves a line in the release
    notes.
-4. Delete `scripts/bun-mysql-eventloop-probe.ts`, this file, and its row in
-   `docs/README.md`.
+4. Delete `scripts/bun-mysql-eventloop-probe.ts` and this file.
 5. **Keep** `tests/bun-mysql-eventloop.integration.test.ts`. It asserts that an
    ORM script which floats its promise still finishes its work — a property
    worth holding Bun to. Run it with `MYSQL_TEST_URL` set, before and after the

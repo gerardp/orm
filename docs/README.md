@@ -56,4 +56,3 @@ If you are new here, start with [Installation](./installation.md), then walk thr
 | [Events](./events.md) | Application-level events with function listeners, class handlers, and temporary subscriptions. |
 | [Library Usage](./library-usage.md) | Run migrations and seeders programmatically from app code using the `configureBunny()` facade. |
 | [Testing](./testing.md) | In-memory SQLite, transactional test isolation, integration patterns. |
-| [Bun MySQL Event Loop](./bun-mysql-event-loop.md) | Why the ORM pins the event loop open during MySQL queries, how to tell when Bun has fixed it, and how to retire the workaround. |

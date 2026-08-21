@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.1 - 2026-08-21
+
+### Fixed
+
+#### Collection
+
+- **`Collection` now reports `Array` as its constructor name.** Every other identity
+  check in the language already treats it as an array; `constructor.name` was the only
+  one that did not, and consumers dispatching on it sent collections down a subclass
+  path. In Elysia that path discards the accumulated response headers, status and
+  cookies, so a controller returning a Collection answered 200 with no headers and no
+  `Set-Cookie`, with nothing logged (https://github.com/elysiajs/elysia/issues/1842).
+
 ## 0.10.0 - 2026-08-21
 
 ### Changed

@@ -403,6 +403,15 @@ export class Collection<T = any> extends Array<T> {
   }
 }
 
+// A Collection *is* an Array by every check the language offers: `Array.isArray`,
+// `instanceof Array` and `Object.prototype.toString` all agree. `constructor.name`
+// was the only one that disagreed, and consumers that dispatch on it take that
+// disagreement at face value: Elysia's response mapper routes any array whose
+// constructor is not literally named "Array" through a fallback that drops the
+// accumulated response headers, status and cookies.
+// See https://github.com/elysiajs/elysia/issues/1842.
+Object.defineProperty(Collection, "name", { value: "Array" });
+
 export function collect<T>(items?: Iterable<T> | ArrayLike<T> | null): Collection<T> {
   return Collection.make(items);
 }

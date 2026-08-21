@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { Collection, Connection, Model, Schema } from "../src/index.js";
+import { Collection, Connection, Model, Schema, collect } from "../src/index.js";
 
 class CollectionUser extends Model {
   static table = "collection_users";
@@ -108,5 +108,14 @@ describe("Collection", () => {
     expect(chunks).toHaveLength(2);
     expect(chunks[0].pluck("name")).toEqual(["Ada", "Linus"]);
     expect(chunks[1].pluck("name")).toEqual(["Grace"]);
+  });
+
+  test("reports itself as an Array so consumers dispatching on constructor.name agree", () => {
+    const items = collect([{ id: 1 }]);
+
+    expect(items.constructor.name).toBe("Array");
+    expect(Array.isArray(items)).toBe(true);
+    expect(items).toBeInstanceOf(Collection);
+    expect(items.pluck("id")).toEqual([1]);
   });
 });
