@@ -1,8 +1,8 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { Model, Schema, ModelNotFoundError } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
-class Post extends Model {
+class Post extends PermissiveModel {
   static table = "posts";
 
   comments() {
@@ -10,11 +10,11 @@ class Post extends Model {
   }
 }
 
-class Comment extends Model {
+class Comment extends PermissiveModel {
   static table = "comments";
 }
 
-class Vote extends Model {
+class Vote extends PermissiveModel {
   static table = "votes";
   static timestamps = false;
 }

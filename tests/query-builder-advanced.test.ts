@@ -1,11 +1,11 @@
 import { expect, test, describe, beforeAll, afterAll } from "bun:test";
 import { Connection, Schema, Builder, Model } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
 describe("Advanced Query Builder Features", () => {
   let db: Connection;
 
-  class Folder extends Model.define<{ id: number; parent_id: number | null; name: string; depth?: number }>("folders") {
+  class Folder extends PermissiveModel.define<{ id: number; parent_id: number | null; name: string; depth?: number }>("folders") {
     items() {
       return this.hasMany(Folder, "parent_id");
     }

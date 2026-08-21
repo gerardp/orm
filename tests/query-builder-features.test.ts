@@ -1,8 +1,8 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { Model, Schema } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
-class Product extends Model {
+class Product extends PermissiveModel {
   static table = "products";
 }
 

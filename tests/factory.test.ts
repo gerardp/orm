@@ -1,15 +1,15 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { Model, Schema, Factory, Sequence } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
-class FUser extends Model {
+class FUser extends PermissiveModel {
   static table = "f_users";
   posts() {
     return this.hasMany(FPost);
   }
 }
 
-class FPost extends Model {
+class FPost extends PermissiveModel {
   static table = "f_posts";
   fuser() {
     return this.belongsTo(FUser);
@@ -142,7 +142,7 @@ describe("Factory (class-based, Laravel parity)", () => {
   });
 
   test("unregistered model.factory() throws a clear error", () => {
-    class Orphan extends Model {
+    class Orphan extends PermissiveModel {
       static table = "orphans";
     }
     expect(() => (Orphan as any).factory()).toThrow("No factory registered for Orphan");

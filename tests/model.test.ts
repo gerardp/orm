@@ -1,14 +1,14 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { Model, Schema } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
 function expectType<T>(_value: T): void {}
 
-class TestUser extends Model {
+class TestUser extends PermissiveModel {
   static table = "test_users";
 }
 
-class DefaultUser extends Model {
+class DefaultUser extends PermissiveModel {
   static table = "default_users";
   static casts = {
     active: "boolean",
@@ -20,11 +20,11 @@ class DefaultUser extends Model {
   };
 }
 
-class UuidUser extends Model {
+class UuidUser extends PermissiveModel {
   static table = "uuid_users";
 }
 
-class SerializedUser extends Model {
+class SerializedUser extends PermissiveModel {
   static timestamps = false;
   static hidden = ["secret"];
   static casts = { active: "boolean" };
@@ -247,7 +247,7 @@ describe("Model", () => {
 
   test("hydrate routes through a setConnection override declared as an instance field", () => {
     let calls = 0;
-    class FieldOverrideUser extends Model {
+    class FieldOverrideUser extends PermissiveModel {
       static table = "field_override_users";
       // An arrow-function field never lands on the prototype.
       setConnection = (conn: any): this => {
@@ -348,18 +348,18 @@ describe("Model", () => {
 });
 
 describe("Model query terminators as statics", () => {
-  class TermPost extends Model {
+  class TermPost extends PermissiveModel {
     static table = "term_posts";
     comments() {
       return this.hasMany(TermComment, "term_post_id");
     }
   }
 
-  class TermComment extends Model {
+  class TermComment extends PermissiveModel {
     static table = "term_comments";
   }
 
-  class TermEmpty extends Model {
+  class TermEmpty extends PermissiveModel {
     static table = "term_empty";
   }
 

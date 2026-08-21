@@ -1,15 +1,15 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { Model, Schema, MorphMap, Builder, Connection, Collection } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
-class MComment extends Model {
+class MComment extends PermissiveModel {
   static table = "m_comments";
   commentable() {
     return this.morphTo("commentable");
   }
 }
 
-class MPost extends Model {
+class MPost extends PermissiveModel {
   static table = "m_posts";
   comments() {
     return this.morphMany(MComment, "commentable");
@@ -25,7 +25,7 @@ class MPost extends Model {
   }
 }
 
-class MVideo extends Model {
+class MVideo extends PermissiveModel {
   static table = "m_videos";
   comments() {
     return this.morphMany(MComment, "commentable");
@@ -35,14 +35,14 @@ class MVideo extends Model {
   }
 }
 
-class MImage extends Model {
+class MImage extends PermissiveModel {
   static table = "m_images";
   imageable() {
     return this.morphTo("imageable");
   }
 }
 
-class MStudent extends Model {
+class MStudent extends PermissiveModel {
   static table = "m_students";
   attachments() {
     return this.morphMany(MAttachment, "attachable");
@@ -52,18 +52,18 @@ class MStudent extends Model {
   }
 }
 
-class MAttachment extends Model {
+class MAttachment extends PermissiveModel {
   static table = "m_attachments";
 }
 
-class MTag extends Model {
+class MTag extends PermissiveModel {
   static table = "m_tags";
   posts() {
     return this.morphedByMany(MPost, "taggable", undefined, "tag_id", "taggable_id");
   }
 }
 
-class MDocument extends Model {
+class MDocument extends PermissiveModel {
   static table = "m_documents";
   tags() {
     return this.morphToMany(MTag, "taggable", "uuid_taggables", "taggable_id", "tag_id").withPivot("id", "scope");
@@ -552,13 +552,13 @@ describe("Polymorphic Relations", () => {
   });
 
   test("morphToMany existence queries qualify pivot table with PostgreSQL schema", () => {
-    class SchemaPost extends Model {
+    class SchemaPost extends PermissiveModel {
       static table = "schema_posts";
       tags() {
         return this.morphToMany(SchemaTag, "taggable");
       }
     }
-    class SchemaTag extends Model {
+    class SchemaTag extends PermissiveModel {
       static table = "schema_tags";
     }
 
@@ -579,11 +579,11 @@ describe("MorphTo with a zero id", () => {
     await connection.run("INSERT INTO mz_hosts (id, title) VALUES (0, 'zero host')");
     await connection.run("INSERT INTO mz_notes (id, notable_id, notable_type) VALUES (1, 0, 'MZHost')");
 
-    class MZHost extends Model {
+    class MZHost extends PermissiveModel {
       static override table = "mz_hosts";
       static override timestamps = false;
     }
-    class MZNote extends Model {
+    class MZNote extends PermissiveModel {
       static override table = "mz_notes";
       static override timestamps = false;
       notable() { return this.morphTo("notable"); }
@@ -602,7 +602,7 @@ describe("MorphTo with a zero id", () => {
     await connection.run("CREATE TABLE mz2_notes (id INTEGER PRIMARY KEY, notable_id INTEGER, notable_type TEXT)");
     await connection.run("INSERT INTO mz2_notes (id, notable_id, notable_type) VALUES (1, NULL, 'MZHost')");
 
-    class MZ2Note extends Model {
+    class MZ2Note extends PermissiveModel {
       static override table = "mz2_notes";
       static override timestamps = false;
       notable() { return this.morphTo("notable"); }

@@ -1,6 +1,6 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { Model, Schema, type AccessorMap } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
 interface ProgramAttrs {
   id: number;
@@ -27,15 +27,15 @@ interface SectionAttrs {
   adviser_id: number;
 }
 
-class Level extends Model.define<LevelAttrs>("ta_levels") {}
+class Level extends PermissiveModel.define<LevelAttrs>("ta_levels") {}
 
-class Program extends Model.define<ProgramAttrs>("ta_programs") {
+class Program extends PermissiveModel.define<ProgramAttrs>("ta_programs") {
   level() {
     return this.belongsTo(Level, "level_id");
   }
 }
 
-class Staff extends Model.define<StaffAttrs>("ta_staff") {
+class Staff extends PermissiveModel.define<StaffAttrs>("ta_staff") {
   declare full_name: string;
 
   static accessors: AccessorMap<StaffAttrs, Staff> = {
@@ -48,7 +48,7 @@ class Staff extends Model.define<StaffAttrs>("ta_staff") {
   };
 }
 
-class Section extends Model.define<SectionAttrs>("ta_sections") {
+class Section extends PermissiveModel.define<SectionAttrs>("ta_sections") {
   declare grade_label: string;
   declare adviser_name: string;
 

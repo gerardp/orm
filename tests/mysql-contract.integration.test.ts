@@ -1,16 +1,17 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { PermissiveModel } from "./helpers.js";
 import { Builder, Connection, Model, Schema } from "../src/index.js";
 import { createDriverContext, mysqlUrl, type DriverContext } from "./driver-harness.js";
 
 const run = mysqlUrl ? test.serial : test.skip;
 
-class MysqlExactValue extends Model {
+class MysqlExactValue extends PermissiveModel {
   static override table = "mysql_exact_values";
   static override timestamps = false;
   static override casts = { amount: "decimal:10" };
 }
 
-class MysqlNativeValue extends Model {
+class MysqlNativeValue extends PermissiveModel {
   static override table = "mysql_native_values";
   static override timestamps = false;
   static override casts = {
@@ -20,7 +21,7 @@ class MysqlNativeValue extends Model {
   };
 }
 
-class MysqlPageItem extends Model {
+class MysqlPageItem extends PermissiveModel {
   static override table = "mysql_page_items";
   static override timestamps = false;
 }
@@ -175,7 +176,7 @@ describe.serial("MySQL native contracts", () => {
       onDelete: "cascade",
     }));
 
-    class MysqlContractChild extends Model {
+    class MysqlContractChild extends PermissiveModel {
       static override table = "mysql_contract_children";
       static override timestamps = false;
     }

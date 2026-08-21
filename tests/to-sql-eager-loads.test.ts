@@ -1,8 +1,8 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { Collection, Model, Schema } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
-class ECurriculum extends Model {
+class ECurriculum extends PermissiveModel {
   static table = "eager_curricula";
   program() {
     return this.belongsTo(EProgram);
@@ -12,14 +12,14 @@ class ECurriculum extends Model {
   }
 }
 
-class EProgram extends Model {
+class EProgram extends PermissiveModel {
   static table = "eager_programs";
   curricula() {
     return this.hasMany(ECurriculum);
   }
 }
 
-class ESubject extends Model {
+class ESubject extends PermissiveModel {
   static table = "eager_subjects";
   static curricula() {
     return this.belongsToMany(ECurriculum, "eager_curriculum_subjects");
@@ -86,12 +86,12 @@ describe("toSqlWithEagerLoads", () => {
 
 describe("nested constraint map typed loading", () => {
   test("gradingPeriods type is Collection<GradingPeriod> not method", () => {
-    class GPeriod extends Model { static table = "g_periods"; }
-    class Sem extends Model {
+    class GPeriod extends PermissiveModel { static table = "g_periods"; }
+    class Sem extends PermissiveModel {
       static table = "sems";
       gradingPeriods() { return this.hasMany(GPeriod); }
     }
-    class AcalYear extends Model {
+    class AcalYear extends PermissiveModel {
       static table = "acal_years";
       semesters() { return this.hasMany(Sem); }
     }
@@ -120,8 +120,8 @@ describe("nested constraint map typed loading", () => {
 
 describe("string relation type narrowing still works", () => {
   test("with('subjects') still narrows to Collection<Subject>", () => {
-    class Subject2 extends Model { static table = "subjects2"; }
-    class Curriculum2 extends Model {
+    class Subject2 extends PermissiveModel { static table = "subjects2"; }
+    class Curriculum2 extends PermissiveModel {
       static table = "curricula2";
       subjects() { return this.hasMany(Subject2); }
     }
@@ -138,8 +138,8 @@ describe("string relation type narrowing still works", () => {
 
 describe("string with() produces exact loaded type (no deferred union)", () => {
   test("with('program') gives Program | null, not method | Program | null", () => {
-    class Prog extends Model { static table = "progs"; }
-    class Cur extends Model {
+    class Prog extends PermissiveModel { static table = "progs"; }
+    class Cur extends PermissiveModel {
       static table = "curs";
       program() { return this.belongsTo(Prog); }
     }
@@ -167,7 +167,7 @@ describe("model json type", () => {
       year_level: number;
     }
 
-    class Section extends Model.define<SectionAttrs>("typed_json_sections") {}
+    class Section extends PermissiveModel.define<SectionAttrs>("typed_json_sections") {}
 
     const section = new Section({ id: 1, name: "A", year_level: 2 });
     const json = section.json();
@@ -196,9 +196,9 @@ describe("model json type", () => {
       name: string;
     }
 
-    class Adviser extends Model.define<AdviserAttrs>("typed_json_advisers") {}
-    class Subject extends Model.define<SubjectAttrs>("typed_json_subjects") {}
-    class Section extends Model.define<SectionAttrs>("typed_json_sections") {
+    class Adviser extends PermissiveModel.define<AdviserAttrs>("typed_json_advisers") {}
+    class Subject extends PermissiveModel.define<SubjectAttrs>("typed_json_subjects") {}
+    class Section extends PermissiveModel.define<SectionAttrs>("typed_json_sections") {
       adviser() { return this.belongsTo(Adviser); }
       subjects() { return this.hasMany(Subject); }
     }
@@ -242,8 +242,8 @@ describe("model json type", () => {
       student_id: number | null;
     }
 
-    class Student extends Model.define<StudentAttrs>("typed_json_students") {}
-    class Admission extends Model.define<AdmissionAttrs>("typed_json_admissions") {
+    class Student extends PermissiveModel.define<StudentAttrs>("typed_json_students") {}
+    class Admission extends PermissiveModel.define<AdmissionAttrs>("typed_json_admissions") {
       student() { return this.belongsTo(Student); }
     }
 
@@ -276,9 +276,9 @@ describe("model json type", () => {
       name: string;
     }
 
-    class Adviser extends Model.define<AdviserAttrs>("typed_json_chain_advisers") {}
-    class Branch extends Model.define<BranchAttrs>("typed_json_chain_branches") {}
-    class Section extends Model.define<SectionAttrs>("typed_json_chain_sections") {
+    class Adviser extends PermissiveModel.define<AdviserAttrs>("typed_json_chain_advisers") {}
+    class Branch extends PermissiveModel.define<BranchAttrs>("typed_json_chain_branches") {}
+    class Section extends PermissiveModel.define<SectionAttrs>("typed_json_chain_sections") {
       adviser() { return this.belongsTo(Adviser); }
       branch() { return this.belongsTo(Branch); }
     }
@@ -322,14 +322,14 @@ describe("model json type", () => {
       id: number;
     }
 
-    class Department extends Model.define<DepartmentAttrs>("typed_json_nested_departments") {}
-    class Subject extends Model.define<SubjectAttrs>("typed_json_nested_subjects") {
+    class Department extends PermissiveModel.define<DepartmentAttrs>("typed_json_nested_departments") {}
+    class Subject extends PermissiveModel.define<SubjectAttrs>("typed_json_nested_subjects") {
       department() { return this.belongsTo(Department); }
     }
-    class AdmissionSubject extends Model.define<AdmissionSubjectAttrs>("typed_json_nested_admission_subjects") {
+    class AdmissionSubject extends PermissiveModel.define<AdmissionSubjectAttrs>("typed_json_nested_admission_subjects") {
       subject() { return this.belongsTo(Subject); }
     }
-    class Admission extends Model.define<AdmissionAttrs>("typed_json_nested_admissions") {
+    class Admission extends PermissiveModel.define<AdmissionAttrs>("typed_json_nested_admissions") {
       subjects() { return this.hasMany(AdmissionSubject); }
     }
 
@@ -369,10 +369,10 @@ describe("model json type", () => {
   });
 
   test("json() excludes relation methods and internal state keys on plain models", () => {
-    class Subject extends Model {
+    class Subject extends PermissiveModel {
       static table = "typed_json_plain_subjects";
     }
-    class AdmissionSubject extends Model {
+    class AdmissionSubject extends PermissiveModel {
       static table = "typed_json_plain_admission_subjects";
       subject() { return this.belongsTo(Subject); }
     }
@@ -392,18 +392,18 @@ describe("model json type", () => {
   });
 
   test("json() excludes internals from nested eager-loaded plain models", () => {
-    class Department extends Model {
+    class Department extends PermissiveModel {
       static table = "typed_json_plain_nested_departments";
     }
-    class Subject extends Model {
+    class Subject extends PermissiveModel {
       static table = "typed_json_plain_nested_subjects";
       department() { return this.belongsTo(Department); }
     }
-    class AdmissionSubject extends Model {
+    class AdmissionSubject extends PermissiveModel {
       static table = "typed_json_plain_nested_admission_subjects";
       subject() { return this.belongsTo(Subject); }
     }
-    class Admission extends Model {
+    class Admission extends PermissiveModel {
       static table = "typed_json_plain_nested_admissions";
       subjects() { return this.hasMany(AdmissionSubject); }
     }
@@ -446,8 +446,8 @@ describe("model json type", () => {
       name: string;
     }
 
-    class Admission extends Model.define<AdmissionAttrs>("typed_json_count_admissions") {}
-    class Section extends Model.define<SectionAttrs>("typed_json_count_sections") {
+    class Admission extends PermissiveModel.define<AdmissionAttrs>("typed_json_count_admissions") {}
+    class Section extends PermissiveModel.define<SectionAttrs>("typed_json_count_sections") {
       admissions() { return this.hasMany(Admission); }
     }
 
@@ -491,8 +491,8 @@ describe("model json type", () => {
       year_level: number;
     }
 
-    class Admission extends Model.define<AdmissionAttrs>("typed_json_aggregate_admissions") {}
-    class Section extends Model.define<SectionAttrs>("typed_json_aggregate_sections") {
+    class Admission extends PermissiveModel.define<AdmissionAttrs>("typed_json_aggregate_admissions") {}
+    class Section extends PermissiveModel.define<SectionAttrs>("typed_json_aggregate_sections") {
       admissions() { return this.hasMany(Admission); }
     }
 

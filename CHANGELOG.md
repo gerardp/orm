@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.1 - 2026-08-21
+
+### Changed
+
+- Models without an explicit `fillable` or `guarded` policy now default to
+  `guarded = ["*"]`, matching Laravel. Direct assignment, `forceFill()` and
+  `forceCreate()` remain trusted bypasses, while `guarded = []` explicitly
+  opts into unrestricted mass assignment.
+
 ## 0.11.0 - 2026-08-21
 
 ### Changed

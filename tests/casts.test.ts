@@ -1,6 +1,6 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { Model, Schema, type CastsAttributes } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
 class UppercaseCast implements CastsAttributes {
   get(_model: Model, _key: string, value: any): any {
@@ -25,7 +25,7 @@ class CountingCast implements CastsAttributes {
   }
 }
 
-class CastedModel extends Model {
+class CastedModel extends PermissiveModel {
   static table = "casted";
   static casts = {
     is_active: "boolean",
@@ -40,14 +40,14 @@ class CastedModel extends Model {
   };
 }
 
-class CachedCastModel extends Model {
+class CachedCastModel extends PermissiveModel {
   static table = "cached_casted";
   static casts = {
     code: CountingCast,
   };
 }
 
-class ConstructorCacheModel extends Model {
+class ConstructorCacheModel extends PermissiveModel {
   static casts = { metadata: "json" };
   static attributes = { metadata: { source: "default" } };
 
@@ -192,7 +192,7 @@ describe("Attribute Casting", () => {
   });
 
   test("picks up a cast added to the static map after the first model was built", () => {
-    class LateCastModel extends Model {
+    class LateCastModel extends PermissiveModel {
       static table = "late_casts";
       static casts: Record<string, string> = { first: "json" };
     }
@@ -255,7 +255,7 @@ describe("Attribute Casting", () => {
   });
 
   test("rejects the removed encrypted cast instead of pretending to encrypt", () => {
-    class LegacyEncryptedModel extends Model {
+    class LegacyEncryptedModel extends PermissiveModel {
       static override table = "legacy_encrypted";
       static override casts = { secret: "encrypted" };
     }

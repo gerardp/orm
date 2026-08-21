@@ -1,10 +1,10 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { Model, Schema, BelongsToMany, AttributeDefinition } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
 // ─── Models ──────────────────────────────────────────────────────────────────
 
-class Article extends Model {
+class Article extends PermissiveModel {
   static table = "nf_articles";
   static accessors: Record<string, AttributeDefinition> = {
     title: {
@@ -18,21 +18,21 @@ class Article extends Model {
   };
 }
 
-class NfUser extends Model {
+class NfUser extends PermissiveModel {
   static table = "nf_users";
   tags() {
     return this.belongsToMany(NfTag, "nf_tag_nf_user", "nf_user_id", "nf_tag_id");
   }
 }
 
-class NfTag extends Model {
+class NfTag extends PermissiveModel {
   static table = "nf_tags";
   users() {
     return this.belongsToMany(NfUser, "nf_tag_nf_user", "nf_tag_id", "nf_user_id");
   }
 }
 
-class NfItem extends Model {
+class NfItem extends PermissiveModel {
   static table = "nf_items";
   static timestamps = false;
 }

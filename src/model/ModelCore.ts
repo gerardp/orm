@@ -111,7 +111,15 @@ function sameAttributeValue(before: unknown, after: unknown): boolean {
   return before === after;
 }
 
-type MassAssignmentPolicy = { kind: "fillable" | "guarded"; attributes: string[] } | null;
+type MassAssignmentPolicy = {
+  kind: "fillable" | "guarded";
+  attributes: readonly string[];
+};
+
+const DEFAULT_MASS_ASSIGNMENT_POLICY: MassAssignmentPolicy = {
+  kind: "guarded",
+  attributes: ["*"],
+};
 
 function resolveMassAssignmentPolicy(constructor: typeof ModelCore): MassAssignmentPolicy {
   let current: any = constructor;
@@ -127,7 +135,7 @@ function resolveMassAssignmentPolicy(constructor: typeof ModelCore): MassAssignm
     if (hasGuarded) return { kind: "guarded", attributes: current.guarded ?? [] };
     current = Object.getPrototypeOf(current);
   }
-  return null;
+  return DEFAULT_MASS_ASSIGNMENT_POLICY;
 }
 
 function isDangerousMassAssignmentKey(key: string): boolean {
@@ -147,7 +155,7 @@ export class ModelCore<T extends Record<string, any> = any> {
   static morphName?: string;
   static casts: Record<string, CastDefinition> = {};
   static fillable: string[] = [];
-  static guarded: string[] = [];
+  static guarded: string[] = ["*"];
   static attributes: Record<string, any> = {};
   static softDeletes = false;
   static deletedAtColumn = "deleted_at";
@@ -399,7 +407,6 @@ export class ModelCore<T extends Record<string, any> = any> {
   isFillable(key: string): boolean {
     if (isDangerousMassAssignmentKey(key)) return false;
     const policy = resolveMassAssignmentPolicy(this.getModelConstructor());
-    if (!policy) return true;
     if (policy.kind === "fillable") return policy.attributes.includes(key);
     return !policy.attributes.includes("*") && !policy.attributes.includes(key);
   }

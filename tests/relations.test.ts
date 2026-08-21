@@ -1,8 +1,8 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { Collection, Model, Schema } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
-class Author extends Model {
+class Author extends PermissiveModel {
   static table = "authors";
   books() {
     return this.hasMany(Book);
@@ -18,32 +18,32 @@ class Author extends Model {
   }
 }
 
-class Book extends Model {
+class Book extends PermissiveModel {
   static table = "books";
   author() {
     return this.belongsTo(Author);
   }
 }
 
-class Profile extends Model {
+class Profile extends PermissiveModel {
   static table = "profiles";
   author() {
     return this.belongsTo(Author);
   }
 }
 
-class Country extends Model {
+class Country extends PermissiveModel {
   static table = "countries";
   posts() {
     return this.hasManyThrough(CountryPost, CountryUser);
   }
 }
 
-class CountryUser extends Model {
+class CountryUser extends PermissiveModel {
   static table = "country_users";
 }
 
-class CountryPost extends Model {
+class CountryPost extends PermissiveModel {
   static table = "country_posts";
 }
 

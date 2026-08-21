@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { PermissiveModel } from "./helpers.js";
 import { Collection, Connection, Model, Schema, collect } from "../src/index.js";
 
-class CollectionUser extends Model {
+class CollectionUser extends PermissiveModel {
   static table = "collection_users";
   static timestamps = false;
 }

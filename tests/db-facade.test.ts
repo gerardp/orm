@@ -1,8 +1,8 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { DB, Model, Schema, ConnectionManager, Connection, TenantContext } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
-class DbUser extends Model.define<{ id: number; name: string; active: boolean }>("db_users") {}
+class DbUser extends PermissiveModel.define<{ id: number; name: string; active: boolean }>("db_users") {}
 
 describe("DB facade", () => {
   beforeAll(async () => {

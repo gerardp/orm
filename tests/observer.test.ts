@@ -1,26 +1,26 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { Model, Schema, Observer, ObserverRegistry } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
 function expectType<T>(_value: T): void {}
 
-class ObservedUser extends Model {
+class ObservedUser extends PermissiveModel {
   static table = "observed_users";
 }
 
-class CleanSaveUser extends Model {
+class CleanSaveUser extends PermissiveModel {
   static table = "clean_save_users";
 }
 
-class UnsavedDeleteUser extends Model {
+class UnsavedDeleteUser extends PermissiveModel {
   static table = "unsaved_delete_users";
 }
 
-class Admission extends Model {
+class Admission extends PermissiveModel {
   static table = "admissions";
 }
 
-class Order extends Model {
+class Order extends PermissiveModel {
   static table = "orders";
 }
 

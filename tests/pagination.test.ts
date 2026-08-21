@@ -1,12 +1,12 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { Builder, Collection, Model, Schema, type RelationConstraintQuery } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
 enum PAdmissionStatus {
   ENROLLED = "enrolled",
 }
 
-class PUser extends Model {
+class PUser extends PermissiveModel {
   static table = "p_users";
 }
 
@@ -16,7 +16,7 @@ interface PSubjectAttrs {
   parent_id: number | null;
 }
 
-class PSubject extends Model.define<PSubjectAttrs>("p_subjects") {
+class PSubject extends PermissiveModel.define<PSubjectAttrs>("p_subjects") {
   offerings() {
     return this.hasMany(POffering, "subject_id");
   }
@@ -26,13 +26,13 @@ class PSubject extends Model.define<PSubjectAttrs>("p_subjects") {
   }
 }
 
-class POffering extends Model.define<{ id: number; subject_id: number }>("p_offerings") {
+class POffering extends PermissiveModel.define<{ id: number; subject_id: number }>("p_offerings") {
   admissions() {
     return this.hasMany(PAdmission, "offering_id");
   }
 }
 
-class PAdmission extends Model.define<{ id: number; offering_id: number; subject_id: number | null; status: PAdmissionStatus | null }>("p_admissions") {}
+class PAdmission extends PermissiveModel.define<{ id: number; offering_id: number; subject_id: number | null; status: PAdmissionStatus | null }>("p_admissions") {}
 
 describe("Pagination", () => {
   beforeAll(async () => {

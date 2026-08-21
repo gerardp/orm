@@ -1,10 +1,10 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { Collection, Model, Schema, MorphMap } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
 // ─── Models ──────────────────────────────────────────────────────────────────
 
-class RwcUser extends Model {
+class RwcUser extends PermissiveModel {
   static table = "rwc_users";
 
   publishedPosts() {
@@ -35,7 +35,7 @@ class RwcUser extends Model {
   }
 }
 
-class RwcPost extends Model {
+class RwcPost extends PermissiveModel {
   static table = "rwc_posts";
 
   author() {
@@ -49,19 +49,19 @@ class RwcPost extends Model {
   }
 }
 
-class RwcProfile extends Model {
+class RwcProfile extends PermissiveModel {
   static table = "rwc_profiles";
 }
 
-class RwcRole extends Model {
+class RwcRole extends PermissiveModel {
   static table = "rwc_roles";
 }
 
-class RwcTag extends Model {
+class RwcTag extends PermissiveModel {
   static table = "rwc_tags";
 }
 
-class RwcAttachment extends Model {
+class RwcAttachment extends PermissiveModel {
   static table = "rwc_attachments";
 }
 

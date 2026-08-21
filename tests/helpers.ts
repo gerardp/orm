@@ -1,6 +1,10 @@
 import { Connection, Model, Schema } from "../src/index.js";
 import { rm } from "fs/promises";
 
+export class PermissiveModel<T extends Record<string, any> = any> extends Model<T> {
+  static guarded: string[] = [];
+}
+
 export function setupTestDb() {
   const connection = new Connection({ url: "sqlite://:memory:" });
   Model.setConnection(connection);

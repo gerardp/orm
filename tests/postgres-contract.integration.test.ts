@@ -1,16 +1,17 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { PermissiveModel } from "./helpers.js";
 import { Builder, Connection, Model, Schema } from "../src/index.js";
 import { createDriverContext, postgresUrl, type DriverContext } from "./driver-harness.js";
 
 const run = postgresUrl ? test.serial : test.skip;
 
-class PostgresExactValue extends Model {
+class PostgresExactValue extends PermissiveModel {
   static override table = "postgres_exact_values";
   static override timestamps = false;
   static override casts = { amount: "decimal:10" };
 }
 
-class PostgresNativeValue extends Model {
+class PostgresNativeValue extends PermissiveModel {
   static override table = "postgres_native_values";
   static override timestamps = false;
   static override casts = {
@@ -21,7 +22,7 @@ class PostgresNativeValue extends Model {
   };
 }
 
-class PostgresPageItem extends Model {
+class PostgresPageItem extends PermissiveModel {
   static override table = "postgres_page_items";
   static override timestamps = false;
 }
@@ -195,7 +196,7 @@ describe.serial("PostgreSQL native contracts", () => {
       onDelete: "cascade",
     }));
 
-    class PostgresContractChild extends Model {
+    class PostgresContractChild extends PermissiveModel {
       static override table = "postgres_contract_children";
       static override timestamps = false;
     }

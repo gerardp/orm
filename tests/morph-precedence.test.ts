@@ -1,8 +1,8 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { Connection, Model, MorphMap, Schema } from "../src/index.js";
-import { setupTestDb, teardownTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb, teardownTestDb } from "./helpers.js";
 
-class PComment extends Model {
+class PComment extends PermissiveModel {
   static override table = "p_comments";
   static override timestamps = false;
   static override softDeletes = true;
@@ -12,12 +12,12 @@ class PComment extends Model {
   }
 }
 
-class PPost extends Model {
+class PPost extends PermissiveModel {
   static override table = "p_posts";
   static override timestamps = false;
 }
 
-class PVideo extends Model {
+class PVideo extends PermissiveModel {
   static override table = "p_videos";
   static override timestamps = false;
 }

@@ -1,9 +1,9 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { Model, Schema } from "../src/index.js";
 import type { Builder } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
-class ScopedUser extends Model {
+class ScopedUser extends PermissiveModel {
   static table = "scoped_users";
   static softDeletes = true;
 
@@ -16,7 +16,7 @@ class ScopedUser extends Model {
   }
 }
 
-class ScopedPost extends Model {
+class ScopedPost extends PermissiveModel {
   static table = "scoped_posts";
   static softDeletes = true;
 
@@ -25,7 +25,7 @@ class ScopedPost extends Model {
   }
 }
 
-class ScopedRole extends Model {
+class ScopedRole extends PermissiveModel {
   static table = "scoped_roles";
 
   users() {
@@ -33,7 +33,7 @@ class ScopedRole extends Model {
   }
 }
 
-class TenantItem extends Model {
+class TenantItem extends PermissiveModel {
   static table = "tenant_items";
 }
 

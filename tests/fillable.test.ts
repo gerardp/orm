@@ -12,7 +12,9 @@ class FillableModel extends Model {
   static fillable = ["name", "email"];
 }
 
-class NoPolicyModel extends Model {}
+class NoPolicyModel extends Model {
+  static table = "default_protected";
+}
 
 class EmptyFillableModel extends Model {
   static fillable: string[] = [];
@@ -58,6 +60,7 @@ class ReplacedPolicyModel extends ParentPolicyModel {
 
 class RelationParent extends Model {
   static table = "policy_parents";
+  static fillable = ["name"];
 
   children() {
     return this.hasMany(RelationChild, "parent_id");
@@ -104,6 +107,15 @@ class RelationTag extends Model {
   static guarded = ["kind"];
 }
 
+class DefinedWithColumnsModel extends Model.define<{
+  name: string;
+  secret: string;
+}>("defined_with_columns", { name: "string" }) {}
+
+class DefinedWithoutColumnsModel extends Model.define<{
+  name: string;
+}>("defined_without_columns") {}
+
 class RelationParentFactory extends Factory<RelationParent> {
   definition() {
     return { name: "Factory parent" };
@@ -126,6 +138,11 @@ describe("Mass Assignment Protection", () => {
       table.increments("id");
       table.string("name").unique();
       table.string("role").nullable();
+      table.timestamps();
+    });
+    await Schema.create("default_protected", (table) => {
+      table.increments("id");
+      table.string("name").nullable();
       table.timestamps();
     });
     await Schema.create("policy_parents", (table) => {
@@ -187,15 +204,64 @@ describe("Mass Assignment Protection", () => {
     expect(record.getAttribute("secret")).toBe("set directly");
   });
 
-  test("distinguishes absent policies from explicit empty arrays", () => {
-    const unconfigured = new NoPolicyModel({ name: "Allowed" });
-    expect(unconfigured.getAttribute("name")).toBe("Allowed");
+  test("protects models without an explicit policy in the constructor and fill", () => {
+    const unconfigured = new NoPolicyModel({ name: "Blocked" });
+    expect(unconfigured.getAttribute("name")).toBeUndefined();
+
+    unconfigured.fill({ name: "Still blocked" });
+    expect(unconfigured.getAttribute("name")).toBeUndefined();
+  });
+
+  test("distinguishes the protected default from explicit empty arrays", () => {
 
     const emptyFillable = new EmptyFillableModel({ name: "Blocked" });
     expect(emptyFillable.getAttribute("name")).toBeUndefined();
 
     const emptyGuarded = new EmptyGuardedModel({ name: "Allowed" });
     expect(emptyGuarded.getAttribute("name")).toBe("Allowed");
+  });
+
+  test("direct assignment and save bypass mass assignment protection", async () => {
+    const record = new NoPolicyModel();
+    (record as any).name = "Direct assignment";
+    await record.save();
+
+    expect(record.getAttribute("name")).toBe("Direct assignment");
+    expect(
+      (await NoPolicyModel.findOrFail(record.getAttribute("id"))).getAttribute("name")
+    ).toBe("Direct assignment");
+  });
+
+  test("forceFill and forceCreate bypass the protected default", async () => {
+    const filled = new NoPolicyModel().forceFill({ name: "Force fill" });
+    expect(filled.getAttribute("name")).toBe("Force fill");
+
+    const created = await NoPolicyModel.forceCreate({ name: "Force create" });
+    expect(created.getAttribute("name")).toBe("Force create");
+  });
+
+  test("create and instance update respect the protected default", async () => {
+    const created = await NoPolicyModel.create({ name: "Blocked create" });
+    expect(created.getAttribute("name")).toBeUndefined();
+
+    const existing = await NoPolicyModel.forceCreate({ name: "Before update" });
+    await existing.update({ name: "Blocked update" });
+    expect(existing.getAttribute("name")).toBe("Before update");
+    expect(
+      (await NoPolicyModel.findOrFail(existing.getAttribute("id"))).getAttribute("name")
+    ).toBe("Before update");
+  });
+
+  test("Model.define generates fillable from columns and otherwise stays protected", () => {
+    const withColumns = new DefinedWithColumnsModel({
+      name: "Allowed",
+      secret: "Blocked",
+    });
+    expect(withColumns.getAttribute("name")).toBe("Allowed");
+    expect(withColumns.getAttribute("secret")).toBeUndefined();
+
+    const withoutColumns = new DefinedWithoutColumnsModel({ name: "Blocked" });
+    expect(withoutColumns.getAttribute("name")).toBeUndefined();
   });
 
   test("guarded wildcard blocks every attribute", () => {
@@ -232,7 +298,7 @@ describe("Mass Assignment Protection", () => {
       ["prototype", { compromised: true }],
       ["constructor", { compromised: true }],
     ]);
-    const record = new NoPolicyModel(attributes);
+    const record = new EmptyGuardedModel(attributes);
 
     expect(record.getAttribute("name")).toBe("Allowed");
     for (const key of ["$attributes", "$exists", "__proto__", "prototype", "constructor"]) {

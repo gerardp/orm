@@ -1,17 +1,17 @@
 import { describe, it, expect, beforeAll } from "bun:test";
 import { Model, Schema, Collection } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
 // ─── Models ───────────────────────────────────────────────────────────────────
 
 interface SocialAttributes { id: number; user_id: number; provider: string; provider_id: string; }
 interface UserAttributes   { id: number; name: string; email: string; }
 
-class Social extends Model.define<SocialAttributes>("socials") {
+class Social extends PermissiveModel.define<SocialAttributes>("socials") {
   static timestamps = false;
 }
 
-class JsonUser extends Model.define<UserAttributes>("json_users") {
+class JsonUser extends PermissiveModel.define<UserAttributes>("json_users") {
   static timestamps = false;
 
   social() { return this.hasOne(Social, "user_id"); }

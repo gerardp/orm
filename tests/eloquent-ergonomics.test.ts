@@ -1,6 +1,6 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { Collection, Model, Schema } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
 interface ErgUserAttrs {
   id: number;
@@ -9,7 +9,7 @@ interface ErgUserAttrs {
   score: number;
 }
 
-class ErgUser extends Model.define<ErgUserAttrs>("erg_users") {
+class ErgUser extends PermissiveModel.define<ErgUserAttrs>("erg_users") {
   declare label: string;
   declare upper_name: string;
 

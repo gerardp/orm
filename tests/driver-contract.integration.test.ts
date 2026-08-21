@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { PermissiveModel } from "./helpers.js";
 import { mkdtemp, rm } from "fs/promises";
 import { join } from "path";
 import { pathToFileURL } from "url";
@@ -12,7 +13,7 @@ interface ContractContext {
   dispose(): Promise<void>;
 }
 
-class ContractUser extends Model {
+class ContractUser extends PermissiveModel {
   static table = "contract_users";
   static timestamps = false;
 
@@ -21,7 +22,7 @@ class ContractUser extends Model {
   }
 }
 
-class ContractPost extends Model {
+class ContractPost extends PermissiveModel {
   static table = "contract_posts";
   static timestamps = false;
 
@@ -30,7 +31,7 @@ class ContractPost extends Model {
   }
 }
 
-class ContractDefault extends Model {
+class ContractDefault extends PermissiveModel {
   static table = "contract_defaults";
   static timestamps = false;
 }

@@ -1,20 +1,20 @@
 import { expect, test, describe, beforeAll, mock } from "bun:test";
 import { Model, Schema, ObserverRegistry } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
 // ─── Models ──────────────────────────────────────────────────────────────────
 
-class Article extends Model {
+class Article extends PermissiveModel {
   static table = "lf2_articles";
   static fillable = ["title", "slug"];
 }
 
-class SoftPost extends Model {
+class SoftPost extends PermissiveModel {
   static table = "lf2_soft_posts";
   static softDeletes = true;
 }
 
-class LfUser extends Model {
+class LfUser extends PermissiveModel {
   static table = "lf2_users";
   roles() {
     return this.belongsToMany(LfRole, "lf2_role_lf2_user", "lf2_user_id", "lf2_role_id");
@@ -26,7 +26,7 @@ class LfUser extends Model {
   }
 }
 
-class LfRole extends Model {
+class LfRole extends PermissiveModel {
   static table = "lf2_roles";
 }
 

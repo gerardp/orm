@@ -1,8 +1,8 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { Model, Schema } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
-class EAuthor extends Model {
+class EAuthor extends PermissiveModel {
   static table = "e_authors";
   static timestamps = false;
   books() {
@@ -13,7 +13,7 @@ class EAuthor extends Model {
   }
 }
 
-class EBook extends Model {
+class EBook extends PermissiveModel {
   static table = "e_books";
   static timestamps = false;
   author() {
@@ -24,12 +24,12 @@ class EBook extends Model {
   }
 }
 
-class EChapter extends Model {
+class EChapter extends PermissiveModel {
   static table = "e_chapters";
   static timestamps = false;
 }
 
-class EProfile extends Model {
+class EProfile extends PermissiveModel {
   static table = "e_profiles";
   static timestamps = false;
   author() {

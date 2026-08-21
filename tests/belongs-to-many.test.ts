@@ -1,22 +1,22 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { Collection, Connection, Model, Schema } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
-class BUser extends Model {
+class BUser extends PermissiveModel {
   static table = "b_users";
   roles() {
     return this.belongsToMany(BRole);
   }
 }
 
-class BRole extends Model {
+class BRole extends PermissiveModel {
   static table = "b_roles";
   users() {
     return this.belongsToMany(BUser);
   }
 }
 
-class BPost extends Model {
+class BPost extends PermissiveModel {
   static table = "b_posts";
   tags() {
     return this.belongsToMany(BTag, "b_post_tags").withPivot("created_at", "id", "category");
@@ -39,12 +39,12 @@ class BPost extends Model {
   }
 }
 
-class BTag extends Model {
+class BTag extends PermissiveModel {
   static table = "b_tags";
   static keyType = "uuid";
 }
 
-class BItem extends Model {
+class BItem extends PermissiveModel {
   static table = "b_items";
   static keyType = "uuid";
   tags() {
@@ -52,18 +52,18 @@ class BItem extends Model {
   }
 }
 
-class Section extends Model {
+class Section extends PermissiveModel {
   static table = "btm_sections";
   students() {
     return this.belongsToMany(Student, Offering);
   }
 }
 
-class Student extends Model {
+class Student extends PermissiveModel {
   static table = "btm_students";
 }
 
-class Offering extends Model {
+class Offering extends PermissiveModel {
   static table = "btm_offerings";
 }
 
@@ -163,13 +163,13 @@ describe("BelongsToMany", () => {
   });
 
   test("belongsToMany existence queries qualify pivot table with PostgreSQL schema", () => {
-    class SchemaUser extends Model {
+    class SchemaUser extends PermissiveModel {
       static table = "schema_users";
       roles() {
         return this.belongsToMany(SchemaRole, "schema_role_user", "schema_user_id", "schema_role_id");
       }
     }
-    class SchemaRole extends Model {
+    class SchemaRole extends PermissiveModel {
       static table = "schema_roles";
     }
 
@@ -394,7 +394,7 @@ describe("BelongsToMany", () => {
       "CREATE TABLE o_post_tags (id TEXT PRIMARY KEY NOT NULL, o_post_id INTEGER, o_tag_id TEXT, category TEXT)"
     );
 
-    class OPost extends Model {
+    class OPost extends PermissiveModel {
       static table = "o_posts";
       static connection = other;
       static timestamps = false;
@@ -403,7 +403,7 @@ describe("BelongsToMany", () => {
       }
     }
 
-    class OTag extends Model {
+    class OTag extends PermissiveModel {
       static table = "o_tags";
       static connection = other;
       static timestamps = false;

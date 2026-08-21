@@ -1,7 +1,7 @@
 import { expect, test, describe } from "bun:test";
 import { Builder, Cache, MemoryCacheStore, Model, Observer, ObserverRegistry, RedisCacheStore, Schema, configureBunny } from "../src/index.js";
 import type { CacheRememberOptions, CacheStore } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
 class FakeRedis {
   values = new Map<string, string>();
@@ -240,12 +240,12 @@ describe("Cache stores", () => {
   });
 });
 
-class CachedWidget extends Model {
+class CachedWidget extends PermissiveModel {
   static table = "cached_widgets";
   static timestamps = false;
 }
 
-class CachedAuthor extends Model {
+class CachedAuthor extends PermissiveModel {
   static table = "cached_authors";
   static timestamps = false;
 
@@ -254,7 +254,7 @@ class CachedAuthor extends Model {
   }
 }
 
-class CachedBook extends Model {
+class CachedBook extends PermissiveModel {
   static table = "cached_books";
   static timestamps = false;
 
@@ -417,7 +417,7 @@ describe("Query builder cache", () => {
   });
 });
 
-class ObservedCachedWidget extends Model {
+class ObservedCachedWidget extends PermissiveModel {
   static table = "observed_cached_widgets";
   static timestamps = false;
 }

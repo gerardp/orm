@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { PermissiveModel } from "./helpers.js";
 import { Connection, Model, Schema, TypeMapper } from "../src/index.js";
 
-class SqliteNativeValue extends Model {
+class SqliteNativeValue extends PermissiveModel {
   static override table = "sq_contract_native_values";
   static override timestamps = false;
   static override casts = {
@@ -12,7 +13,7 @@ class SqliteNativeValue extends Model {
   };
 }
 
-class SqliteExactText extends Model {
+class SqliteExactText extends PermissiveModel {
   static override table = "sq_contract_exact_text";
   static override timestamps = false;
   static override primaryKey = "exact_id";

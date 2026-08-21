@@ -1,10 +1,10 @@
 import { expect, test, describe, beforeAll } from "bun:test";
 import { Builder, Collection, Model, Schema } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
 // ─── Models ──────────────────────────────────────────────────────────────────
 
-class Lf3Post extends Model {
+class Lf3Post extends PermissiveModel {
   static table = "lf3_posts";
   author() { return this.belongsTo(Lf3User, "lf3_user_id"); }
   authorWithDefault() { return this.belongsTo(Lf3User, "lf3_user_id").withDefault({ name: "Anonymous" }); }
@@ -14,18 +14,18 @@ class Lf3Post extends Model {
   comments() { return this.hasMany(Lf3Comment, "lf3_post_id"); }
 }
 
-class Lf3User extends Model {
+class Lf3User extends PermissiveModel {
   static table = "lf3_users";
   static touches = ["latestPost"];
   posts() { return this.hasMany(Lf3Post, "lf3_user_id"); }
   latestPost() { return this.hasOne(Lf3Post, "lf3_user_id"); }
 }
 
-class Lf3Profile extends Model {
+class Lf3Profile extends PermissiveModel {
   static table = "lf3_profiles";
 }
 
-class Lf3Comment extends Model {
+class Lf3Comment extends PermissiveModel {
   static table = "lf3_comments";
   post() { return this.belongsTo(Lf3Post, "lf3_post_id"); }
 }

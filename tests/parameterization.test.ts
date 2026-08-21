@@ -1,6 +1,6 @@
 import { expect, test, describe } from "bun:test";
 import { Builder, Connection, Model, Schema } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
 describe("Parameterized Queries", () => {
   function captureExecution(connection: any) {
@@ -406,7 +406,7 @@ describe("Parameterized Queries", () => {
     const connection = setupTestDb();
     Schema.setConnection(connection);
 
-    class CursorItem extends Model {
+    class CursorItem extends PermissiveModel {
       static table = "cursor_items";
       static timestamps = false;
     }

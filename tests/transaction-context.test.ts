@@ -1,12 +1,12 @@
 import { expect, test, describe, beforeEach } from "bun:test";
 import { DB, Model, Schema } from "../src/index.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
-class User extends Model {
+class User extends PermissiveModel {
   static override table = "users";
 }
 
-class Post extends Model {
+class Post extends PermissiveModel {
   static override table = "posts";
 }
 

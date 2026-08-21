@@ -1,12 +1,12 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { Connection, Model, Schema } from "../src/index.js";
-import { setupTestDb, teardownTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb, teardownTestDb } from "./helpers.js";
 
 interface AuthorAttributes { id: number; name: string }
 interface CommentAttributes { id: number; author_id: number; body: string; approved: number }
 interface TagAttributes { id: number; label: string }
 
-class Author extends Model.define<AuthorAttributes>("authors") {
+class Author extends PermissiveModel.define<AuthorAttributes>("authors") {
   static override timestamps = false;
 
   comments() {
@@ -34,11 +34,11 @@ class Author extends Model.define<AuthorAttributes>("authors") {
   }
 }
 
-class Comment extends Model.define<CommentAttributes>("comments") {
+class Comment extends PermissiveModel.define<CommentAttributes>("comments") {
   static override timestamps = false;
 }
 
-class Tag extends Model.define<TagAttributes>("tags") {
+class Tag extends PermissiveModel.define<TagAttributes>("tags") {
   static override timestamps = false;
 }
 

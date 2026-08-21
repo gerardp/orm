@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Builder, Connection, Model, type CastsAttributes } from "../src/index.js";
 import { formatDateForDriver } from "../src/utils.js";
-import { setupTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb } from "./helpers.js";
 
 describe("Date handling", () => {
   test("a Date and its ISO equivalent are the same value for dirty tracking", async () => {
@@ -12,7 +12,7 @@ describe("Date handling", () => {
       table.string("at");
     });
 
-    class Beat extends Model {
+    class Beat extends PermissiveModel {
       static override table = "beats";
       static override casts = { at: "datetime" };
       static override fillable = ["at"];
@@ -94,7 +94,7 @@ describe("Date handling", () => {
         return value instanceof Date ? value : new Date(value as string);
       }
     }
-    class CustomEvent extends Model {
+    class CustomEvent extends PermissiveModel {
       static override timestamps = false;
       static override casts = { happened_at: DatabaseDateCast };
     }
@@ -217,7 +217,7 @@ describe("Date handling", () => {
   });
 
   test("a model with a date cast needs no connection to exist", () => {
-    class Detached extends Model {
+    class Detached extends PermissiveModel {
       static override table = "detached";
       static override casts = { when: "datetime" };
       static override fillable = ["when"];

@@ -3,13 +3,13 @@ import { Connection, Model, Schema } from "../src/index.js";
 import { PostgresGrammar } from "../src/query/grammars/PostgresGrammar.js";
 import { MySqlGrammar } from "../src/query/grammars/MySqlGrammar.js";
 import { SQLiteGrammar } from "../src/query/grammars/SQLiteGrammar.js";
-import { setupTestDb, teardownTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb, teardownTestDb } from "./helpers.js";
 
 interface UserAttributes { id: number; name: string }
 interface OrderAttributes { id: number; user_id: number; status: string }
 
-class QUser extends Model.define<UserAttributes>("q_users") { static override timestamps = false; }
-class QOrder extends Model.define<OrderAttributes>("q_orders") { static override timestamps = false; }
+class QUser extends PermissiveModel.define<UserAttributes>("q_users") { static override timestamps = false; }
+class QOrder extends PermissiveModel.define<OrderAttributes>("q_orders") { static override timestamps = false; }
 
 let connection: Connection;
 

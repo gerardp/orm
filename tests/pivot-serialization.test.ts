@@ -1,21 +1,21 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { Connection, Model, MorphMap, Schema } from "../src/index.js";
-import { setupTestDb, teardownTestDb } from "./helpers.js";
+import { PermissiveModel, setupTestDb, teardownTestDb } from "./helpers.js";
 
 // The pivot object is assigned as a property on the related model rather than
 // through setRelation(); it reaches toJSON() because the model proxy routes the
 // write into $attributes. These tests pin that down: the indirection is easy to
 // break from the proxy side, and the failure mode is silent data loss in APIs.
 
-class PsRole extends Model.define<{ id: number; title: string }>("ps_roles") {
+class PsRole extends PermissiveModel.define<{ id: number; title: string }>("ps_roles") {
   static override timestamps = false;
 }
 
-class PsTag extends Model.define<{ id: number; label: string }>("ps_tags") {
+class PsTag extends PermissiveModel.define<{ id: number; label: string }>("ps_tags") {
   static override timestamps = false;
 }
 
-class PsUser extends Model.define<{ id: number; name: string }>("ps_users") {
+class PsUser extends PermissiveModel.define<{ id: number; name: string }>("ps_users") {
   static override timestamps = false;
 
   roles() {
