@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.12.2 - 2026-08-22
+
+### Added
+
+- Model-backed builders expose `create()` and `firstOrNew()`. Existing query
+  constraints participate in the lookup without becoming attributes on a new
+  model.
+
+### Changed
+
+- Static `create()`, `firstOrNew()`, `firstOrCreate()`, and `updateOrCreate()`
+  delegate to the model builder so creation shares one implementation and uses
+  the builder's connection.
+
 ## 0.12.1 - 2026-08-21
 
 ### Changed

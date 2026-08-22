@@ -176,10 +176,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
     attributes: ModelMassAssignmentInput<InstanceType<M>>,
     options: SaveOptions = {}
   ): Promise<InstanceType<M>> {
-    const instance = new this() as InstanceType<M>;
-    instance.fill(attributes as any);
-    await instance.save(options);
-    return instance;
+    return (this as any).query().create(attributes, options);
   }
 
   static async forceCreate<M extends ModelConstructor>(
@@ -407,12 +404,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
     attributes: ModelAttributeInput<InstanceType<M>> = {},
     values: ModelMassAssignmentInput<InstanceType<M>> = {}
   ): Promise<InstanceType<M>> {
-    const found = await (this as any).where(attributes).first();
-    if (found) return found;
-    const instance = new this() as InstanceType<M>;
-    instance.fill(values as any);
-    instance.forceFill(attributes as any);
-    return instance;
+    return (this as any).query().firstOrNew(attributes, values);
   }
 
   static async firstOrCreate<M extends ModelConstructor>(
@@ -420,13 +412,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
     attributes: ModelAttributeInput<InstanceType<M>> = {},
     values: ModelMassAssignmentInput<InstanceType<M>> = {}
   ): Promise<InstanceType<M>> {
-    const found = await (this as any).where(attributes).first();
-    if (found) return found;
-    const instance = new this() as InstanceType<M>;
-    instance.fill(values as any);
-    instance.forceFill(attributes as any);
-    await instance.save();
-    return instance;
+    return (this as any).query().firstOrCreate(attributes, values);
   }
 
   static async updateOrCreate<M extends ModelConstructor>(
@@ -434,17 +420,7 @@ export class ModelPersistence<T extends Record<string, any> = any> extends Model
     attributes: ModelAttributeInput<InstanceType<M>>,
     values: ModelMassAssignmentInput<InstanceType<M>> = {}
   ): Promise<InstanceType<M>> {
-    const found = await (this as any).where(attributes).first();
-    if (found) {
-      found.fill(values);
-      await found.save();
-      return found;
-    }
-    const instance = new this() as InstanceType<M>;
-    instance.fill(values as any);
-    instance.forceFill(attributes as any);
-    await instance.save();
-    return instance;
+    return (this as any).query().updateOrCreate(attributes, values);
   }
 
   // Instance persistence methods

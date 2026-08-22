@@ -93,6 +93,27 @@ describe("firstOrNew()", () => {
     expect(instance.getAttribute("slug")).toBe("not-found");
     expect(await Article.where("title", "Not Found").exists()).toBe(false);
   });
+
+  test("works on a constrained builder without copying prior wheres", async () => {
+    const existing = await Article.create({ title: "Builder Existing", slug: "existing-scope" });
+    const found = await Article.query()
+      .where("slug", "existing-scope")
+      .firstOrNew({ title: "Builder Existing" });
+    expect(found.id).toBe(existing.id);
+
+    const unsaved = await Article.query()
+      .where("slug", "query-only")
+      .firstOrNew({ title: "Builder New" });
+    expect(unsaved.$exists).toBe(false);
+    expect(unsaved.getAttribute("title")).toBe("Builder New");
+    expect(unsaved.getAttribute("slug")).toBeUndefined();
+  });
+
+  test("create persists through a model builder", async () => {
+    const created = await Article.query().create({ title: "Builder Create", slug: "builder-create" });
+    expect(created.$exists).toBe(true);
+    expect((await Article.findOrFail(created.id)).slug).toBe("builder-create");
+  });
 });
 
 // ─── forceCreate ─────────────────────────────────────────────────────────────

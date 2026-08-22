@@ -3,7 +3,7 @@ import { TransactionContext } from "../connection/TransactionContext.js";
 import { Cache } from "../cache/index.js";
 import { MorphTo } from "../model/MorphRelations.js";
 import type { WhereClause, OrderClause, HavingClause } from "../types/index.js";
-import type { AttachedToRelationName, BelongsToRelationName, EagerLoadDefinition, EagerLoadInput, Model, ModelAttributeInput, ModelMassAssignmentInput, ModelColumn, ModelColumnValue, ModelConstructor, ModelRelationName, MorphToRelationName, TypedEagerLoad, TypedConstraintMap, TypedConstraintSelection, TypedExistsConstraintMap, ExtractStringPaths, WithLoadedRelations, WithLoadedRelationsFromConstraintMap, WithRelationCount, WithRelationExists, WithRelationExistsMap, Relation, RelationConstraintQuery, NestedRelationPath, LiteralUnion, RelationRelatedModel, MorphToConstraintCallback } from "../model/Model.js";
+import type { AttachedToRelationName, BelongsToRelationName, EagerLoadDefinition, EagerLoadInput, Model, ModelAttributeInput, ModelMassAssignmentInput, ModelColumn, ModelColumnValue, ModelConstructor, ModelRelationName, MorphToRelationName, SaveOptions, TypedEagerLoad, TypedConstraintMap, TypedConstraintSelection, TypedExistsConstraintMap, ExtractStringPaths, WithLoadedRelations, WithLoadedRelationsFromConstraintMap, WithRelationCount, WithRelationExists, WithRelationExistsMap, Relation, RelationConstraintQuery, NestedRelationPath, LiteralUnion, RelationRelatedModel, MorphToConstraintCallback } from "../model/Model.js";
 import { findRelationMethod, HasMany, Model as BaseModel } from "../model/Model.js";
 import { ObserverRegistry } from "../model/Observer.js";
 import { ModelNotFoundError } from "../model/ModelNotFoundError.js";
@@ -2034,18 +2034,38 @@ export class Builder<T = Record<string, any>, TResult = T> {
     return result;
   }
 
-  async firstOrCreate(attributes: ModelAttributeInput<T> = {}, values: ModelMassAssignmentInput<T> = {}): Promise<T> {
-    const found = await this.clone().where(attributes as any).first();
-    if (found) return found;
+  private newModelForCreation(
+    method: string,
+    attributes: ModelAttributeInput<T> = {},
+    values: ModelMassAssignmentInput<T> = {}
+  ): T & BaseModel {
     if (!this.model) {
-      throw new Error("firstOrCreate requires a model to be set on the builder");
+      throw new Error(`${method} requires a model to be set on the builder`);
     }
-    const instance = new (this.model as any)();
+    const instance = new (this.model as any)() as T & BaseModel;
     if (typeof instance.setConnection === "function") {
       instance.setConnection(this.connection);
     }
-    instance.fill(values);
-    instance.forceFill(attributes);
+    instance.fill(values as any);
+    instance.forceFill(attributes as any);
+    return instance;
+  }
+
+  async create(attributes: ModelMassAssignmentInput<T>, options: SaveOptions = {}): Promise<T> {
+    const instance = this.newModelForCreation("create", {}, attributes);
+    await instance.save(options);
+    return instance;
+  }
+
+  async firstOrNew(attributes: ModelAttributeInput<T> = {}, values: ModelMassAssignmentInput<T> = {}): Promise<T> {
+    const found = await this.clone().where(attributes as any).first();
+    return found ?? this.newModelForCreation("firstOrNew", attributes, values);
+  }
+
+  async firstOrCreate(attributes: ModelAttributeInput<T> = {}, values: ModelMassAssignmentInput<T> = {}): Promise<T> {
+    const found = await this.clone().where(attributes as any).first();
+    if (found) return found;
+    const instance = this.newModelForCreation("firstOrCreate", attributes, values);
     await instance.save();
     return instance;
   }
@@ -2060,15 +2080,7 @@ export class Builder<T = Record<string, any>, TResult = T> {
       }
       return found;
     }
-    if (!this.model) {
-      throw new Error("updateOrCreate requires a model to be set on the builder");
-    }
-    const instance = new (this.model as any)();
-    if (typeof instance.setConnection === "function") {
-      instance.setConnection(this.connection);
-    }
-    instance.fill(values);
-    instance.forceFill(attributes);
+    const instance = this.newModelForCreation("updateOrCreate", attributes, values);
     await instance.save();
     return instance;
   }
